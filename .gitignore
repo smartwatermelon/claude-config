@@ -5,8 +5,11 @@ file-history/
 debug/
 shell-snapshots/
 session-env/
-history.jsonl
 tasks/
+
+# Conversation logs — NEVER commit these (contain secrets, PII, session data)
+*.jsonl
+**/*.jsonl
 
 # Cache and statistics
 stats-cache.json
@@ -22,6 +25,15 @@ plugins/cache/
 
 # Local configuration (personal settings, permissions)
 settings.local.json
+*.local.json
+
+# Secrets and credentials — never commit
+*.key
+*.pem
+*.p12
+*credentials*
+*secret*
+!scripts/*
 
 # Project directories (external projects worked on)
 projects/
@@ -33,7 +45,13 @@ telemetry/
 .DS_Store
 **/.DS_Store
 
-# Empty directories
+# BFG reports
+*.bfg-report/
+
+# Auto-memory (may contain sensitive session context)
+memory/
+
+# Empty directories and misc
 bin/
 commands/
 downloads/
