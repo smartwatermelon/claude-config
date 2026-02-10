@@ -1,0 +1,45 @@
+# Session state and temporary files
+todos/
+plans/
+file-history/
+debug/
+shell-snapshots/
+session-env/
+history.jsonl
+tasks/
+
+# Cache and statistics
+stats-cache.json
+statsig/
+cache/
+paste-cache/
+image-cache/
+plugins/install-counts-cache.json
+plugins/known_marketplaces.json
+plugins/installed_plugins.json
+plugins/marketplaces/*/
+plugins/cache/
+
+# Local configuration (personal settings, permissions)
+settings.local.json
+
+# Project directories (external projects worked on)
+projects/
+
+# Telemetry and analytics
+telemetry/
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Empty directories
+bin/
+commands/
+downloads/
+agents-local/
+logs/
+agents.backup/
+.claude.json*
+blocked-commands.log
+merge-locks/

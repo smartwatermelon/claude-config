@@ -1,0 +1,76 @@
+{
+  "env": {
+    "DISABLE_AUTOUPDATER": "1",
+    "BASH_ENV": "/Users/andrewrich/.config/bash/functions.sh",
+    "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash"
+  },
+  "includeCoAuthoredBy": true,
+  "permissions": {},
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/hook-block-all.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/hook-block-merge-locks-write.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/hook-block-merge-locks-write.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/hook-session-start.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/scripts/status-line.sh"
+  },
+  "enabledPlugins": {
+    "superpowers@superpowers-marketplace": true,
+    "comprehensive-review@claude-code-workflows": true,
+    "git-pr-workflows@claude-code-workflows": false,
+    "tdd-workflows@claude-code-workflows": true,
+    "debugging-toolkit@claude-code-workflows": true,
+    "error-debugging@claude-code-workflows": false,
+    "code-refactoring@claude-code-workflows": false,
+    "dependency-management@claude-code-workflows": false,
+    "code-documentation@claude-code-workflows": false,
+    "backend-development@claude-code-workflows": false,
+    "frontend-mobile-development@claude-code-workflows": true,
+    "unit-testing@claude-code-workflows": false,
+    "security-compliance@claude-code-workflows": false,
+    "incident-response@claude-code-workflows": false,
+    "team-collaboration@claude-code-workflows": false,
+    "code-critic@smartwatermelon-marketplace": true,
+    "react-native-3d@smartwatermelon-marketplace": true
+  },
+  "alwaysThinkingEnabled": true,
+  "gitAttribution": true
+}
