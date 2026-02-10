@@ -9,7 +9,6 @@ tasks/
 
 # Conversation logs — NEVER commit these (contain secrets, PII, session data)
 *.jsonl
-**/*.jsonl
 
 # Cache and statistics
 stats-cache.json
@@ -31,9 +30,8 @@ settings.local.json
 *.key
 *.pem
 *.p12
-*credentials*
-*secret*
-!scripts/*
+credentials.*
+secrets.*
 
 # Project directories (external projects worked on)
 projects/
