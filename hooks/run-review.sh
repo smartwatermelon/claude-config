@@ -540,33 +540,37 @@ else
   exit 1
 fi
 
-# Step 2: Run adversarial-reviewer if security-critical
+# Step 2: Run adversarial-reviewer (always)
+# The adversarial-reviewer runs on every commit alongside code-reviewer.
+# Security-critical detection is still logged for informational purposes.
 ADVERSARIAL_OUTPUT=""
 ADVERSARIAL_VERDICT="N/A"
 
 if [[ "${IS_SECURITY_CRITICAL}" == true ]]; then
-  # Check if adversarial-reviewer agent exists
-  if ! find -L "${HOME}/.claude/plugins/marketplaces" -name "adversarial-reviewer.md" -type f 2>/dev/null | grep -q .; then
-    log_warn "adversarial-reviewer agent not found - skipping (see ~/.claude/docs/CUSTOM_AGENTS.md for setup)"
-    ADVERSARIAL_VERDICT="N/A"
-  else
-    ADVERSARIAL_OUTPUT=$(invoke_agent "adversarial-reviewer" "${AGENT_PROMPT}" "${ADVERSARIAL_CACHE}")
-    AGENT_EXIT=$?
+  log_info "Security-critical files detected — adversarial review has elevated scrutiny"
+fi
 
-    if [[ ${AGENT_EXIT} -eq 2 ]]; then
-      ADVERSARIAL_VERDICT="PASS"
-    elif echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: PASS"; then
-      ADVERSARIAL_VERDICT="PASS"
-    elif echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: FAIL"; then
-      ADVERSARIAL_VERDICT="FAIL"
-    else
-      log_error "Could not parse adversarial-reviewer verdict"
-      log_error "BLOCKING: Cannot verify adversarial review result"
-      log_error ""
-      log_error "Output was:"
-      echo "${ADVERSARIAL_OUTPUT}" | head -20 >&2
-      exit 1
-    fi
+# Check if adversarial-reviewer agent exists
+if ! find -L "${HOME}/.claude/plugins/marketplaces" -name "adversarial-reviewer.md" -type f 2>/dev/null | grep -q .; then
+  log_warn "adversarial-reviewer agent not found - skipping (see ~/.claude/docs/CUSTOM_AGENTS.md for setup)"
+  ADVERSARIAL_VERDICT="N/A"
+else
+  ADVERSARIAL_OUTPUT=$(invoke_agent "adversarial-reviewer" "${AGENT_PROMPT}" "${ADVERSARIAL_CACHE}")
+  AGENT_EXIT=$?
+
+  if [[ ${AGENT_EXIT} -eq 2 ]]; then
+    ADVERSARIAL_VERDICT="PASS"
+  elif echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: PASS"; then
+    ADVERSARIAL_VERDICT="PASS"
+  elif echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: FAIL"; then
+    ADVERSARIAL_VERDICT="FAIL"
+  else
+    log_error "Could not parse adversarial-reviewer verdict"
+    log_error "BLOCKING: Cannot verify adversarial review result"
+    log_error ""
+    log_error "Output was:"
+    echo "${ADVERSARIAL_OUTPUT}" | head -20 >&2
+    exit 1
   fi
 fi
 
@@ -615,7 +619,7 @@ if [[ "${ADVERSARIAL_VERDICT}" != "PASS" && "${ADVERSARIAL_VERDICT}" != "FAIL" &
 fi
 
 # All checks passed
-if [[ "${IS_SECURITY_CRITICAL}" == true ]]; then
+if [[ "${ADVERSARIAL_VERDICT}" != "N/A" ]]; then
   log_success "Review passed (code-reviewer + adversarial-reviewer)"
 else
   log_success "Review passed (code-reviewer)"
