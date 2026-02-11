@@ -97,3 +97,4 @@ See `CLAUDE.md` for protocol documentation.
 - Main config: [CLAUDE.md](./CLAUDE.md)
 - Agents marketplace: <https://github.com/wshobson/agents>
 - Superpowers marketplace: <https://github.com/obra/superpowers-marketplace>
+# Token permission test — 2026-02-11T00:11:00Z
