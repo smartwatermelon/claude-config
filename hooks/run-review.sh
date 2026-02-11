@@ -560,8 +560,12 @@ if [[ "${IS_SECURITY_CRITICAL}" == true ]]; then
     elif echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: FAIL"; then
       ADVERSARIAL_VERDICT="FAIL"
     else
-      log_warn "Could not parse adversarial-reviewer verdict - allowing commit"
-      ADVERSARIAL_VERDICT="PASS"
+      log_error "Could not parse adversarial-reviewer verdict"
+      log_error "BLOCKING: Cannot verify adversarial review result"
+      log_error ""
+      log_error "Output was:"
+      echo "${ADVERSARIAL_OUTPUT}" | head -20 >&2
+      exit 1
     fi
   fi
 fi
@@ -599,13 +603,15 @@ if [[ "${ADVERSARIAL_VERDICT}" == "FAIL" ]]; then
   exit 1
 fi
 
-if [[ "${ADVERSARIAL_VERDICT}" == "UNKNOWN" ]] && [[ "${IS_SECURITY_CRITICAL}" == true ]]; then
-  log_warn "Could not parse adversarial-reviewer verdict - allowing commit"
+# Defensive: block on any unexpected verdict values
+# (code-reviewer parsing already exits 1 on failure, so this should never trigger)
+if [[ "${CODE_REVIEWER_VERDICT}" != "PASS" && "${CODE_REVIEWER_VERDICT}" != "FAIL" ]]; then
+  log_error "Unexpected code-reviewer verdict: ${CODE_REVIEWER_VERDICT}"
+  exit 1
 fi
-
-if [[ "${CODE_REVIEWER_VERDICT}" == "UNKNOWN" ]]; then
-  log_warn "Could not parse code-reviewer verdict - allowing commit"
-  exit 0
+if [[ "${ADVERSARIAL_VERDICT}" != "PASS" && "${ADVERSARIAL_VERDICT}" != "FAIL" && "${ADVERSARIAL_VERDICT}" != "N/A" ]]; then
+  log_error "Unexpected adversarial-reviewer verdict: ${ADVERSARIAL_VERDICT}"
+  exit 1
 fi
 
 # All checks passed
