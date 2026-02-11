@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Hook: SessionStart - Run project-specific setup hooks if present
+# Hook: SessionStart - placeholder for project-specific setup
+#
+# Project-specific setup hooks can be configured in each project's
+# .claude/hooks/ directory and invoked via the claude-wrapper's
+# pre-launch hook mechanism (see ~/.local/bin/claude-wrapper).
 
-set -euo pipefail
-
-input=$(cat)
-cwd=$(echo "$input" | jq -r '.cwd // empty')
-
-if [[ -n "$cwd" ]] && [[ -f "$cwd/.claude/hooks/setup-plaid-token.sh" ]]; then
-  cd "$cwd" && ./.claude/hooks/setup-plaid-token.sh
-fi
+# Consume stdin (required by hook protocol)
+cat >/dev/null
