@@ -239,19 +239,12 @@ CRITICAL: If remote review finds issues local review missed →
 
 **Review tiers:**
 
-- `code-reviewer`: Default, runs on EVERY commit automatically via git hook (FREE, local)
-- `code-critic:adversarial-reviewer` (Task tool) / `adversarial-reviewer` (CLI): **RUN LOCALLY** for security/auth/payments/database code BEFORE pushing
-  - Auto-triggered by git hooks for security-critical files
-  - **PUSH ONLY AFTER ADVERSARIAL REVIEW IS CLEAN**
-  - Manual escalation when remote review keeps finding issues = you skipped proper local review
+- `code-reviewer`: Runs on EVERY commit automatically via git hook (FREE, local)
+- `adversarial-reviewer`: Runs on EVERY commit automatically via git hook (FREE, local)
+  - Uses the v1.1.0 agent with structured failure mode checklist, severity calibration, and domain awareness
+  - Security-critical files get an "elevated scrutiny" log note but all commits are reviewed
+  - **PUSH ONLY AFTER BOTH REVIEWERS ARE CLEAN**
   - Remote review finding issues local review could have caught = you wasted money
-
-**Auto-detection:** Git hooks automatically detect security-critical files and invoke `adversarial-reviewer`. Patterns:
-
-- Auth: `**/auth/**`, `**/oauth/**`, `**/jwt/**`, `**/password/**`, `**/session/**`
-- Payment: `**/payment/**`, `**/billing/**`, `**/stripe/**`, `**/paypal/**`
-- Database: `**/db/**`, `**/database/**`, `**/models/**`, `**/migrations/**`, `**/schema/**`
-- Security: `**/security/**`, `**/crypto/**`, `**/encryption/**`, `**/secrets/**`
 
 **If remote keeps finding missed issues**: Fix code, push again - hooks will re-run agents automatically.
 
@@ -314,10 +307,7 @@ ONLY THEN is the PR ready for merge approval.
 □ Linter clean (if applicable) - RUN LOCALLY FIRST
 □ Type checking passes (if applicable) - RUN LOCALLY FIRST
 □ AI review clean: git hook auto-runs code-reviewer agent (FREE, local)
-□ Adversarial review clean: git hook auto-runs for security/auth/payment/db files (FREE, local)
-  └─ AUTOMATIC for: files matching security patterns (see Protocol 4)
-  └─ MANUAL ESCALATION: if remote review keeps finding missed issues
-  └─ For security code: Don't wait for the hook - run adversarial review MANUALLY first
+□ Adversarial review clean: git hook auto-runs adversarial-reviewer on EVERY commit (FREE, local)
 □ No console.log/print statements in production code
 □ No hardcoded secrets
 □ No commented-out code
@@ -332,7 +322,7 @@ ONLY THEN is the PR ready for merge approval.
 
 ```
 □ All pre-commit checks pass
-□ Adversarial review clean (if security/critical code) - RUN THIS LOCALLY FIRST
+□ Adversarial review clean (runs on every commit via hook)
 □ Tests pass IN SIMULATOR (for mobile) or local environment
 □ Linting and type checking clean locally
 □ You are CONFIDENT this will pass CI, not just hopeful
@@ -473,7 +463,7 @@ Closes #42
 | Task | Agent/Tool | Trigger |
 |------|------------|---------|
 | **Code Review** | `code-reviewer` | Before EVERY commit |
-| **Adversarial Review** | `code-critic:adversarial-reviewer` | Auto-triggered for auth/payment/db code, OR escalation when remote finds issues |
+| **Adversarial Review** | `code-critic:adversarial-reviewer` | Every commit (via git hook) |
 | **Architecture Review** | `architect-review` | Structural changes, new patterns |
 | **Security Audit** | `security-auditor` | Auth, data handling, API security |
 | **Library Docs** | `mcp__context7__*` | Framework/library questions |
@@ -487,7 +477,7 @@ Closes #42
 
 ### Security-Critical File Patterns
 
-Git hooks automatically detect these patterns and invoke adversarial review:
+Git hooks detect these patterns and log "elevated scrutiny" during adversarial review (the review itself runs on every commit regardless):
 
 - **Auth**: `**/auth/**`, `**/oauth/**`, `**/jwt/**`, `**/password/**`, `**/session/**`
 - **Payment**: `**/payment/**`, `**/billing/**`, `**/stripe/**`, `**/paypal/**`
