@@ -179,19 +179,35 @@ done
 # --- Fetch PR data ---
 log_info "Fetching PR review data..."
 
+PR_JSON_FIELDS="number,title,state,reviews,comments,reviewDecision,statusCheckRollup"
+PR_JSON_FIELDS_FALLBACK="number,title,state,reviews,comments,reviewDecision"
+
+# Fetch with statusCheckRollup first; fall back without it if the PAT lacks
+# Checks permission (fine-grained PATs cannot access the Checks API).
+_fetch_pr_json() {
+  local -a pr_args=()
+  [[ -n "${1:-}" ]] && pr_args+=("$1")
+  local result
+  for fields in "${PR_JSON_FIELDS}" "${PR_JSON_FIELDS_FALLBACK}"; do
+    result=$(command gh pr view "${pr_args[@]}" --json "${fields}" 2>&1) && {
+      echo "${result}"
+      return 0
+    }
+    if [[ "${fields}" == "${PR_JSON_FIELDS}" ]] && [[ "${result}" == *"not accessible by personal access token"* ]]; then
+      log_warn "statusCheckRollup not accessible — retrying without it"
+      continue
+    fi
+    break
+  done
+  log_error "Failed to fetch PR ${1:-for current branch}"
+  log_error "${result}"
+  return 1
+}
+
 if [[ -n "${PR_NUMBER}" ]]; then
-  PR_JSON=$(command gh pr view "${PR_NUMBER}" --json number,title,state,reviews,comments,reviewDecision,statusCheckRollup 2>&1) || {
-    log_error "Failed to fetch PR #${PR_NUMBER}"
-    log_error "${PR_JSON}"
-    exit 1
-  }
+  PR_JSON=$(_fetch_pr_json "${PR_NUMBER}") || exit 1
 else
-  # No PR number specified - use current branch
-  PR_JSON=$(command gh pr view --json number,title,state,reviews,comments,reviewDecision,statusCheckRollup 2>&1) || {
-    log_error "Failed to fetch PR for current branch"
-    log_error "${PR_JSON}"
-    exit 1
-  }
+  PR_JSON=$(_fetch_pr_json) || exit 1
   PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
 fi
 

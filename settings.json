@@ -69,7 +69,8 @@
     "incident-response@claude-code-workflows": false,
     "team-collaboration@claude-code-workflows": false,
     "code-critic@smartwatermelon-marketplace": true,
-    "react-native-3d@smartwatermelon-marketplace": true
+    "react-native-3d@smartwatermelon-marketplace": true,
+    "frontend-design@claude-code-plugins": true
   },
   "alwaysThinkingEnabled": true,
   "gitAttribution": true
