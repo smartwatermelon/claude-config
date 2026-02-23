@@ -226,9 +226,20 @@ log_info "Review decision: ${REVIEW_DECISION}"
 # --- Check for NEUTRAL CI status (blocking) ---
 # Sentry/Seer sets status to "neutral" when there are unresolved comments
 # This is a hard block - don't proceed to AI analysis
-# Exclude "Pages changed" from Netlify which always returns NEUTRAL
-# Netlify uses names like "Pages changed" or "Pages changed - <site-name>"
-NEUTRAL_CHECKS=$(echo "${PR_JSON}" | jq -r '.statusCheckRollup // [] | .[] | select(.conclusion == "NEUTRAL" and (.name | startswith("Pages changed") | not)) | "- \(.name): \(.conclusion)"' 2>&1) || true
+# Exclude Netlify informational checks that return NEUTRAL when nothing changed:
+# - "Pages changed" / "Pages changed - <site-name>" - no pages modified
+# - "Header rules" / "Header rules - <site-name>" - no headers modified
+# These checks are informational only; NEUTRAL means "nothing to validate"
+NEUTRAL_CHECKS=$(echo "${PR_JSON}" | jq -r '
+  .statusCheckRollup // []
+  | .[]
+  | select(
+      .conclusion == "NEUTRAL"
+      and (.name | startswith("Pages changed") | not)
+      and (.name | startswith("Header rules") | not)
+    )
+  | "- \(.name): \(.conclusion)"
+' 2>&1) || true
 
 if [[ -n "${NEUTRAL_CHECKS}" ]]; then
   echo "" >&2
