@@ -1,6 +1,5 @@
 {
   "env": {
-    "DISABLE_AUTOUPDATER": "1",
     "BASH_ENV": "/Users/andrewrich/.config/bash/functions.sh",
     "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash"
   },
