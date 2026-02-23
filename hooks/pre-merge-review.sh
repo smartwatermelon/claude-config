@@ -587,7 +587,10 @@ PROMPT_LINES=$(echo "${FULL_PROMPT}" | wc -l)
 log_info "Prompt size: ${PROMPT_SIZE} bytes, ${PROMPT_LINES} lines"
 log_info "Analyzing review comments..."
 
-ANALYSIS_TEXT=$(echo "${FULL_PROMPT}" | timeout "${TIMEOUT_SECONDS}" "${CLAUDE_CLI}" -p --tools "" --no-session-persistence 2>&1) || {
+# Unset CLAUDECODE so this can be invoked from within a Claude Code session.
+# Claude CLI 2.1.50+ refuses to start if CLAUDECODE is set (anti-nesting check).
+# Safe here because --no-session-persistence + piped input = non-interactive child process.
+ANALYSIS_TEXT=$(echo "${FULL_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" -p --tools "" --no-session-persistence 2>&1) || {
   EXIT_CODE=$?
   if [[ ${EXIT_CODE} -eq 124 ]]; then
     log_error "Analysis timed out after ${TIMEOUT_SECONDS}s"

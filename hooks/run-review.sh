@@ -96,8 +96,11 @@ invoke_agent() {
   start_time=$(date +%s)
 
   # Invoke agent via Claude CLI
+  # Unset CLAUDECODE to allow invocation from within a Claude Code session.
+  # Claude CLI 2.1.50+ refuses to start if CLAUDECODE is set (anti-nesting check).
+  # Safe here because --no-session-persistence + piped input = non-interactive child process.
   local agent_output
-  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" "${CLAUDE_CLI}" --agent "${agent_name}" -p --tools "" --no-session-persistence 2>&1)
+  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p --tools "" --no-session-persistence 2>&1)
   local exit_code=$?
 
   # Handle timeout - BLOCK commit (strict mode)
