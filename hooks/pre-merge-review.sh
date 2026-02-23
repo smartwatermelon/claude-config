@@ -187,20 +187,28 @@ PR_JSON_FIELDS_FALLBACK="number,title,state,reviews,comments,reviewDecision"
 _fetch_pr_json() {
   local -a pr_args=()
   [[ -n "${1:-}" ]] && pr_args+=("$1")
-  local result
+  local result gh_stderr
+  # Use a temp file for stderr so gh debug output / upgrade notices / warnings
+  # never contaminate the JSON captured on stdout. Previously `2>&1` merged
+  # them, causing `jq: parse error: Invalid numeric literal` on any gh stderr.
+  local stderr_file
+  stderr_file=$(mktemp)
   for fields in "${PR_JSON_FIELDS}" "${PR_JSON_FIELDS_FALLBACK}"; do
-    result=$(command gh pr view "${pr_args[@]}" --json "${fields}" 2>&1) && {
+    if result=$(command gh pr view "${pr_args[@]}" --json "${fields}" 2>"${stderr_file}"); then
+      rm -f "${stderr_file}"
       echo "${result}"
       return 0
-    }
-    if [[ "${fields}" == "${PR_JSON_FIELDS}" ]] && [[ "${result}" == *"not accessible by personal access token"* ]]; then
+    fi
+    gh_stderr=$(<"${stderr_file}")
+    if [[ "${fields}" == "${PR_JSON_FIELDS}" ]] && [[ "${gh_stderr}" == *"not accessible by personal access token"* ]]; then
       log_warn "statusCheckRollup not accessible — retrying without it"
       continue
     fi
     break
   done
+  rm -f "${stderr_file}"
   log_error "Failed to fetch PR ${1:-for current branch}"
-  log_error "${result}"
+  log_error "${gh_stderr:-}"
   return 1
 }
 
