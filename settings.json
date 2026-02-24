@@ -72,5 +72,6 @@
     "frontend-design@claude-code-plugins": true
   },
   "alwaysThinkingEnabled": true,
-  "gitAttribution": true
+  "gitAttribution": true,
+  "skipDangerousModePermissionPrompt": true
 }
