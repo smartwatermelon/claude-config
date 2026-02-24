@@ -12,7 +12,8 @@ input=$(cat)
 for hook in \
   "$SCRIPT_DIR/hook-block-no-verify.sh" \
   "$SCRIPT_DIR/hook-block-short-no-verify.sh" \
-  "$SCRIPT_DIR/hook-block-main-commit.sh"; do
+  "$SCRIPT_DIR/hook-block-main-commit.sh" \
+  "$SCRIPT_DIR/hook-block-merge-lock-authorize.sh"; do
   if [[ -x "$hook" ]]; then
     printf '%s\n' "$input" | "$hook" || exit $?
   fi
