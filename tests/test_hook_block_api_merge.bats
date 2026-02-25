@@ -93,3 +93,21 @@ _make_input() {
   [[ "$output" == *"BLOCKED"* ]]
   [[ "$output" == *"gh pr merge"* ]]
 }
+
+@test "blocks: gh api graphql with mergePullRequest mutation (GraphQL bypass)" {
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input 'gh api graphql -f query=mutation { mergePullRequest(input: {pullRequestId: "PR_kwDO"}) { pullRequest { merged } } }')"
+
+  [ "$status" -eq 2 ]
+}
+
+@test "allows: gh api graphql with non-merge query (PR data fetch)" {
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input 'gh api graphql -f query=query { repository(owner: "o") { pullRequest(number: 1) { title } } }')"
+
+  [ "$status" -eq 0 ]
+}
+
+@test "allows: gh api .../pulls/NNN/merge_status (suffix boundary — not the merge trigger)" {
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input 'gh api repos/owner/repo/pulls/813/merge_status')"
+
+  [ "$status" -eq 0 ]
+}

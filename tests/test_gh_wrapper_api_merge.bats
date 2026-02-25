@@ -108,3 +108,43 @@ _load_gh_fn() {
   [ "$status" -eq 0 ]
   [[ ! -f "${MOCK_DIR}/review_called" ]]
 }
+
+@test "gh api .../pulls/NNN/merge --help is still blocked (--help does not bypass merge block)" {
+  # Regression guard: the --help early-return must not run before the API merge check.
+  # gh api repos/.../pulls/NNN/merge --help should be blocked even when --help is present,
+  # because the intent to use the merge endpoint is what matters.
+  _load_gh_fn
+
+  run gh api repos/owner/repo/pulls/813/merge --method PUT --help
+
+  [ "$status" -ne 0 ]
+}
+
+@test "gh api graphql with mergePullRequest mutation is blocked" {
+  # GraphQL merge bypass: gh api graphql -f query="mutation { mergePullRequest(...) }"
+  # Same class of bypass as REST merge endpoint.
+  _load_gh_fn
+
+  run gh api graphql -f 'query=mutation { mergePullRequest(input: {pullRequestId: "PR_kwDO"}) { pullRequest { merged } } }'
+
+  [ "$status" -ne 0 ]
+}
+
+@test "gh api graphql with non-merge query passes through" {
+  # Legitimate GraphQL queries (e.g., fetching PR data) must not be blocked.
+  _load_gh_fn
+
+  run gh api graphql -f 'query=query { repository(owner: "o", name: "r") { pullRequest(number: 1) { title } } }'
+
+  [ "$status" -eq 0 ]
+}
+
+@test "gh api .../pulls/NNN/merge_status does NOT match (suffix boundary)" {
+  # Hypothetical endpoint: pulls/NNN/merge_status is NOT the merge trigger.
+  # The regex must not have false positives on suffixed paths.
+  _load_gh_fn
+
+  run gh api repos/owner/repo/pulls/813/merge_status
+
+  [ "$status" -eq 0 ]
+}

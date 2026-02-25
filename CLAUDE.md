@@ -307,20 +307,28 @@ Step 3: Human says "merge it" for that specific PR → gh pr merge → STOP.
 
 **"Merge it" in a compound instruction** ("merge it, then do X") means "begin the merge process through normal channels." It does NOT authorize skipping CI, skipping review, or bypassing the merge-lock. The response to "merge it" is to create the PR and stop — not to immediately merge.
 
-**`gh api .../pulls/NNN/merge` is BLOCKED** — not just discouraged. The Claude Code hook (hook-block-api-merge.sh) and the gh() wrapper both reject this command. It bypasses pre-merge-review.sh and the merge-lock authorization check.
+**The following are BLOCKED** — not just discouraged. The Claude Code hook
+(hook-block-api-merge.sh) and the gh() wrapper both enforce these blocks:
 
 ```
-✗ FORBIDDEN: gh api repos/.../pulls/NNN/merge --method PUT
+✗ FORBIDDEN: gh api repos/.../pulls/NNN/merge --method PUT  (REST endpoint — blocked)
+✗ FORBIDDEN: gh api graphql -f query=mutation{mergePullRequest...}  (GraphQL inline — blocked)
 ✗ FORBIDDEN: Creating and merging a PR in the same response
 ✗ FORBIDDEN: Merging without confirmed CI green
-✗ FORBIDDEN: Using REST API as a workaround when gh pr merge fails
+✗ FORBIDDEN: Using any workaround when gh pr merge fails
 
 ✓ REQUIRED: gh pr merge <number> (routes through pre-merge-review.sh)
 ✓ REQUIRED: Merge only after explicit authorization for that specific PR number
 ✓ REQUIRED: If gh pr merge fails → report the failure → ask human to merge manually
 ```
 
-**If `gh pr merge` is silently failing:** This is likely a token scope issue. Report it to the human. Do not attempt workarounds. Do not use the REST API endpoint. Ask the human to investigate and merge manually.
+**Known enforcement gap — GraphQL via file input:** `gh api graphql --input mutation.json`
+where the file contains a `mergePullRequest` mutation cannot be blocked by regex pattern
+matching. This is an accepted known limitation. Protocol 6 is the enforcement for this
+case: do not construct mutation files containing `mergePullRequest`.
+
+**If `gh pr merge` is silently failing:** This is likely a token scope issue. Report it to
+the human. Do not attempt workarounds. Ask the human to investigate and merge manually.
 
 This protocol exists because of two incidents on 2026-02-24:
 
@@ -719,8 +727,8 @@ Many protocols are enforced by git hooks and scripts:
 | Protocol 1 (No commits to main) | pre-commit hook | `~/.config/git/hooks/pre-commit` |
 | Protocol 4 (Code review) | pre-commit hook | `~/.config/git/hooks/pre-commit` |
 | Protocol 4 (Iterative review) | pre-push hook | `~/.config/git/hooks/pre-push` |
-| Protocol 6 (No REST API merge) | PreToolUse Bash hook | `~/.claude/scripts/hook-block-api-merge.sh` |
-| Protocol 6 (No REST API merge) | gh() wrapper | `~/.config/bash/functions.sh` |
+| Protocol 6 (No REST/GraphQL merge) | PreToolUse Bash hook | `~/.claude/scripts/hook-block-api-merge.sh` |
+| Protocol 6 (No REST/GraphQL merge) | gh() wrapper | `~/.config/bash/functions.sh` |
 | Build consistency | build-commons.sh | `~/.claude/lib/build-commons.sh` |
 | Deployment safety | deploy-commons.sh | `~/.claude/lib/deploy-commons.sh` |
 | Branch cleanup | audit-branches.sh | `~/.claude/scripts/audit-branches.sh` |
