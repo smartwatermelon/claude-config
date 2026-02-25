@@ -352,6 +352,8 @@ This protocol exists because of two incidents on 2026-02-24:
 □ Type checking passes (if applicable) - RUN LOCALLY FIRST
 □ AI review clean: git hook auto-runs code-reviewer agent (FREE, local)
 □ Adversarial review clean: git hook auto-runs adversarial-reviewer on EVERY commit (FREE, local)
+□ Verify hook review ran: if git commit produced no review output, read ~/.claude/last-review-result.log
+□ Never claim "AI review: N clean iterations" without seeing actual review output (Bash tool or log file)
 □ No console.log/print statements in production code
 □ No hardcoded secrets
 □ No commented-out code
@@ -471,7 +473,7 @@ The following phrases are **not permitted** until Stage 6 is complete:
 
 <body - what and why>
 
-AI review: <N> clean iterations
+AI review: <N> clean iterations  ← ONLY write this if you SAW the output (Bash tool or ~/.claude/last-review-result.log)
 [Adversarial review: <N> iterations - <brief fixes>]
 [Architectural review: approved/concerns]
 Issues fixed: <brief list>
