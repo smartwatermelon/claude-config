@@ -308,8 +308,18 @@ ${file_output}"
 # --- Read diff from stdin ---
 DIFF=$(cat)
 
+# --- Review log: initialized before all exit paths so every outcome is recorded ---
+# Path is announced before any agent runs, making it visible in Claude Code's
+# Bash tool even when nested-claude output is swallowed (see bug report 2026-02-24).
+REVIEW_LOG="${HOME}/.claude/last-review-result.log"
+_review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
+printf '%s\n' "${_review_ts}" >"${REVIEW_LOG}" || true
+_ec=0 # captured by EXIT trap; declared here so shellcheck sees the assignment
+trap '_ec=$?; [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >> "${REVIEW_LOG}" || true' EXIT
+
 if [[ -z "${DIFF}" ]]; then
   log_warn "No staged changes to review"
+  printf 'skipped: no staged changes\n' >>"${REVIEW_LOG}" || true
   exit 0
 fi
 
@@ -327,6 +337,7 @@ if [[ -f "${CACHE_FILE}" ]]; then
   CACHED_VERDICT=$(head -1 "${CACHE_FILE}")
   if [[ "${CACHED_VERDICT}" == "PASS" ]]; then
     log_success "Review cached: identical diff previously passed"
+    printf 'skipped: cached PASS\n' >>"${REVIEW_LOG}" || true
     exit 0
   fi
   # If cached verdict was FAIL or unparseable, re-review (code may have changed)
@@ -344,11 +355,13 @@ if [[ ${DIFF_LINES} -gt ${REVIEW_SKIP_THRESHOLD} ]]; then
   log_error "Options:"
   log_error "  1. Split into smaller commits (recommended)"
   log_error "  2. Increase threshold: git config review.skipThreshold 5000"
+  printf 'blocked: diff too large (%d lines > %d threshold)\n' "${DIFF_LINES}" "${REVIEW_SKIP_THRESHOLD}" >>"${REVIEW_LOG}" || true
   exit 1
 
 elif [[ ${DIFF_LINES} -gt ${REVIEW_MAX_LINES} ]]; then
   # Medium diff - use chunked review
   log_warn "Diff is large (${DIFF_LINES} lines), using chunked file-by-file review"
+  printf 'diff_lines: %d (chunked review)\n' "${DIFF_LINES}" >>"${REVIEW_LOG}" || true
   perform_chunked_review "${DIFF_LINES}"
   exit $? # Exit with chunked review result
 
@@ -363,6 +376,7 @@ fi
 # Skip review if diff contains no actual code changes
 if ! echo "${DIFF}" | grep -qE '^[+-][^+-]'; then
   log_info "No code changes detected (permission/metadata only) - skipping review"
+  printf 'skipped: permission/metadata only\n' >>"${REVIEW_LOG}" || true
   exit 0
 fi
 
@@ -374,6 +388,7 @@ if [[ -n "${CHANGED_FILES}" ]]; then
   NON_MD_FILES=$(echo "${CHANGED_FILES}" | grep -vE '\.md$' || echo "")
   if [[ -z "${NON_MD_FILES}" ]]; then
     log_info "Markdown-only changes detected - skipping code review (handled by markdownlint)"
+    printf 'skipped: markdown-only\n' >>"${REVIEW_LOG}" || true
     exit 0
   fi
 fi
@@ -385,6 +400,7 @@ if [[ -n "${CHANGED_FILES}" ]]; then
   NON_LOCK_FILES=$(echo "${CHANGED_FILES}" | grep -vE '(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Gemfile\.lock|Cargo\.lock|composer\.lock)$' || echo "")
   if [[ -z "${NON_LOCK_FILES}" ]]; then
     log_info "Lockfile-only changes detected - skipping code review (generated files)"
+    printf 'skipped: lockfile-only\n' >>"${REVIEW_LOG}" || true
     exit 0
   fi
 fi
@@ -523,6 +539,11 @@ Review this diff:
 ${DIFF}
 \`\`\`"
 
+# Announce log path BEFORE any agent runs — this line IS visible in Claude Code's
+# Bash tool even when subsequent output is swallowed by the nested claude process.
+printf 'diff_lines: %d\n' "${DIFF_LINES}" >>"${REVIEW_LOG}" || true
+log_info "Review log: ${REVIEW_LOG}"
+
 # Step 1: Run code-reviewer (always)
 CODE_REVIEWER_OUTPUT=$(invoke_agent "code-reviewer" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}")
 AGENT_EXIT=$?
@@ -580,17 +601,25 @@ fi
 # --- Evaluate Combined Verdict ---
 echo "" >&2
 
-# Show code-reviewer output
+# Show code-reviewer output; also write to log (best-effort: || true guards set -e)
 echo "=== CODE REVIEWER ===" >&2
 echo "${CODE_REVIEWER_OUTPUT}" >&2
 echo "" >&2
+{ printf '=== CODE REVIEWER ===\n%s\n' "${CODE_REVIEWER_OUTPUT}"; } >>"${REVIEW_LOG}" || true
 
 # Show adversarial-reviewer output if ran
 if [[ -n "${ADVERSARIAL_OUTPUT}" ]]; then
   echo "=== ADVERSARIAL REVIEWER ===" >&2
   echo "${ADVERSARIAL_OUTPUT}" >&2
   echo "" >&2
+  { printf '=== ADVERSARIAL REVIEWER ===\n%s\n' "${ADVERSARIAL_OUTPUT}"; } >>"${REVIEW_LOG}" || true
 fi
+
+# Write verdict summary before exit — EXIT trap appends exit_code
+{
+  printf 'code-reviewer: %s\n' "${CODE_REVIEWER_VERDICT}"
+  printf 'adversarial-reviewer: %s\n' "${ADVERSARIAL_VERDICT}"
+} >>"${REVIEW_LOG}" || true
 
 # Determine final result
 if [[ "${CODE_REVIEWER_VERDICT}" == "FAIL" ]]; then
