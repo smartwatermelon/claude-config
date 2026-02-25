@@ -231,6 +231,40 @@ STATUS_CHECKS=$(echo "${PR_JSON}" | jq -r '.statusCheckRollup // [] | if length 
 log_info "PR #${PR_NUMBER}: ${PR_TITLE}"
 log_info "Review decision: ${REVIEW_DECISION}"
 
+# --- Merge Authorization Lock (early check — before Claude CLI) ---
+# Authorization is checked here, BEFORE running the expensive Claude analysis.
+#
+# Background: when pre-merge-review.sh spawns the claude CLI, the Claude Code
+# Bash tool stops surfacing output in the tool result (a known interaction
+# between nested claude processes and the Bash tool's PTY capture). By checking
+# authorization first, a "not authorized" failure exits fast (in < 1s, before
+# claude runs), so the error message is visible in the tool result.
+#
+# After the early check passes, the SAFE_TO_MERGE block at the bottom no longer
+# needs to re-check (authorization is already verified for this session).
+MERGE_LOCK="${HOME}/.claude/hooks/merge-lock.sh"
+if [[ -x "${MERGE_LOCK}" ]]; then
+  if ! "${MERGE_LOCK}" check "${PR_NUMBER}" >/dev/null 2>&1; then
+    echo "" >&2
+    log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log_error "MERGE AUTHORIZATION REQUIRED"
+    log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "" >&2
+    log_error "Merge requires human authorization before review runs."
+    log_error ""
+    log_error "To authorize (valid 30 min):"
+    log_error "  ~/.claude/hooks/merge-lock.sh authorize ${PR_NUMBER} \"reason\""
+    log_error ""
+    log_error "Then retry: gh pr merge ${PR_NUMBER}"
+    echo "" >&2
+    # Write to stdout as well: Bash tool surfaces stdout more reliably than
+    # stderr for commands that complete quickly (before any claude invocation).
+    printf '🛑 MERGE AUTHORIZATION REQUIRED: run ~/.claude/hooks/merge-lock.sh authorize %s "reason" then retry gh pr merge %s\n' "${PR_NUMBER}" "${PR_NUMBER}"
+    exit 1
+  fi
+  log_success "Merge authorization verified for PR #${PR_NUMBER}"
+fi
+
 # --- Check for NEUTRAL CI status (blocking) ---
 # Sentry/Seer sets status to "neutral" when there are unresolved comments
 # This is a hard block - don't proceed to AI analysis
@@ -631,26 +665,7 @@ if [[ -z "${VERDICT_LINE}" ]]; then
 fi
 
 if echo "${VERDICT_LINE}" | grep -qE "SAFE_TO_MERGE"; then
-  # --- Merge Authorization Lock ---
-  MERGE_LOCK="${HOME}/.claude/hooks/merge-lock.sh"
-  if [[ -x "${MERGE_LOCK}" ]]; then
-    if ! "${MERGE_LOCK}" check "${PR_NUMBER}" 2>/dev/null; then
-      echo "" >&2
-      log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      log_error "MERGE AUTHORIZATION REQUIRED"
-      log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-      echo "" >&2
-      log_error "Review passed, but merge requires human authorization."
-      log_error ""
-      log_error "To authorize (valid 30 min):"
-      log_error "  ~/.claude/hooks/merge-lock.sh authorize ${PR_NUMBER} \"reason\""
-      log_error ""
-      log_error "Then retry: gh pr merge ${PR_NUMBER}"
-      echo "" >&2
-      exit 1
-    fi
-    log_success "Merge authorization verified"
-  fi
+  # Authorization was already verified at the top of this script (early check).
   log_success "PR review analysis passed - safe to merge"
   exit 0
 elif echo "${VERDICT_LINE}" | grep -qE "BLOCK_MERGE"; then
