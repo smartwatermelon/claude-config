@@ -265,6 +265,59 @@ if [[ -x "${MERGE_LOCK}" ]]; then
   log_success "Merge authorization verified for PR #${PR_NUMBER}"
 fi
 
+# --- Hard block: CHANGES_REQUESTED review state (issue #27) ---
+# Do NOT delegate review state enforcement to Claude. Claude can rationalize
+# CHANGES_REQUESTED reviews as "nice-to-have" (issue #27, 2026-01-20).
+# This check runs before Claude is invoked so failures are fast and visible.
+#
+# Primary check: GitHub's computed reviewDecision rollup.
+if [[ "${REVIEW_DECISION}" == "CHANGES_REQUESTED" ]]; then
+  echo "" >&2
+  log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  log_error "MERGE BLOCKED: Unresolved 'Request Changes' review"
+  log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "" >&2
+  log_error "GitHub reviewDecision: CHANGES_REQUESTED"
+  log_error ""
+  log_error "At least one reviewer has requested changes that are not yet resolved."
+  log_error "Resolve all requested changes and obtain reviewer approval before merging."
+  printf '🛑 MERGE BLOCKED: reviewDecision is CHANGES_REQUESTED — resolve reviewer feedback before merging\n'
+  exit 1
+fi
+
+# Belt-and-suspenders: scan individual reviews for CHANGES_REQUESTED state.
+# Catches cases where reviewDecision rollup is absent (repos without required
+# reviewers configured). Dismissed reviews have state DISMISSED, not
+# CHANGES_REQUESTED, so this correctly excludes them.
+#
+# Important: use only the LATEST review per author. The `reviews` field
+# contains all historical reviews; a reviewer who requested changes and later
+# approved would still appear in the raw list. Group by author, sort by
+# submittedAt (ascending), and take the last entry per author before filtering.
+_CHANGES_REQUESTED=$(echo "${PR_JSON}" | jq -r '
+  .reviews // []
+  | group_by(.author.login // "unknown")
+  | map(sort_by(.submittedAt // "") | last)
+  | map(select(.state == "CHANGES_REQUESTED"))
+  | map(.author.login // "unknown")
+  | .[]' 2>/dev/null || true)
+
+if [[ -n "${_CHANGES_REQUESTED}" ]]; then
+  echo "" >&2
+  log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  log_error "MERGE BLOCKED: Unresolved 'Request Changes' reviews"
+  log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "" >&2
+  log_error "Reviewers with unresolved CHANGES_REQUESTED:"
+  while IFS= read -r _reviewer; do
+    log_error "  - ${_reviewer}"
+  done <<<"${_CHANGES_REQUESTED}"
+  log_error ""
+  log_error "Resolve all requested changes and obtain reviewer approval before merging."
+  printf '🛑 MERGE BLOCKED: reviewers have requested changes — resolve feedback before merging\n'
+  exit 1
+fi
+
 # --- Check for NEUTRAL CI status (blocking) ---
 # Sentry/Seer sets status to "neutral" when there are unresolved comments
 # This is a hard block - don't proceed to AI analysis
