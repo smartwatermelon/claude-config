@@ -313,7 +313,7 @@ DIFF=$(cat)
 # Bash tool even when nested-claude output is swallowed (see bug report 2026-02-24).
 REVIEW_LOG="${HOME}/.claude/last-review-result.log"
 _review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
-printf '%s\n' "${_review_ts}" >"${REVIEW_LOG}"
+printf '%s\n' "${_review_ts}" >"${REVIEW_LOG}" || true
 _ec=0 # captured by EXIT trap; declared here so shellcheck sees the assignment
 trap '_ec=$?; [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >> "${REVIEW_LOG}" || true' EXIT
 
