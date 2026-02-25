@@ -60,3 +60,4 @@ agents.backup/
 blocked-commands.log
 last-review-result.log
 merge-locks/
+plugins/blocklist.json
