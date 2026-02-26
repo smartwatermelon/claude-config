@@ -313,6 +313,7 @@ Step 3: Human says "merge it" for that specific PR → gh pr merge → STOP.
 ```
 ✗ FORBIDDEN: gh api repos/.../pulls/NNN/merge --method PUT  (REST endpoint — blocked)
 ✗ FORBIDDEN: gh api graphql -f query=mutation{mergePullRequest...}  (GraphQL inline — blocked)
+✗ FORBIDDEN: gh -R owner/repo pr merge NNN  (global flag prefix — blocked)
 ✗ FORBIDDEN: Creating and merging a PR in the same response
 ✗ FORBIDDEN: Merging without confirmed CI green
 ✗ FORBIDDEN: Using any workaround when gh pr merge fails
@@ -326,6 +327,11 @@ Step 3: Human says "merge it" for that specific PR → gh pr merge → STOP.
 where the file contains a `mergePullRequest` mutation cannot be blocked by regex pattern
 matching. This is an accepted known limitation. Protocol 6 is the enforcement for this
 case: do not construct mutation files containing `mergePullRequest`.
+
+**Global flag prefix bypass (blocked 2026-02-25):** Placing a global flag like `-R owner/repo`
+before the subcommand (`gh -R owner/repo pr merge NNN`) caused the shell wrapper's positional
+`$1=='pr'` check to be skipped. Blocked at three layers: the hook regex (anchored to command
+position), the `gh()` bash wrapper (now parses past known global flags), and `~/.local/bin/gh`.
 
 **If `gh pr merge` is silently failing:** This is likely a token scope issue. Report it to
 the human. Do not attempt workarounds. Ask the human to investigate and merge manually.
