@@ -90,3 +90,30 @@ _load_gh_fn() {
 
   [[ ! -f "${MOCK_DIR}/review_called" ]]
 }
+
+# ── Global-flag bypass tests ─────────────────────────────────────────────────
+# Regression for: gh -R owner/repo pr merge bypasses the $1=='pr' check.
+
+@test "gh -R owner/repo pr merge 123 calls review script" {
+  _load_gh_fn
+
+  gh -R owner/repo pr merge 123 --squash
+
+  [[ -f "${MOCK_DIR}/review_called" ]]
+}
+
+@test "gh --repo=owner/repo pr merge 123 calls review script" {
+  _load_gh_fn
+
+  gh --repo=owner/repo pr merge 123 --squash
+
+  [[ -f "${MOCK_DIR}/review_called" ]]
+}
+
+@test "gh --repo owner/repo pr merge 123 calls review script" {
+  _load_gh_fn
+
+  gh --repo owner/repo pr merge 123 --squash
+
+  [[ -f "${MOCK_DIR}/review_called" ]]
+}

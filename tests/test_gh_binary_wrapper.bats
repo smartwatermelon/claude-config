@@ -71,3 +71,19 @@ teardown() {
 
   [[ ! -f "${MOCK_DIR}/review_called" ]]
 }
+
+# ── Global-flag bypass tests ─────────────────────────────────────────────────
+# Regression for: gh -R owner/repo pr merge bypasses the $1=='pr' check.
+
+@test "gh -R owner/repo pr merge calls review when _GH_REVIEW_DONE is unset" {
+  run env HOME="${MOCK_HOME}" "${GH_WRAPPER}" -R owner/repo pr merge 53 --squash
+
+  [[ -f "${MOCK_DIR}/review_called" ]]
+}
+
+@test "gh -R owner/repo pr merge skips review when _GH_REVIEW_DONE=1" {
+  # When gh() bash function already ran the review, binary wrapper must not run again.
+  run env HOME="${MOCK_HOME}" _GH_REVIEW_DONE=1 "${GH_WRAPPER}" -R owner/repo pr merge 53 --squash
+
+  [[ ! -f "${MOCK_DIR}/review_called" ]]
+}

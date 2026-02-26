@@ -58,3 +58,26 @@ if printf '%s\n' "${cmd}" | grep -qE 'gh[[:space:]]+api[[:space:]].*graphql.*mer
   printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
   exit 2
 fi
+
+# Block: gh [global-flags] pr merge (global-flag prefix bypass)
+# When global flags like -R/--repo appear before the subcommand, the gh() bash
+# wrapper's positional check ($1=='pr' && $2=='merge') is skipped entirely,
+# allowing a merge without pre-merge review or merge-lock authorization.
+#
+# The leading anchor requires 'gh' to appear at the start of a line or after an
+# explicit shell operator (&&, ||, ;, |, &), so 'gh -R' text embedded in commit
+# messages or quoted strings does not produce false positives.
+# Operators are matched explicitly (&&, ||) or as single characters (;, |, &)
+# to avoid the brittleness of relying on accidental single-character matching.
+if printf '%s\n' "${cmd}" | grep -qE '(^|&&[[:space:]]*|\|\|[[:space:]]*|;[[:space:]]*|[|&][[:space:]]*)gh[[:space:]]+-[^[:space:]].*[[:space:]]pr[[:space:]]+merge([[:space:]]|$)'; then
+  printf '%s BLOCKED GLOBAL FLAG MERGE BYPASS: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log"
+  printf '🛑 BLOCKED: gh pr merge with global flags (e.g. -R repo) bypasses shell wrapper routing.\n' >&2
+  printf '\n' >&2
+  printf 'Placing global flags before the subcommand skips pre-merge review and merge authorization.\n' >&2
+  printf '\n' >&2
+  printf 'Use `gh pr merge <number>` (no global flags before the subcommand) instead.\n' >&2
+  printf '\n' >&2
+  printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
+  printf 'Do NOT use global flag placement as a workaround.\n' >&2
+  exit 2
+fi
