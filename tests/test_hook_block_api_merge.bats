@@ -111,3 +111,55 @@ _make_input() {
 
   [ "$status" -eq 0 ]
 }
+
+# ── Global-flag bypass tests ─────────────────────────────────────────────────
+# Root cause: `gh -R owner/repo pr merge NNN` has -R as $1 in the shell, so the
+# gh() wrapper's `$1 == "pr"` check is skipped. The hook must catch it here.
+
+@test "blocks: gh -R owner/repo pr merge NNN (global flag bypass)" {
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input 'gh -R nightowlstudiollc/kebab-tax pr merge 841 --squash --delete-branch')"
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: gh --repo owner/repo pr merge NNN (long flag, two-token form)" {
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input 'gh --repo nightowlstudiollc/kebab-tax pr merge 841 --squash')"
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: gh --repo=owner/repo pr merge NNN (long flag, embedded value form)" {
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input 'gh --repo=nightowlstudiollc/kebab-tax pr merge 841 --squash')"
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: echo x && gh -R owner/repo pr merge NNN (chained with &&)" {
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input 'echo x && gh -R owner/repo pr merge 841')"
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: false || gh -R owner/repo pr merge NNN (chained with ||)" {
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input 'false || gh -R owner/repo pr merge 841')"
+  [ "$status" -eq 2 ]
+}
+
+@test "allows: gh pr merge NNN --squash (normal path, no global flags before subcommand)" {
+  # Regression guard: normal gh pr merge must NOT be blocked by the new check.
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input 'gh pr merge 841 --squash')"
+  [ "$status" -eq 0 ]
+}
+
+@test "allows: commit message text mentioning the bypass (not a shell command)" {
+  # Regression: 'gh -R owner/repo pr merge' appearing inside a quoted git commit
+  # message must not be blocked. The anchor requires 'gh' to start a line or
+  # follow a shell operator, so text after '-' or '`' is not matched.
+  local commit_cmd
+  commit_cmd='git commit -m "fix: block - gh -R owner/repo pr merge bypass"'
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input "${commit_cmd}")"
+  [ "$status" -eq 0 ]
+}
+
+@test "blocks global flag bypass output mentions BLOCKED and correct alternative" {
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input 'gh -R owner/repo pr merge 841 --squash')"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"BLOCKED"* ]]
+  [[ "$output" == *"gh pr merge"* ]]
+}
