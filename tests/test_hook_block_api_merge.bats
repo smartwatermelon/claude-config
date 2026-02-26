@@ -131,8 +131,13 @@ _make_input() {
   [ "$status" -eq 2 ]
 }
 
-@test "blocks: echo x && gh -R owner/repo pr merge NNN (chained command bypass)" {
+@test "blocks: echo x && gh -R owner/repo pr merge NNN (chained with &&)" {
   run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input 'echo x && gh -R owner/repo pr merge 841')"
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: false || gh -R owner/repo pr merge NNN (chained with ||)" {
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input 'false || gh -R owner/repo pr merge 841')"
   [ "$status" -eq 2 ]
 }
 
