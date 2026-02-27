@@ -61,5 +61,6 @@ agents.backup/
 blocked-commands.log
 last-review-result.log
 merge-locks/
+pending-issues/
 plugins/blocklist.json
 .credentials.json
