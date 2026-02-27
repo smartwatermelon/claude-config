@@ -26,7 +26,12 @@ teardown() {
   rm -rf "${MOCK_DIR}"
 }
 
-# Load only the named function from the script
+# Load only the named function from the script using sed range matching.
+# CONSTRAINT: functions extracted by this helper must not have a bare `}` on
+# its own line (matching /^}$/) inside their bodies — e.g. no unindented
+# nested closing braces. The sed range stops at the first such line.
+# Heredocs and awk blocks work correctly as long as their closing delimiters
+# are indented or use non-`}` terminators.
 _load_fn() {
   local fn_name="$1"
   local func_def
