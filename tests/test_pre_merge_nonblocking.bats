@@ -1,0 +1,164 @@
+#!/usr/bin/env bats
+# Tests for non-blocking issue parsing and creation in pre-merge-review.sh
+#
+# Run: bats ~/.claude/tests/test_pre_merge_nonblocking.bats
+
+bats_require_minimum_version 1.5.0
+
+SCRIPT="${HOME}/.claude/hooks/pre-merge-review.sh"
+
+setup() {
+  MOCK_DIR="$(mktemp -d)"
+  export MOCK_DIR
+  export PATH="${MOCK_DIR}:${PATH}"
+  # Suppress log output in tests (exported so eval'd functions can call them)
+  log_info() { :; }
+  export -f log_info
+  log_warn() { :; }
+  export -f log_warn
+  log_success() { :; }
+  export -f log_success
+  log_error() { :; }
+  export -f log_error
+}
+
+teardown() {
+  rm -rf "${MOCK_DIR}"
+}
+
+# Load only the named function from the script
+_load_fn() {
+  local fn_name="$1"
+  local func_def
+  func_def=$(sed -n "/^${fn_name}()/,/^}$/p" "${SCRIPT}")
+  eval "${func_def}"
+}
+
+# --- parse_nonblocking_issues ---
+
+@test "parse_nonblocking_issues: returns empty when no NON_BLOCKING_ISSUE block" {
+  _load_fn parse_nonblocking_issues
+  local input="VERDICT: SAFE_TO_MERGE
+
+All review comments appear resolved."
+  result=$(parse_nonblocking_issues "${input}")
+  [[ -z "${result}" ]]
+}
+
+@test "parse_nonblocking_issues: parses single block" {
+  _load_fn parse_nonblocking_issues
+  local input="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Consider adding input validation
+SOURCE: code-reviewer
+LOCATION: src/api/handler.ts:42
+DETAILS: The handler does not validate the 'limit' parameter. While the current
+callers are trusted, adding validation would prevent future misuse.
+END_ISSUE"
+  result=$(parse_nonblocking_issues "${input}")
+  echo "${result}" | grep -q "TITLE: Consider adding input validation"
+}
+
+@test "parse_nonblocking_issues: parses multiple blocks" {
+  _load_fn parse_nonblocking_issues
+  local input="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: First issue
+SOURCE: Seer
+LOCATION: src/auth/jwt.ts:10
+DETAILS: Something here.
+END_ISSUE
+
+NON_BLOCKING_ISSUE:
+TITLE: Second issue
+SOURCE: code-reviewer
+LOCATION: general
+DETAILS: Something else.
+END_ISSUE"
+  result=$(parse_nonblocking_issues "${input}")
+  count=$(echo "${result}" | grep -c "^TITLE:" || true)
+  [[ "${count}" -eq 2 ]]
+}
+
+@test "parse_nonblocking_issues: handles DETAILS with colons" {
+  _load_fn parse_nonblocking_issues
+  local input="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Check config key
+SOURCE: Seer
+LOCATION: config/app.ts:5
+DETAILS: Key 'foo: bar' is unusual. Consider: renaming it or documenting it.
+END_ISSUE"
+  result=$(parse_nonblocking_issues "${input}")
+  echo "${result}" | grep -q "DETAILS:"
+}
+
+@test "parse_nonblocking_issues: returns empty on BLOCK_MERGE verdict" {
+  _load_fn parse_nonblocking_issues
+  local input="VERDICT: BLOCK_MERGE
+
+ISSUE: Critical bug
+SOURCE: CI
+LOCATION: src/index.ts:1
+STATUS: UNRESOLVED
+DETAILS: Tests failing."
+  result=$(parse_nonblocking_issues "${input}")
+  [[ -z "${result}" ]]
+}
+
+# --- build_issue_body ---
+
+@test "build_issue_body: includes PR number and title" {
+  _load_fn build_issue_body
+  export PR_NUMBER="99"
+  export PR_TITLE="My test PR"
+  export REPO_OWNER="testorg"
+  export REPO_NAME="testrepo"
+  result=$(build_issue_body "Fix the thing" "Seer" "src/auth/jwt.ts:42" "Seer flagged a potential issue.")
+  echo "${result}" | grep -q "#99"
+  echo "${result}" | grep -q "My test PR"
+}
+
+@test "build_issue_body: includes source and location" {
+  _load_fn build_issue_body
+  export PR_NUMBER="1"
+  export PR_TITLE="PR"
+  export REPO_OWNER="org"
+  export REPO_NAME="repo"
+  result=$(build_issue_body "Some title" "Seer" "src/auth/session.ts:10" "Details here.")
+  echo "${result}" | grep -q "Seer"
+  echo "${result}" | grep -q "src/auth/session.ts:10"
+}
+
+@test "build_issue_body: includes details" {
+  _load_fn build_issue_body
+  export PR_NUMBER="1"
+  export PR_TITLE="PR"
+  export REPO_OWNER="org"
+  export REPO_NAME="repo"
+  result=$(build_issue_body "Title" "source" "general" "This is the detail text.")
+  echo "${result}" | grep -q "This is the detail text."
+}
+
+# --- needs_security_label ---
+
+@test "needs_security_label: returns true for auth path" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  needs_security_label "src/auth/jwt.ts:42"
+}
+
+@test "needs_security_label: returns false for general location" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  run ! needs_security_label "general"
+}
+
+@test "needs_security_label: returns true for payment path" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  needs_security_label "src/payment/stripe.ts:5"
+}
