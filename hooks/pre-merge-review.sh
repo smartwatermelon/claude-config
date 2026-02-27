@@ -288,12 +288,20 @@ _process_issue_block() {
     log_success "Created tracking issue: ${title}"
     log_success "  → ${issue_url}"
   else
+    local gh_err
+    gh_err=$(cat "${gh_stderr_file}")
     rm -f "${gh_stderr_file}"
+    [[ -n "${gh_err}" ]] && log_warn "  gh error: ${gh_err}"
     # Fallback: write to file
     mkdir -p "${pending_dir}"
     local slug
     slug=$(echo "${title}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-*$//' | cut -c1-40)
     local fallback_file="${pending_dir}/${PR_NUMBER}-${slug}.md"
+    local slug_index=1
+    while [[ -f "${fallback_file}" ]]; do
+      slug_index=$((slug_index + 1))
+      fallback_file="${pending_dir}/${PR_NUMBER}-${slug}-${slug_index}.md"
+    done
     {
       printf "# Pending GitHub Issue\n\n"
       printf "**Title:** %s\n\n" "${title}"
