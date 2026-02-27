@@ -150,6 +150,171 @@ truncate_code_diff() {
   fi
 }
 
+# --- Non-Blocking Issue Functions ---
+
+# Parse NON_BLOCKING_ISSUE blocks from Claude's analysis output.
+# Prints each block as a record separated by "---ISSUE---" sentinel.
+# Returns empty string if no blocks found or if verdict is BLOCK_MERGE.
+parse_nonblocking_issues() {
+  local analysis_text="$1"
+
+  # Don't parse non-blocking issues on a blocked merge
+  if echo "${analysis_text}" | grep -qE "^VERDICT: BLOCK_MERGE"; then
+    return 0
+  fi
+
+  # Extract each NON_BLOCKING_ISSUE...END_ISSUE block
+  echo "${analysis_text}" | awk '
+    /^NON_BLOCKING_ISSUE:$/ { in_block=1; block=""; next }
+    /^END_ISSUE$/ {
+      if (in_block) { print block; print "---ISSUE---"; in_block=0 }
+      next
+    }
+    in_block { block = block $0 "\n" }
+  '
+}
+
+# Build rich GitHub issue body.
+# Args: title source location details
+build_issue_body() {
+  local title="$1"
+  local source="$2"
+  local location="$3"
+  local details="$4"
+  local pr_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/pull/${PR_NUMBER}"
+  local merge_date
+  merge_date=$(date +%Y-%m-%d)
+
+  cat <<BODY_EOF
+## Non-Blocking Review Concern: ${title}
+
+**Source:** ${source}
+**Location:** \`${location}\`
+**PR:** #${PR_NUMBER} — ${PR_TITLE} (${pr_url})
+**Merged:** ${merge_date}
+
+## What was flagged
+
+${details}
+
+## Context
+
+This issue was automatically created from a non-blocking concern identified
+during pre-merge review of PR #${PR_NUMBER}. It was safe to merge but worth tracking.
+
+---
+*Created by pre-merge-review.sh*
+BODY_EOF
+}
+
+# Check if a location path requires the 'security' label.
+# Reuses is_security_critical() which already exists above.
+needs_security_label() {
+  local location="$1"
+  # Strip line number suffix (e.g. "src/auth/jwt.ts:42" -> "src/auth/jwt.ts")
+  local path_only="${location%%:*}"
+  is_security_critical "${path_only}"
+}
+
+# Create GitHub issues from parsed NON_BLOCKING_ISSUE blocks.
+# Best-effort: failures write a fallback file and print a warning.
+# Args: analysis_text (full Claude output)
+create_nonblocking_issues() {
+  local analysis_text="$1"
+  local pending_dir="${PENDING_ISSUES_DIR:-${HOME}/.claude/pending-issues}"
+
+  # Guard: repo info required for gh issue create and fallback URL
+  if [[ -z "${REPO_OWNER}" || -z "${REPO_NAME}" ]]; then
+    log_warn "Skipping non-blocking issue creation: repo info unavailable"
+    return 0
+  fi
+
+  local parsed
+  parsed=$(parse_nonblocking_issues "${analysis_text}")
+  [[ -n "${parsed}" ]] || return 0
+
+  # Ensure labels exist (idempotent)
+  command gh label create "tech-debt" --color "#e4e669" --description "Technical debt to address" --repo "${REPO_OWNER}/${REPO_NAME}" --force >/dev/null 2>&1 || true
+  command gh label create "security" --color "#d93f0b" --description "Security-related concern" --repo "${REPO_OWNER}/${REPO_NAME}" --force >/dev/null 2>&1 || true
+
+  # Process each block (separated by ---ISSUE--- sentinel).
+  # Flush current_block after the loop too: parse_nonblocking_issues uses
+  # ---ISSUE--- as a terminator so current_block is empty after the loop,
+  # but the guard in _process_issue_block makes the flush a safe no-op either way.
+  local current_block=""
+  while IFS= read -r line; do
+    if [[ "${line}" == "---ISSUE---" ]]; then
+      _process_issue_block "${current_block}" "${pending_dir}"
+      current_block=""
+    else
+      current_block+="${line}"$'\n'
+    fi
+  done <<<"${parsed}"
+  _process_issue_block "${current_block}" "${pending_dir}"
+}
+
+# Parse a single issue block and create the GH issue (or fallback file).
+_process_issue_block() {
+  local block="$1"
+  local pending_dir="$2"
+
+  [[ -n "${block}" ]] || return 0
+
+  # Extract fields from block
+  local title source location details
+  title=$(echo "${block}" | grep "^TITLE:" | head -1 | sed 's/^TITLE: //')
+  source=$(echo "${block}" | grep "^SOURCE:" | head -1 | sed 's/^SOURCE: //')
+  location=$(echo "${block}" | grep "^LOCATION:" | head -1 | sed 's/^LOCATION: //')
+  # DETAILS may span multiple lines — grab everything after the DETAILS: line
+  details=$(echo "${block}" | awk '/^DETAILS:/{found=1; sub(/^DETAILS: /,""); print; next} found{print}' | sed '/^[[:space:]]*$/d')
+
+  [[ -n "${title}" ]] || return 0
+
+  # Determine labels
+  local labels="tech-debt"
+  if needs_security_label "${location}"; then
+    labels="tech-debt,security"
+  fi
+
+  # Build issue body
+  local body
+  body=$(build_issue_body "${title}" "${source}" "${location}" "${details}")
+
+  # Attempt to create GitHub issue.
+  # Use a temp file for stderr so gh warnings/upgrade notices don't contaminate
+  # issue_url (same pattern as _fetch_pr_json).
+  local issue_url gh_stderr_file
+  gh_stderr_file=$(mktemp)
+  if issue_url=$(command gh issue create \
+    --repo "${REPO_OWNER}/${REPO_NAME}" \
+    --title "${title}" \
+    --body "${body}" \
+    --label "${labels}" 2>"${gh_stderr_file}"); then
+    rm -f "${gh_stderr_file}"
+    log_success "Created tracking issue: ${title}"
+    log_success "  → ${issue_url}"
+  else
+    local gh_err
+    gh_err=$(cat "${gh_stderr_file}")
+    rm -f "${gh_stderr_file}"
+    [[ -n "${gh_err}" ]] && log_warn "  gh error: ${gh_err}"
+    # Fallback: write to file
+    mkdir -p "${pending_dir}"
+    local slug
+    slug=$(echo "${title}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-*$//' | cut -c1-40)
+    local fallback_file="${pending_dir}/${PR_NUMBER}-${slug}.md"
+    local slug_index=1
+    while [[ -f "${fallback_file}" ]]; do
+      slug_index=$((slug_index + 1))
+      fallback_file="${pending_dir}/${PR_NUMBER}-${slug}-${slug_index}.md"
+    done
+    printf "%s\n" "${body}" >"${fallback_file}"
+    log_warn "⚠ Could not create GitHub issue automatically."
+    log_warn "  Saved to: ${fallback_file}"
+    log_warn "  Run: gh issue create --repo ${REPO_OWNER}/${REPO_NAME} --title \"${title}\" --body-file ${fallback_file} --label \"${labels}\""
+  fi
+}
+
 # --- Preflight ---
 if [[ ! -x "${CLAUDE_CLI}" ]]; then
   log_error "Claude CLI not found at: ${CLAUDE_CLI}"
@@ -626,7 +791,7 @@ CRITICAL RULES:
   - If no active inline comments exist, the issue was likely addressed
 - If all remote CI checks pass, defer to CI unless reviewer explicitly flags security risk
 - Review comments may reference code that was later fixed - check timestamps
-- Distinguish "reviewer suggested" (non-blocking) from "reviewer blocked" (blocking)
+- Distinguish "reviewer suggested" (non-blocking, use NON_BLOCKING_ISSUE block) from "reviewer blocked" (blocking, use BLOCK_MERGE)
 - Automated reviewers (Seer, Claude bot, sentry[bot]) are informational - prioritize human reviewers and CI
 
 Reviewer context:
@@ -649,6 +814,23 @@ DETAILS: [what needs to happen]
 
 [If SAFE_TO_MERGE:]
 All review comments (including inline comments) appear resolved or are non-blocking. [Brief summary]
+
+If any reviewer (bot or human) mentioned a concern that is worth tracking but does not block the merge,
+output one or more NON_BLOCKING_ISSUE blocks AFTER the SAFE_TO_MERGE verdict:
+
+NON_BLOCKING_ISSUE:
+TITLE: [concise one-line title suitable for a GitHub issue — do not use quotes]
+SOURCE: [reviewer or bot name, e.g. Seer, code-reviewer, or inline comment by alice]
+LOCATION: [file:line if applicable, or general]
+DETAILS: [2-4 sentences: what was flagged, why it matters, suggested action]
+END_ISSUE
+
+IMPORTANT RULES for NON_BLOCKING_ISSUE:
+- Only include concerns that were explicitly mentioned by a reviewer. Do NOT invent concerns.
+- Omit this section entirely if there is nothing worth tracking.
+- Each block must start with NON_BLOCKING_ISSUE: on its own line and end with END_ISSUE on its own line.
+- DETAILS may span multiple lines.
+- Do not use quotes in TITLE values.
 
 Be conservative but pragmatic. If CI passes and concerns look addressed, allow merge.
 PROMPT_EOF
@@ -720,6 +902,8 @@ fi
 if echo "${VERDICT_LINE}" | grep -qE "SAFE_TO_MERGE"; then
   # Authorization was already verified at the top of this script (early check).
   log_success "PR review analysis passed - safe to merge"
+  # Create GitHub issues for any non-blocking concerns found during review.
+  create_nonblocking_issues "${ANALYSIS_TEXT}"
   exit 0
 elif echo "${VERDICT_LINE}" | grep -qE "BLOCK_MERGE"; then
   log_error "PR has unresolved review issues - merge blocked"
