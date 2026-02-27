@@ -150,6 +150,91 @@ truncate_code_diff() {
   fi
 }
 
+# --- Non-Blocking Issue Functions ---
+
+# Parse NON_BLOCKING_ISSUE blocks from Claude's analysis output.
+# Prints each block as a record separated by "---ISSUE---" sentinel.
+# Returns empty string if no blocks found or if verdict is BLOCK_MERGE.
+parse_nonblocking_issues() {
+  local analysis_text="$1"
+
+  # Don't parse non-blocking issues on a blocked merge
+  if echo "${analysis_text}" | grep -qE "^VERDICT: BLOCK_MERGE"; then
+    return 0
+  fi
+
+  # Extract each NON_BLOCKING_ISSUE...END_ISSUE block
+  echo "${analysis_text}" | awk '
+    /^NON_BLOCKING_ISSUE:$/ { in_block=1; block=""; next }
+    /^END_ISSUE$/ {
+      if (in_block) { print block; print "---ISSUE---"; in_block=0 }
+      next
+    }
+    in_block { block = block $0 "\n" }
+  '
+}
+
+# Build rich GitHub issue body.
+# Args: title source location details
+build_issue_body() {
+  local title="$1"
+  local source="$2"
+  local location="$3"
+  local details="$4"
+  local pr_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/pull/${PR_NUMBER}"
+  local merge_date
+  merge_date=$(date +%Y-%m-%d)
+
+  cat <<BODY_EOF
+## Non-Blocking Review Concern: ${title}
+
+**Source:** ${source}
+**Location:** \`${location}\`
+**PR:** #${PR_NUMBER} — ${PR_TITLE} (${pr_url})
+**Merged:** ${merge_date}
+
+## What was flagged
+
+${details}
+
+## Context
+
+This issue was automatically created from a non-blocking concern identified
+during pre-merge review of PR #${PR_NUMBER}. It was safe to merge but worth tracking.
+
+---
+*Created by pre-merge-review.sh*
+BODY_EOF
+}
+
+# Check if a location path requires the 'security' label.
+# Reuses is_security_critical() which already exists above.
+needs_security_label() {
+  local location="$1"
+  # Strip line number suffix (e.g. "src/auth/jwt.ts:42" -> "src/auth/jwt.ts")
+  local path_only="${location%%:*}"
+  is_security_critical "${path_only}"
+}
+
+# Create GitHub issues for each non-blocking concern found in the analysis.
+# Stub — full implementation added in Task 5.
+create_nonblocking_issues() {
+  local analysis_text="$1"
+  local issues
+  issues=$(parse_nonblocking_issues "${analysis_text}")
+  [[ -z "${issues}" ]] && return 0
+
+  local raw_title raw_source raw_location raw_details
+  raw_title="" raw_source="" raw_location="" raw_details=""
+  local body
+  body=$(build_issue_body "${raw_title}" "${raw_source}" "${raw_location}" "${raw_details}")
+  local label=""
+  if needs_security_label "${raw_location}"; then
+    label="security"
+  fi
+  log_info "create_nonblocking_issues: stub — label=${label} body_len=${#body}"
+}
+
 # --- Preflight ---
 if [[ ! -x "${CLAUDE_CLI}" ]]; then
   log_error "Claude CLI not found at: ${CLAUDE_CLI}"
@@ -720,6 +805,8 @@ fi
 if echo "${VERDICT_LINE}" | grep -qE "SAFE_TO_MERGE"; then
   # Authorization was already verified at the top of this script (early check).
   log_success "PR review analysis passed - safe to merge"
+  # Create GitHub issues for any non-blocking concerns found during review.
+  create_nonblocking_issues "${ANALYSIS_TEXT}"
   exit 0
 elif echo "${VERDICT_LINE}" | grep -qE "BLOCK_MERGE"; then
   log_error "PR has unresolved review issues - merge blocked"
