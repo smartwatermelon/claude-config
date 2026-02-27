@@ -216,23 +216,95 @@ needs_security_label() {
   is_security_critical "${path_only}"
 }
 
-# Create GitHub issues for each non-blocking concern found in the analysis.
-# Stub — full implementation added in Task 5.
+# Create GitHub issues from parsed NON_BLOCKING_ISSUE blocks.
+# Best-effort: failures write a fallback file and print a warning.
+# Args: analysis_text (full Claude output)
 create_nonblocking_issues() {
   local analysis_text="$1"
-  local issues
-  issues=$(parse_nonblocking_issues "${analysis_text}")
-  [[ -z "${issues}" ]] && return 0
+  local pending_dir="${PENDING_ISSUES_DIR:-${HOME}/.claude/pending-issues}"
 
-  local raw_title raw_source raw_location raw_details
-  raw_title="" raw_source="" raw_location="" raw_details=""
-  local body
-  body=$(build_issue_body "${raw_title}" "${raw_source}" "${raw_location}" "${raw_details}")
-  local label=""
-  if needs_security_label "${raw_location}"; then
-    label="security"
+  local parsed
+  parsed=$(parse_nonblocking_issues "${analysis_text}")
+  [[ -n "${parsed}" ]] || return 0
+
+  # Ensure labels exist (idempotent)
+  command gh label create "tech-debt" --color "#e4e669" --description "Technical debt to address" --repo "${REPO_OWNER}/${REPO_NAME}" --force >/dev/null 2>&1 || true
+  command gh label create "security" --color "#d93f0b" --description "Security-related concern" --repo "${REPO_OWNER}/${REPO_NAME}" --force >/dev/null 2>&1 || true
+
+  # Process each block (separated by ---ISSUE--- sentinel).
+  # Flush current_block after the loop too: parse_nonblocking_issues uses
+  # ---ISSUE--- as a terminator so current_block is empty after the loop,
+  # but the guard in _process_issue_block makes the flush a safe no-op either way.
+  local current_block=""
+  while IFS= read -r line; do
+    if [[ "${line}" == "---ISSUE---" ]]; then
+      _process_issue_block "${current_block}" "${pending_dir}"
+      current_block=""
+    else
+      current_block+="${line}"$'\n'
+    fi
+  done <<<"${parsed}"
+  _process_issue_block "${current_block}" "${pending_dir}"
+}
+
+# Parse a single issue block and create the GH issue (or fallback file).
+_process_issue_block() {
+  local block="$1"
+  local pending_dir="$2"
+
+  [[ -n "${block}" ]] || return 0
+
+  # Extract fields from block
+  local title source location details
+  title=$(echo "${block}" | grep "^TITLE:" | head -1 | sed 's/^TITLE: //')
+  source=$(echo "${block}" | grep "^SOURCE:" | head -1 | sed 's/^SOURCE: //')
+  location=$(echo "${block}" | grep "^LOCATION:" | head -1 | sed 's/^LOCATION: //')
+  # DETAILS may span multiple lines — grab everything after the DETAILS: line
+  details=$(echo "${block}" | awk '/^DETAILS:/{found=1; sub(/^DETAILS: /,""); print; next} found{print}' | sed '/^[[:space:]]*$/d')
+
+  [[ -n "${title}" ]] || return 0
+
+  # Determine labels
+  local labels="tech-debt"
+  if needs_security_label "${location}"; then
+    labels="tech-debt,security"
   fi
-  log_info "create_nonblocking_issues: stub — label=${label} body_len=${#body}"
+
+  # Build issue body
+  local body
+  body=$(build_issue_body "${title}" "${source}" "${location}" "${details}")
+
+  # Attempt to create GitHub issue.
+  # Use a temp file for stderr so gh warnings/upgrade notices don't contaminate
+  # issue_url (same pattern as _fetch_pr_json).
+  local issue_url gh_stderr_file
+  gh_stderr_file=$(mktemp)
+  if issue_url=$(command gh issue create \
+    --repo "${REPO_OWNER}/${REPO_NAME}" \
+    --title "${title}" \
+    --body "${body}" \
+    --label "${labels}" 2>"${gh_stderr_file}"); then
+    rm -f "${gh_stderr_file}"
+    log_success "Created tracking issue: ${title}"
+    log_success "  → ${issue_url}"
+  else
+    rm -f "${gh_stderr_file}"
+    # Fallback: write to file
+    mkdir -p "${pending_dir}"
+    local slug
+    slug=$(echo "${title}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/-*$//' | cut -c1-40)
+    local fallback_file="${pending_dir}/${PR_NUMBER}-${slug}.md"
+    {
+      printf "# Pending GitHub Issue\n\n"
+      printf "**Title:** %s\n\n" "${title}"
+      printf "**Labels:** %s\n\n" "${labels}"
+      printf -- "---\n\n"
+      printf "%s\n" "${body}"
+    } >"${fallback_file}"
+    log_warn "⚠ Could not create GitHub issue automatically."
+    log_warn "  Saved to: ${fallback_file}"
+    log_warn "  Run: gh issue create --repo ${REPO_OWNER}/${REPO_NAME} --title \"${title}\" --body-file ${fallback_file} --label \"${labels}\""
+  fi
 }
 
 # --- Preflight ---
