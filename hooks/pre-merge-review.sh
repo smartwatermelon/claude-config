@@ -308,13 +308,7 @@ _process_issue_block() {
       slug_index=$((slug_index + 1))
       fallback_file="${pending_dir}/${PR_NUMBER}-${slug}-${slug_index}.md"
     done
-    {
-      printf "# Pending GitHub Issue\n\n"
-      printf "**Title:** %s\n\n" "${title}"
-      printf "**Labels:** %s\n\n" "${labels}"
-      printf -- "---\n\n"
-      printf "%s\n" "${body}"
-    } >"${fallback_file}"
+    printf "%s\n" "${body}" >"${fallback_file}"
     log_warn "⚠ Could not create GitHub issue automatically."
     log_warn "  Saved to: ${fallback_file}"
     log_warn "  Run: gh issue create --repo ${REPO_OWNER}/${REPO_NAME} --title \"${title}\" --body-file ${fallback_file} --label \"${labels}\""
