@@ -20,6 +20,8 @@ export -f log_error
 # Variables used by build_issue_body tests; declared/exported at file scope so
 # static analysis sees their use, then reassigned per-test without re-exporting.
 export PR_NUMBER="" PR_TITLE="" REPO_OWNER="" REPO_NAME=""
+# Variables used by create_nonblocking_issues tests; same pattern.
+export GH_CALLS_FILE="" PENDING_ISSUES_DIR=""
 
 setup() {
   MOCK_DIR="$(mktemp -d)"
@@ -171,4 +173,152 @@ DETAILS: Tests failing."
   _load_fn is_security_critical
   _load_fn needs_security_label
   needs_security_label "src/payment/stripe.ts:5"
+}
+
+# --- create_nonblocking_issues ---
+
+@test "create_nonblocking_issues: calls gh issue create for each parsed issue" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  _load_fn parse_nonblocking_issues
+  _load_fn build_issue_body
+  _load_fn create_nonblocking_issues
+  _load_fn _process_issue_block
+
+  PR_NUMBER="55"
+  PR_TITLE="Test PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  # Mock gh: record calls, succeed
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Fix the thing
+SOURCE: Seer
+LOCATION: src/api/handler.ts:10
+DETAILS: Something to fix later.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  grep -q "issue create" "${GH_CALLS_FILE}"
+}
+
+@test "create_nonblocking_issues: writes fallback file when gh fails" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  _load_fn parse_nonblocking_issues
+  _load_fn build_issue_body
+  _load_fn create_nonblocking_issues
+  _load_fn _process_issue_block
+
+  PR_NUMBER="55"
+  PR_TITLE="Test PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending-issues"
+
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  # Mock gh: label create succeeds, issue create fails
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"label create"* ]]; then exit 0; fi
+exit 1
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Something non blocking
+SOURCE: code-reviewer
+LOCATION: general
+DETAILS: Not urgent but worth noting.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  # A fallback file should exist in PENDING_ISSUES_DIR
+  local found=0
+  for f in "${PENDING_ISSUES_DIR}/55-"*; do [[ -f "${f}" ]] && found=1; done
+  [[ "${found}" -eq 1 ]]
+}
+
+@test "create_nonblocking_issues: no-op when no NON_BLOCKING_ISSUE blocks" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  _load_fn parse_nonblocking_issues
+  _load_fn build_issue_body
+  _load_fn create_nonblocking_issues
+  _load_fn _process_issue_block
+
+  PR_NUMBER="55"
+  PR_TITLE="Test PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+All review comments appear resolved."
+
+  create_nonblocking_issues "${analysis}"
+
+  # gh should NOT have been called for issue create
+  [[ ! -f "${GH_CALLS_FILE}" ]] || ! grep -q "issue create" "${GH_CALLS_FILE}"
+}
+
+@test "create_nonblocking_issues: applies security label for auth path" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  _load_fn parse_nonblocking_issues
+  _load_fn build_issue_body
+  _load_fn create_nonblocking_issues
+  _load_fn _process_issue_block
+
+  PR_NUMBER="55"
+  PR_TITLE="Test PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Auth concern
+SOURCE: Seer
+LOCATION: src/auth/session.ts:99
+DETAILS: Minor auth issue.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  grep -q "security" "${GH_CALLS_FILE}"
 }
