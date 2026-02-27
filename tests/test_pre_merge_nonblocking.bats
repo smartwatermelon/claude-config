@@ -7,19 +7,24 @@ bats_require_minimum_version 1.5.0
 
 SCRIPT="${HOME}/.claude/hooks/pre-merge-review.sh"
 
+# Suppress log output in tests (exported so eval'd functions can call them)
+log_info() { :; }
+export -f log_info
+log_warn() { :; }
+export -f log_warn
+log_success() { :; }
+export -f log_success
+log_error() { :; }
+export -f log_error
+
+# Variables used by build_issue_body tests; declared/exported at file scope so
+# static analysis sees their use, then reassigned per-test without re-exporting.
+export PR_NUMBER="" PR_TITLE="" REPO_OWNER="" REPO_NAME=""
+
 setup() {
   MOCK_DIR="$(mktemp -d)"
   export MOCK_DIR
   export PATH="${MOCK_DIR}:${PATH}"
-  # Suppress log output in tests (exported so eval'd functions can call them)
-  log_info() { :; }
-  export -f log_info
-  log_warn() { :; }
-  export -f log_warn
-  log_success() { :; }
-  export -f log_success
-  log_error() { :; }
-  export -f log_error
 }
 
 teardown() {
@@ -118,10 +123,10 @@ DETAILS: Tests failing."
 
 @test "build_issue_body: includes PR number and title" {
   _load_fn build_issue_body
-  export PR_NUMBER="99"
-  export PR_TITLE="My test PR"
-  export REPO_OWNER="testorg"
-  export REPO_NAME="testrepo"
+  PR_NUMBER="99"
+  PR_TITLE="My test PR"
+  REPO_OWNER="testorg"
+  REPO_NAME="testrepo"
   result=$(build_issue_body "Fix the thing" "Seer" "src/auth/jwt.ts:42" "Seer flagged a potential issue.")
   echo "${result}" | grep -q "#99"
   echo "${result}" | grep -q "My test PR"
@@ -129,10 +134,10 @@ DETAILS: Tests failing."
 
 @test "build_issue_body: includes source and location" {
   _load_fn build_issue_body
-  export PR_NUMBER="1"
-  export PR_TITLE="PR"
-  export REPO_OWNER="org"
-  export REPO_NAME="repo"
+  PR_NUMBER="1"
+  PR_TITLE="PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
   result=$(build_issue_body "Some title" "Seer" "src/auth/session.ts:10" "Details here.")
   echo "${result}" | grep -q "Seer"
   echo "${result}" | grep -q "src/auth/session.ts:10"
@@ -140,10 +145,10 @@ DETAILS: Tests failing."
 
 @test "build_issue_body: includes details" {
   _load_fn build_issue_body
-  export PR_NUMBER="1"
-  export PR_TITLE="PR"
-  export REPO_OWNER="org"
-  export REPO_NAME="repo"
+  PR_NUMBER="1"
+  PR_TITLE="PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
   result=$(build_issue_body "Title" "source" "general" "This is the detail text.")
   echo "${result}" | grep -q "This is the detail text."
 }
