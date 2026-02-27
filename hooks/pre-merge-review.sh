@@ -223,6 +223,12 @@ create_nonblocking_issues() {
   local analysis_text="$1"
   local pending_dir="${PENDING_ISSUES_DIR:-${HOME}/.claude/pending-issues}"
 
+  # Guard: repo info required for gh issue create and fallback URL
+  if [[ -z "${REPO_OWNER}" || -z "${REPO_NAME}" ]]; then
+    log_warn "Skipping non-blocking issue creation: repo info unavailable"
+    return 0
+  fi
+
   local parsed
   parsed=$(parse_nonblocking_issues "${analysis_text}")
   [[ -n "${parsed}" ]] || return 0
