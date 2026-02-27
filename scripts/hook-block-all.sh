@@ -10,12 +10,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 input=$(cat)
 
 for hook in \
-  "$SCRIPT_DIR/hook-block-no-verify.sh" \
-  "$SCRIPT_DIR/hook-block-short-no-verify.sh" \
-  "$SCRIPT_DIR/hook-block-main-commit.sh" \
-  "$SCRIPT_DIR/hook-block-merge-lock-authorize.sh" \
-  "$SCRIPT_DIR/hook-block-api-merge.sh"; do
-  if [[ -x "$hook" ]]; then
-    printf '%s\n' "$input" | "$hook" || exit $?
+  "${SCRIPT_DIR}/hook-block-no-verify.sh" \
+  "${SCRIPT_DIR}/hook-block-short-no-verify.sh" \
+  "${SCRIPT_DIR}/hook-block-main-commit.sh" \
+  "${SCRIPT_DIR}/hook-block-merge-lock-authorize.sh" \
+  "${SCRIPT_DIR}/hook-block-api-merge.sh" \
+  "${SCRIPT_DIR}/hook-block-git-worktree.sh"; do
+  if [[ -x "${hook}" ]]; then
+    printf '%s\n' "${input}" | "${hook}" || exit $?
   fi
 done
