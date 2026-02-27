@@ -33,6 +33,15 @@
             "command": "~/.claude/scripts/hook-block-merge-locks-write.sh"
           }
         ]
+      },
+      {
+        "matcher": "EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/scripts/hook-block-enter-worktree.sh"
+          }
+        ]
       }
     ],
     "SessionStart": [
