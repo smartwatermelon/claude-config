@@ -791,7 +791,7 @@ CRITICAL RULES:
   - If no active inline comments exist, the issue was likely addressed
 - If all remote CI checks pass, defer to CI unless reviewer explicitly flags security risk
 - Review comments may reference code that was later fixed - check timestamps
-- Distinguish "reviewer suggested" (non-blocking) from "reviewer blocked" (blocking)
+- Distinguish "reviewer suggested" (non-blocking, use NON_BLOCKING_ISSUE block) from "reviewer blocked" (blocking, use BLOCK_MERGE)
 - Automated reviewers (Seer, Claude bot, sentry[bot]) are informational - prioritize human reviewers and CI
 
 Reviewer context:
@@ -814,6 +814,23 @@ DETAILS: [what needs to happen]
 
 [If SAFE_TO_MERGE:]
 All review comments (including inline comments) appear resolved or are non-blocking. [Brief summary]
+
+If any reviewer (bot or human) mentioned a concern that is worth tracking but does not block the merge,
+output one or more NON_BLOCKING_ISSUE blocks AFTER the SAFE_TO_MERGE verdict:
+
+NON_BLOCKING_ISSUE:
+TITLE: [concise one-line title suitable for a GitHub issue — do not use quotes]
+SOURCE: [reviewer or bot name, e.g. Seer, code-reviewer, or inline comment by alice]
+LOCATION: [file:line if applicable, or general]
+DETAILS: [2-4 sentences: what was flagged, why it matters, suggested action]
+END_ISSUE
+
+IMPORTANT RULES for NON_BLOCKING_ISSUE:
+- Only include concerns that were explicitly mentioned by a reviewer. Do NOT invent concerns.
+- Omit this section entirely if there is nothing worth tracking.
+- Each block must start with NON_BLOCKING_ISSUE: on its own line and end with END_ISSUE on its own line.
+- DETAILS may span multiple lines.
+- Do not use quotes in TITLE values.
 
 Be conservative but pragmatic. If CI passes and concerns look addressed, allow merge.
 PROMPT_EOF
