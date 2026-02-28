@@ -331,7 +331,7 @@ DIFF=$(cat)
 # --- Review log: initialized before all exit paths so every outcome is recorded ---
 # Path is announced before any agent runs, making it visible in Claude Code's
 # Bash tool even when nested-claude output is swallowed (see bug report 2026-02-24).
-REVIEW_LOG="${HOME}/.claude/last-review-result.log"
+REVIEW_LOG="${REVIEW_LOG:-${HOME}/.claude/last-review-result.log}"
 _review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
 printf '%s\n' "${_review_ts}" >"${REVIEW_LOG}" || true
 _ec=0 # captured by EXIT trap; declared here so shellcheck sees the assignment
@@ -568,8 +568,11 @@ log_info "Review log: ${REVIEW_LOG}"
 # || true: invoke_agent may return 1 on transient CLI failure; set -e must not kill the script.
 # Errors surface as "VERDICT: FAIL (agent error: N)" in output and are handled below.
 CODE_REVIEWER_OUTPUT=$(invoke_agent "code-reviewer" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}") || true
+# Guard: invoke_agent may exit 0 but produce no output (silent agent failure).
+# Normalise to a transient-error verdict so the non-blocking check below handles it.
+[[ -n "${CODE_REVIEWER_OUTPUT}" ]] || CODE_REVIEWER_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
 
-# Parse verdict from output (errors produce "VERDICT: FAIL (agent error: N)")
+# Parse verdict from output (errors produce "VERDICT: FAIL (agent error: ...)")
 if echo "${CODE_REVIEWER_OUTPUT}" | grep -q "VERDICT: PASS"; then
   CODE_REVIEWER_VERDICT="PASS"
 elif echo "${CODE_REVIEWER_OUTPUT}" | grep -q "VERDICT: FAIL"; then
@@ -600,6 +603,8 @@ if ! find -L "${HOME}/.claude/plugins/marketplaces" -name "adversarial-reviewer.
 else
   # || true: same set -e guard as code-reviewer above
   ADVERSARIAL_OUTPUT=$(invoke_agent "adversarial-reviewer" "${AGENT_PROMPT}" "${ADVERSARIAL_CACHE}") || true
+  # Guard: same silent-failure normalisation as code-reviewer above
+  [[ -n "${ADVERSARIAL_OUTPUT}" ]] || ADVERSARIAL_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
 
   if echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: PASS"; then
     ADVERSARIAL_VERDICT="PASS"
