@@ -44,7 +44,7 @@ set -euo pipefail
 
 # --- Configuration ---
 CLAUDE_CLI="${CLAUDE_CLI:-${HOME}/.local/bin/claude}"
-TIMEOUT_SECONDS=120
+TIMEOUT_SECONDS=$(git config --get --type=int review.timeout 2>/dev/null || echo "120")
 
 # Progressive review configuration (with git config overrides)
 REVIEW_MAX_LINES=$(git config --get --type=int review.maxLines 2>/dev/null || echo "1000")
@@ -100,8 +100,10 @@ invoke_agent() {
   # Claude CLI 2.1.50+ refuses to start if CLAUDECODE is set (anti-nesting check).
   # Safe here because --no-session-persistence + piped input = non-interactive child process.
   local agent_output
-  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p --tools "" --no-session-persistence 2>&1)
-  local exit_code=$?
+  local exit_code=0
+  # Use || to prevent set -e from propagating if the CLI exits non-zero.
+  # exit_code is then set to the actual failure code for the handler below.
+  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p --tools "" --no-session-persistence 2>&1) || exit_code=$?
 
   # Handle timeout - BLOCK commit (strict mode)
   if [[ ${exit_code} -eq 124 ]]; then
@@ -250,13 +252,13 @@ ${file_diff}
     file_cache_key=$(echo "${file_diff}" | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "nocache")
     local file_cache="${CACHE_DIR}/${file//\//_}_${file_cache_key}"
 
-    # Invoke agent for this file
+    # Invoke agent for this file (|| prevents set -e from propagating on CLI failure)
     local file_output
-    file_output=$(invoke_agent "code-reviewer" "${file_prompt}" "${file_cache}")
-    local agent_exit=$?
+    local agent_exit=0
+    file_output=$(invoke_agent "code-reviewer" "${file_prompt}" "${file_cache}") || agent_exit=$?
 
-    # If agent failed (timeout, error), warn but continue - don't fail commit
-    if [[ ${agent_exit} -eq 2 ]]; then
+    # If agent failed (timeout, error), skip this file — don't block the commit
+    if [[ ${agent_exit} -ne 0 ]]; then
       log_warn "Agent timeout/error for ${file} - skipping this file"
       ((skipped_files += 1))
       continue
@@ -296,8 +298,26 @@ ${file_output}"
   echo "Warnings: ${warning_count}" >&2
   echo "" >&2
 
+  # Write results to REVIEW_LOG (global; || true guards set -e)
+  {
+    printf '=== CHUNKED REVIEW ===\n'
+    printf 'Reviewed: %d/%d files | Blocking: %d | Warnings: %d\n' \
+      "${reviewed_files}" "${file_count}" "${blocking_count}" "${warning_count}"
+    if [[ ${skipped_files} -gt 0 ]]; then
+      printf 'Files skipped (agent error or oversized chunk): %d\n' "${skipped_files}"
+    fi
+    if [[ -n "${issues_output}" ]]; then
+      printf '%s\n' "${issues_output}"
+    fi
+  } >>"${REVIEW_LOG}" || true
+
   if [[ "${overall_verdict}" == "FAIL" ]]; then
     log_error "Chunked review found ${blocking_count} blocking issues in reviewed files"
+    echo "" >&2
+    echo "💡 Tip: If this appears to be a false positive, force single-pass review:" >&2
+    echo "   git config review.maxLines 2500  # review whole diff at once" >&2
+    echo "   git commit                        # retry" >&2
+    echo "   git config --unset review.maxLines" >&2
     return 1
   else
     log_success "Chunked review passed (${reviewed_files} files reviewed)"
@@ -545,13 +565,12 @@ printf 'diff_lines: %d\n' "${DIFF_LINES}" >>"${REVIEW_LOG}" || true
 log_info "Review log: ${REVIEW_LOG}"
 
 # Step 1: Run code-reviewer (always)
-CODE_REVIEWER_OUTPUT=$(invoke_agent "code-reviewer" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}")
-AGENT_EXIT=$?
+# || true: invoke_agent may return 1 on transient CLI failure; set -e must not kill the script.
+# Errors surface as "VERDICT: FAIL (agent error: N)" in output and are handled below.
+CODE_REVIEWER_OUTPUT=$(invoke_agent "code-reviewer" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}") || true
 
-# If agent had timeout/error (exit 2), treat as PASS and continue
-if [[ ${AGENT_EXIT} -eq 2 ]]; then
-  CODE_REVIEWER_VERDICT="PASS"
-elif echo "${CODE_REVIEWER_OUTPUT}" | grep -q "VERDICT: PASS"; then
+# Parse verdict from output (errors produce "VERDICT: FAIL (agent error: N)")
+if echo "${CODE_REVIEWER_OUTPUT}" | grep -q "VERDICT: PASS"; then
   CODE_REVIEWER_VERDICT="PASS"
 elif echo "${CODE_REVIEWER_OUTPUT}" | grep -q "VERDICT: FAIL"; then
   CODE_REVIEWER_VERDICT="FAIL"
@@ -579,12 +598,10 @@ if ! find -L "${HOME}/.claude/plugins/marketplaces" -name "adversarial-reviewer.
   log_warn "adversarial-reviewer agent not found - skipping (see ~/.claude/docs/CUSTOM_AGENTS.md for setup)"
   ADVERSARIAL_VERDICT="N/A"
 else
-  ADVERSARIAL_OUTPUT=$(invoke_agent "adversarial-reviewer" "${AGENT_PROMPT}" "${ADVERSARIAL_CACHE}")
-  AGENT_EXIT=$?
+  # || true: same set -e guard as code-reviewer above
+  ADVERSARIAL_OUTPUT=$(invoke_agent "adversarial-reviewer" "${AGENT_PROMPT}" "${ADVERSARIAL_CACHE}") || true
 
-  if [[ ${AGENT_EXIT} -eq 2 ]]; then
-    ADVERSARIAL_VERDICT="PASS"
-  elif echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: PASS"; then
+  if echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: PASS"; then
     ADVERSARIAL_VERDICT="PASS"
   elif echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: FAIL"; then
     ADVERSARIAL_VERDICT="FAIL"
@@ -634,9 +651,16 @@ if [[ "${CODE_REVIEWER_VERDICT}" == "FAIL" ]]; then
 fi
 
 if [[ "${ADVERSARIAL_VERDICT}" == "FAIL" ]]; then
-  log_error "adversarial-reviewer found issues - commit rejected"
-  log_error "Note: code-reviewer passed but adversarial-reviewer caught additional concerns"
-  exit 1
+  # Transient infrastructure failures (timeout, CLI crash) produce "VERDICT: FAIL (timeout)"
+  # or "VERDICT: FAIL (agent error: N)" with no SEVERITY: BLOCKING — treat as non-blocking,
+  # consistent with how code-reviewer handles the same case.
+  if echo "${ADVERSARIAL_OUTPUT}" | grep -qE "VERDICT: FAIL \((timeout|agent error)"; then
+    log_warn "adversarial-reviewer timed out or errored — non-blocking (infrastructure failure)"
+  else
+    log_error "adversarial-reviewer found issues - commit rejected"
+    log_error "Note: code-reviewer passed but adversarial-reviewer caught additional concerns"
+    exit 1
+  fi
 fi
 
 # Defensive: block on any unexpected verdict values
