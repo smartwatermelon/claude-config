@@ -7,12 +7,26 @@
 #   2. Chunked review log: reviewer output must appear in REVIEW_LOG when chunked path runs
 #   3. Dead agent_exit check: agent errors in chunked mode must be skipped gracefully (not fatal)
 #   4. Stderr hint: chunked review failure (blocking verdict) must emit workaround hint
+#   5. review.timeout git config is honoured
+#   6. make_mock_claude must handle double-quotes in output without script syntax errors
+#   7. REVIEW_LOG env var must override the hardcoded production log path in run-review.sh
+#   8. Empty reviewer output (exit 0, no stdout) must not block the commit
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve script directory without cd to avoid CDPATH side effects.
+# When CDPATH is set, 'cd relative/dir' prints the resolved path to stdout,
+# polluting $(cd dir && pwd) with a doubled path. Use parameter expansion
+# on an absolute form of BASH_SOURCE[0] to avoid any external commands.
+_src="${BASH_SOURCE[0]}"
+[[ "${_src}" == /* ]] || _src="${PWD}/${_src}"
+SCRIPT_DIR="${_src%/*}"
+unset _src
 SUBJECT="${SCRIPT_DIR}/../run-review.sh"
-REVIEW_LOG="${HOME}/.claude/last-review-result.log"
+# Each test sets its own REVIEW_LOG to a temp path and passes it as an env var
+# to run-review.sh, preventing test runs from clobbering the production log at
+# ~/.claude/last-review-result.log (Warning 2 fix: run-review.sh now honours
+# REVIEW_LOG env var override).
 
 PASS=0
 FAIL=0
@@ -28,18 +42,6 @@ assert_contains() {
     echo "        expected to find: ${needle}"
     echo "        in log (first 10 lines):"
     echo "${haystack}" | head -10 | sed 's/^/          /'
-    ((FAIL += 1))
-  fi
-}
-
-assert_not_contains() {
-  local desc="$1" needle="$2" haystack="$3"
-  if ! echo "${haystack}" | grep -qF "${needle}"; then
-    echo "  PASS: ${desc}"
-    ((PASS += 1))
-  else
-    echo "  FAIL: ${desc}"
-    echo "        expected NOT to find: ${needle}"
     ((FAIL += 1))
   fi
 }
@@ -87,7 +89,7 @@ stage_small_change() {
 stage_large_change() {
   cd "${REPO_DIR}"
   for i in $(seq 1 5); do
-    printf '#!/usr/bin/env bash\n# File %d\n' "$i" >"file${i}.sh"
+    printf '#!/usr/bin/env bash\n# File %d\n' "${i}" >"file${i}.sh"
     for j in $(seq 1 8); do
       echo "echo line_${j}_of_file_${i}" >>"file${i}.sh"
     done
@@ -96,27 +98,25 @@ stage_large_change() {
   cd - >/dev/null
 }
 
-# Create mock claude binary with given exit code and stdout output
+# Create mock claude binary with given exit code and stdout output.
+# Output is written to a separate file and cat'd by the mock to avoid
+# heredoc expansion issues when output contains double-quotes or other
+# special characters that would break an inline printf '%s\n' "${output}".
 make_mock_claude() {
   local mock_dir="$1" exit_code="$2" output="$3"
   mkdir -p "${mock_dir}"
+  printf '%s\n' "${output}" >"${mock_dir}/output.txt"
   cat >"${mock_dir}/claude" <<EOF
 #!/usr/bin/env bash
-printf '%s\n' "${output}"
+cat "${mock_dir}/output.txt"
 exit ${exit_code}
 EOF
   chmod +x "${mock_dir}/claude"
 }
 
-cleanup() {
-  rm -rf "${TMPDIR_TEST}"
-  # Restore review.maxLines if we changed it
-  if [[ -d "${REPO_DIR}" ]]; then
-    cd "${REPO_DIR}" 2>/dev/null && git config --unset review.maxLines 2>/dev/null || true
-    cd - >/dev/null 2>/dev/null || true
-  fi
-}
-trap cleanup EXIT
+# Inline trap: restore review.maxLines if set, then remove temp dir.
+# REPO_DIR is a script-level variable set above; TMPDIR_TEST likewise.
+trap 'cd "${REPO_DIR}" 2>/dev/null && git config --unset review.maxLines 2>/dev/null || true; rm -rf "${TMPDIR_TEST}"' EXIT
 
 # =========================================================
 # TEST 1: set -e propagation at call site (single-pass path)
@@ -135,13 +135,14 @@ stage_small_change
 MOCK1_DIR="${TMPDIR_TEST}/mock1"
 make_mock_claude "${MOCK1_DIR}" 1 ""
 
-rm -f "${REVIEW_LOG}"
+TEST1_LOG="${TMPDIR_TEST}/test1-review.log"
+rm -f "${TEST1_LOG}"
 
 cd "${REPO_DIR}"
-CLAUDE_CLI="${MOCK1_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached) 2>/dev/null || true
+REVIEW_LOG="${TEST1_LOG}" CLAUDE_CLI="${MOCK1_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
 cd - >/dev/null
 
-log_content="$(cat "${REVIEW_LOG}" 2>/dev/null || echo "")"
+log_content="$(cat "${TEST1_LOG}" 2>/dev/null || echo "")"
 
 assert_contains \
   "log contains agent error info (not just bare exit_code: 1)" \
@@ -153,7 +154,7 @@ assert_contains \
 # they should be treated as non-blocking warnings, not genuine rejections.
 exit_t1=0
 cd "${REPO_DIR}"
-CLAUDE_CLI="${MOCK1_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached) 2>/dev/null || exit_t1=$?
+REVIEW_LOG="${TEST1_LOG}" CLAUDE_CLI="${MOCK1_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t1=$?
 cd - >/dev/null
 
 assert_eq \
@@ -179,15 +180,16 @@ make_mock_claude "${MOCK2_DIR}" 0 "VERDICT: PASS
 
 No blocking issues found."
 
-rm -f "${REVIEW_LOG}"
+TEST2_LOG="${TMPDIR_TEST}/test2-review.log"
+rm -f "${TEST2_LOG}"
 
 cd "${REPO_DIR}"
 git config review.maxLines 10
-CLAUDE_CLI="${MOCK2_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached) 2>/dev/null || true
+REVIEW_LOG="${TEST2_LOG}" CLAUDE_CLI="${MOCK2_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
 git config --unset review.maxLines 2>/dev/null || true
 cd - >/dev/null
 
-log_content="$(cat "${REVIEW_LOG}" 2>/dev/null || echo "")"
+log_content="$(cat "${TEST2_LOG}" 2>/dev/null || echo "")"
 
 assert_contains \
   "log contains CHUNKED REVIEW section header" \
@@ -216,16 +218,17 @@ stage_large_change
 MOCK3_DIR="${TMPDIR_TEST}/mock3"
 make_mock_claude "${MOCK3_DIR}" 1 "" # Claude exits non-zero (transient failure)
 
-rm -f "${REVIEW_LOG}"
+TEST3_LOG="${TMPDIR_TEST}/test3-review.log"
+rm -f "${TEST3_LOG}"
 
 exit_code_t3=0
 cd "${REPO_DIR}"
 git config review.maxLines 10
-CLAUDE_CLI="${MOCK3_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached) 2>/dev/null || exit_code_t3=$?
+REVIEW_LOG="${TEST3_LOG}" CLAUDE_CLI="${MOCK3_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_code_t3=$?
 git config --unset review.maxLines 2>/dev/null || true
 cd - >/dev/null
 
-log_content="$(cat "${REVIEW_LOG}" 2>/dev/null || echo "")"
+log_content="$(cat "${TEST3_LOG}" 2>/dev/null || echo "")"
 
 assert_eq \
   "chunked review with transient agent errors does not block commit (exit 0)" \
@@ -257,12 +260,13 @@ SEVERITY: BLOCKING
 LOCATION: file1.sh:3
 DETAILS: Remove the hardcoded credential."
 
-rm -f "${REVIEW_LOG}"
+TEST4_LOG="${TMPDIR_TEST}/test4-review.log"
+rm -f "${TEST4_LOG}"
 
 stderr_out=""
 cd "${REPO_DIR}"
 git config review.maxLines 10
-stderr_out="$(CLAUDE_CLI="${MOCK4_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached) 2>&1 || true)"
+stderr_out="$(REVIEW_LOG="${TEST4_LOG}" CLAUDE_CLI="${MOCK4_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>&1 || true)"
 git config --unset review.maxLines 2>/dev/null || true
 cd - >/dev/null
 
@@ -298,15 +302,16 @@ echo "No blocking issues found."
 MOCKEOF
 chmod +x "${MOCK5_DIR}/claude"
 
-rm -f "${REVIEW_LOG}"
+TEST5_LOG="${TMPDIR_TEST}/test5-review.log"
+rm -f "${TEST5_LOG}"
 
 cd "${REPO_DIR}"
 git config review.timeout 1
-CLAUDE_CLI="${MOCK5_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached) 2>/dev/null || true
+REVIEW_LOG="${TEST5_LOG}" CLAUDE_CLI="${MOCK5_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
 git config --unset review.timeout 2>/dev/null || true
 cd - >/dev/null
 
-log_content5="$(cat "${REVIEW_LOG}" 2>/dev/null || echo "")"
+log_content5="$(cat "${TEST5_LOG}" 2>/dev/null || echo "")"
 
 # If the config is honoured, the 1s timeout fires and the log records the timeout
 assert_contains \
@@ -315,11 +320,101 @@ assert_contains \
   "${log_content5}"
 
 # =========================================================
+# TEST 6: make_mock_claude handles double-quotes in output
+#
+# make_mock_claude uses an unquoted heredoc (<<EOF), so ${output} is expanded
+# at generation time. If output contains double-quotes, the generated
+# printf '%s\n' "${output}" line gets unbalanced quotes and the mock script
+# fails with a syntax error.
+# Fix: write output to a separate file and have the mock cat it.
+# =========================================================
+echo ""
+echo "=== Test 6: make_mock_claude handles double-quotes in output ==="
+
+MOCK6_DIR="${TMPDIR_TEST}/mock6"
+# Single-quoted here to prevent shell expansion of the double-quotes
+make_mock_claude "${MOCK6_DIR}" 0 'VERDICT: FAIL (agent error: "timeout")'
+
+mock6_out="$("${MOCK6_DIR}/claude" 2>/dev/null || true)"
+
+assert_contains \
+  "mock correctly outputs string with embedded double-quotes" \
+  'VERDICT: FAIL (agent error: "timeout")' \
+  "${mock6_out}"
+
+# =========================================================
+# TEST 7: REVIEW_LOG env var overrides production log path
+#
+# run-review.sh hardcodes REVIEW_LOG="${HOME}/.claude/last-review-result.log".
+# Tests should be able to pass REVIEW_LOG as an env var to redirect log output
+# to a temporary path, preventing test runs from clobbering the production log.
+# =========================================================
+echo ""
+echo "=== Test 7: REVIEW_LOG env var overrides production log path ==="
+
+setup_repo
+stage_small_change
+
+MOCK7_DIR="${TMPDIR_TEST}/mock7"
+make_mock_claude "${MOCK7_DIR}" 0 "VERDICT: PASS
+
+No blocking issues found."
+
+ISOLATED_LOG="${TMPDIR_TEST}/isolated-review.log"
+rm -f "${ISOLATED_LOG}"
+
+cd "${REPO_DIR}"
+REVIEW_LOG="${ISOLATED_LOG}" CLAUDE_CLI="${MOCK7_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+isolated_log_content="$(cat "${ISOLATED_LOG}" 2>/dev/null || echo "")"
+assert_contains \
+  "isolated log is written when REVIEW_LOG env var is set" \
+  "exit_code:" \
+  "${isolated_log_content}"
+
+# =========================================================
+# TEST 8: Empty reviewer output (exit 0) does not block commit
+#
+# If invoke_agent exits 0 but produces no stdout, CODE_REVIEWER_OUTPUT="".
+# Both PASS and FAIL greps fail, falling to "Could not parse verdict" -> exit 1.
+# Fix: add empty-output guard after || true:
+#   [[ -n "${CODE_REVIEWER_OUTPUT}" ]] || CODE_REVIEWER_OUTPUT="VERDICT: FAIL (agent error: ...)"
+# This synthesises a transient-error verdict that the existing non-blocking check
+# handles correctly, resulting in exit 0.
+# =========================================================
+echo ""
+echo "=== Test 8: empty reviewer output (exit 0) does not block commit ==="
+
+setup_repo
+stage_small_change
+
+MOCK8_DIR="${TMPDIR_TEST}/mock8"
+mkdir -p "${MOCK8_DIR}"
+cat >"${MOCK8_DIR}/claude" <<'MOCKEOF'
+#!/usr/bin/env bash
+# Exits successfully but produces no output (simulates a silent agent failure)
+exit 0
+MOCKEOF
+chmod +x "${MOCK8_DIR}/claude"
+
+TEST8_LOG="${TMPDIR_TEST}/test8-review.log"
+exit_t8=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST8_LOG}" CLAUDE_CLI="${MOCK8_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t8=$?
+cd - >/dev/null
+
+assert_eq \
+  "empty reviewer output (exit 0) does not block commit" \
+  "0" \
+  "${exit_t8}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 11 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
