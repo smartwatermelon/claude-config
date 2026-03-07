@@ -26,6 +26,7 @@ plugins/cache/
 # Local configuration (personal settings, permissions)
 settings.local.json
 *.local.json
+mcp.json
 
 # Secrets and credentials — never commit
 *.key
