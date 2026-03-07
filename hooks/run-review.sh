@@ -686,5 +686,13 @@ else
   log_success "Review passed (code-reviewer)"
 fi
 _review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
+# Overwrite the start timestamp (first line) with the completion timestamp so that
+# `head -1 ~/.claude/last-review-result.log` reflects when the review FINISHED,
+# not when it started. For slow reviews (>60s), this prevents false staleness alerts.
+{
+  printf '%s\n' "${_review_ts}"
+  tail -n +2 "${REVIEW_LOG}"
+} >"${REVIEW_LOG}.tmp" \
+  && mv "${REVIEW_LOG}.tmp" "${REVIEW_LOG}" || true
 log_success "Review timestamp: ${_review_ts}  ← verify this matches commit time"
 exit 0
