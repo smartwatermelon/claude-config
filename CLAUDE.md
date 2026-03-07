@@ -103,6 +103,7 @@ Protocol 0 applies to **interactive sessions** only. It does NOT apply to **focu
 - Session ID: [timestamp or identifier]
 - OS: [Darwin/Linux]
 - Shell: [bash version]
+- Working Directory: [output of pwd command — absolute path]
 
 ✅ Protocol Acknowledgment:
 I have read ~/.claude/CLAUDE.md and will follow all MANDATORY PROTOCOLS.
@@ -117,6 +118,12 @@ Relevant protocols for this session:
 - Global libraries: ~/.claude/lib/ (build-commons, deploy-commons)
 - Global utilities: ~/.claude/scripts/ (audit-branches)
 - Documentation: ~/.claude/docs/INFRASTRUCTURE.md
+
+⚠️ CWD Discipline:
+- NEVER use shell `cd` — the Bash tool's cwd is stateful and persists across calls
+- ALWAYS use `git -C /absolute/path` for git commands
+- ALWAYS use package manager `--dir` or `--filter` flags with the absolute path
+- If any command changes directory, run `pwd` before the next git command to verify
 ```
 
 **Why this matters**: Training data ends at a fixed point, but real-world dates advance. Always verify environmental facts.
@@ -175,13 +182,16 @@ See [Agent Reference](#agent-reference) for complete details.
 ```
 BEFORE committing ANY code change:
 
-□ Run full test suite (project-specific command)
+□ Run FULL test suite (project-specific command) — NOT an isolated file or filter run
+  ✗ WRONG: pnpm --filter mobile test -- ShareCard  (isolated, can mask suite failures)
+  ✓ RIGHT:  pnpm --filter mobile test              (all tests in the package)
 □ If tests fail → fix them BEFORE proceeding
 □ If you changed behavior → generate/update tests
 □ Coverage must not decrease without explicit justification
 ```
 
 **Tests are not optional. Tests are not "I'll do it later." Tests are NOW.**
+**An isolated file run does NOT satisfy this requirement.**
 
 See [Testing Standards](#testing-standards) for detailed requirements.
 
@@ -358,7 +368,10 @@ This protocol exists because of two incidents on 2026-02-24:
 □ Type checking passes (if applicable) - RUN LOCALLY FIRST
 □ AI review clean: git hook auto-runs code-reviewer agent (FREE, local)
 □ Adversarial review clean: git hook auto-runs adversarial-reviewer on EVERY commit (FREE, local)
-□ Verify hook review ran: if git commit produced no review output, read ~/.claude/last-review-result.log
+□ Verify hook review ran: after EVERY commit, check the log timestamp:
+    head -1 ~/.claude/last-review-result.log
+  If the timestamp is more than ~60 seconds old, the hook did not run for this commit.
+  Treat as unreviewed — do not push until you can confirm a fresh review ran.
 □ Never claim "AI review: N clean iterations" without seeing actual review output (Bash tool or log file)
 □ No console.log/print statements in production code
 □ No hardcoded secrets

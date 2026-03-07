@@ -685,4 +685,5 @@ if [[ "${ADVERSARIAL_VERDICT}" != "N/A" ]]; then
 else
   log_success "Review passed (code-reviewer)"
 fi
+log_success "Review timestamp: ${_review_ts}  ← verify this matches commit time"
 exit 0
