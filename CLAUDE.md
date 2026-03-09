@@ -368,10 +368,16 @@ This protocol exists because of two incidents on 2026-02-24:
 □ Type checking passes (if applicable) - RUN LOCALLY FIRST
 □ AI review clean: git hook auto-runs code-reviewer agent (FREE, local)
 □ Adversarial review clean: git hook auto-runs adversarial-reviewer on EVERY commit (FREE, local)
-□ Verify hook review ran: after EVERY commit, check the log timestamp:
-    head -1 ~/.claude/last-review-result.log
-  If the timestamp is more than ~60 seconds old, the hook did not run for this commit.
-  Treat as unreviewed — do not push until you can confirm a fresh review ran.
+□ Verify hook review ran AND matches this repo: after EVERY commit, read the log header:
+    head -6 $(git rev-parse --git-dir)/last-review-result.log
+  Check ALL of the following — a timestamp alone is not enough:
+  1. Timestamp within ~60 seconds (hook ran for this commit)
+  2. repo: field matches this repo's root path
+  3. branch: field matches your current branch
+  4. commit: field matches HEAD (git rev-parse --short HEAD)
+  If ANY field is missing or wrong: treat as unreviewed. Do not push.
+  (The global ~/.claude/last-review-result.log is now a pointer file with a log: field
+   pointing to the per-repo authoritative log.)
 □ Never claim "AI review: N clean iterations" without seeing actual review output (Bash tool or log file)
 □ No console.log/print statements in production code
 □ No hardcoded secrets
@@ -388,6 +394,11 @@ This protocol exists because of two incidents on 2026-02-24:
 ```
 □ All pre-commit checks pass
 □ Adversarial review clean (runs on every commit via hook)
+□ If subagent-driven-development was used: treat all subagent-reported reviews
+  as UNVERIFIED. Before pushing, run a full-diff adversarial review manually:
+    git diff main..HEAD | claude --agent adversarial-reviewer -p --tools ""
+  Per-commit subagent reviews only cover incremental diffs — cross-cutting issues
+  visible only across the full feature surface will be missed otherwise.
 □ Tests pass IN SIMULATOR (for mobile) or local environment
 □ Linting and type checking clean locally
 □ You are CONFIDENT this will pass CI, not just hopeful
