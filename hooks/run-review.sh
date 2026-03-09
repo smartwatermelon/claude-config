@@ -721,12 +721,15 @@ _review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
 # Also update the global pointer's timestamp to match the completion time.
 # Controllers checking head -1 ~/.claude/last-review-result.log need the
 # completion time (not start time) for the staleness check to be accurate.
-if [[ -f "${_global_log}" ]]; then
-  {
-    printf '%s\n' "${_review_ts}"
-    tail -n +2 "${_global_log}"
-  } >"${_global_log}.tmp" \
-    && mv "${_global_log}.tmp" "${_global_log}" || true
-fi
+# Write all fields from current session variables (not tail -n +2 of the
+# existing file) to avoid a read-modify-write race with concurrent sessions.
+{
+  printf '%s\n' "${_review_ts}"
+  printf 'repo: %s\n' "${_review_repo}"
+  printf 'branch: %s\n' "${_review_branch}"
+  printf 'commit: %s\n' "${_review_commit}"
+  printf 'log: %s\n' "${REVIEW_LOG}"
+} >"${_global_log}.tmp" \
+  && mv "${_global_log}.tmp" "${_global_log}" || true
 log_success "Review timestamp: ${_review_ts}  ← verify this matches commit time"
 exit 0
