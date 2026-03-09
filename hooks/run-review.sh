@@ -336,7 +336,7 @@ DIFF=$(cat)
 GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null || echo ".git")"
 REVIEW_LOG="${REVIEW_LOG:-${GIT_DIR_PATH}/last-review-result.log}"
 _review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
-_review_repo=$(cd "${GIT_DIR_PATH}/.." >/dev/null 2>&1 && pwd -L || echo "unknown")
+_review_repo=$(cdup=$(git rev-parse --show-cdup 2>/dev/null) && cd "./${cdup:-.}" >/dev/null 2>&1 && pwd -L || echo "unknown")
 _review_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
 _review_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 {
@@ -718,5 +718,15 @@ _review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
   tail -n +2 "${REVIEW_LOG}"
 } >"${REVIEW_LOG}.tmp" \
   && mv "${REVIEW_LOG}.tmp" "${REVIEW_LOG}" || true
+# Also update the global pointer's timestamp to match the completion time.
+# Controllers checking head -1 ~/.claude/last-review-result.log need the
+# completion time (not start time) for the staleness check to be accurate.
+if [[ -f "${_global_log}" ]]; then
+  {
+    printf '%s\n' "${_review_ts}"
+    tail -n +2 "${_global_log}"
+  } >"${_global_log}.tmp" \
+    && mv "${_global_log}.tmp" "${_global_log}" || true
+fi
 log_success "Review timestamp: ${_review_ts}  ← verify this matches commit time"
 exit 0
