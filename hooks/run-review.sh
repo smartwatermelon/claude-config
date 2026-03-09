@@ -328,12 +328,36 @@ ${file_output}"
 # --- Read diff from stdin ---
 DIFF=$(cat)
 
-# --- Review log: initialized before all exit paths so every outcome is recorded ---
-# Path is announced before any agent runs, making it visible in Claude Code's
-# Bash tool even when nested-claude output is swallowed (see bug report 2026-02-24).
-REVIEW_LOG="${REVIEW_LOG:-${HOME}/.claude/last-review-result.log}"
+# --- Review log: scoped to this repo's .git/ directory ---
+# Rationale: A single global log is overwritten by concurrent sessions in other
+# repos, making cross-repo contamination undetectable (incident 2026-03-08).
+# Per-repo log + identity fields let the controller confirm the log matches
+# the repo and commit they just made.
+GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null || echo ".git")"
+REVIEW_LOG="${REVIEW_LOG:-${GIT_DIR_PATH}/last-review-result.log}"
 _review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
-printf '%s\n' "${_review_ts}" >"${REVIEW_LOG}" || true
+_review_repo=$(cd "${GIT_DIR_PATH}/.." >/dev/null 2>&1 && pwd -L || echo "unknown")
+_review_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+_review_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+{
+  printf '%s\n' "${_review_ts}"
+  printf 'repo: %s\n' "${_review_repo}"
+  printf 'branch: %s\n' "${_review_branch}"
+  printf 'commit: %s\n' "${_review_commit}"
+} >"${REVIEW_LOG}" || true
+
+# Global pointer: keep ~/.claude/last-review-result.log pointed at the most
+# recent per-repo log. Controllers checking the global path will see identity
+# fields that reveal cross-repo contamination immediately.
+_global_log="${HOME}/.claude/last-review-result.log"
+{
+  printf '%s\n' "${_review_ts}"
+  printf 'repo: %s\n' "${_review_repo}"
+  printf 'branch: %s\n' "${_review_branch}"
+  printf 'commit: %s\n' "${_review_commit}"
+  printf 'log: %s\n' "${REVIEW_LOG}"
+} >"${_global_log}" || true
+
 _ec=0 # captured by EXIT trap; declared here so shellcheck sees the assignment
 trap '_ec=$?; [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >> "${REVIEW_LOG}" || true' EXIT
 
@@ -344,7 +368,7 @@ if [[ -z "${DIFF}" ]]; then
 fi
 
 # --- Review caching (skip review if diff unchanged since last PASS) ---
-CACHE_DIR="$(git rev-parse --git-dir 2>/dev/null || echo ".git")/claude-review-cache"
+CACHE_DIR="${GIT_DIR_PATH}/claude-review-cache"
 mkdir -p "${CACHE_DIR}"
 
 # Clean up cache entries older than 30 days to prevent unbounded growth
