@@ -50,10 +50,16 @@ Timeout: if `CI_STATE` has not resolved after 15 minutes, escalate with reason
 
 #### Phase 2 — EVALUATE termination
 
-Parse script output:
+Parse script output using this exact decision table — evaluate in order:
 
-- `CI_STATE=SUCCESS` AND no `FINDING` lines → **Exit: Success**
-- `CI_STATE=FAILURE` OR `CI_STATE=ERROR` OR any `FINDING` lines → proceed to Phase 3
+| CI_STATE | FINDING lines present? | Action |
+|---|---|---|
+| `SUCCESS` | No | **Exit: Success** |
+| `SUCCESS` | Yes | Proceed to Phase 3 |
+| `FAILURE` | Either | Proceed to Phase 3 |
+| `ERROR` | Either | Proceed to Phase 3 |
+
+`CI_STATE=SUCCESS` alone is NOT sufficient to exit — zero `FINDING` lines are also required.
 
 ---
 
@@ -64,7 +70,7 @@ For each `FINDING` line, classify as **CONFIDENT_FIX** or **ESCALATE**:
 **CONFIDENT_FIX** (all of the following must be true):
 
 - Finding has a specific `file=` and `line=` reference
-- Fix is local to that file (no cross-file ripple required)
+- Fix is local to that file — explicitly verify before classifying: (1) no other files import or call the changed symbol, (2) no tests outside this file reference it, (3) the change does not affect a shared interface or type
 - Finding falls into a known pattern:
   - Lint or style error
   - Type error or missing type annotation
