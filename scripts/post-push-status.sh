@@ -81,7 +81,7 @@ BOT_PATTERN='sentry\[bot\]|claude\[bot\]|coderabbit\[bot\]'
 # thread); code review bots typically post to pulls/comments (inline diff comments).
 { gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" 2>/dev/null || echo "[]"; } >"${TMPFILE}_pulls"
 { gh api "repos/${OWNER}/${REPO}/issues/${PR_NUMBER}/comments" 2>/dev/null || echo "[]"; } >"${TMPFILE}_issues"
-jq -s '.[0] + .[1]' "${TMPFILE}_pulls" "${TMPFILE}_issues" >"${TMPFILE}"
+jq -s '.[0] + .[1]' "${TMPFILE}_pulls" "${TMPFILE}_issues" >"${TMPFILE}" || echo "[]" >"${TMPFILE}"
 rm -f "${TMPFILE}_pulls" "${TMPFILE}_issues"
 
 python3 - "${TMPFILE}" "${CURRENT_COMMIT}" "${BOT_PATTERN}" <<'PYEOF'
@@ -106,8 +106,11 @@ for c in comments:
     login = c.get("user", {}).get("login", "")
     if not re.search(bot_pattern, login):
         continue
-    if c.get("original_commit_id", "") != current_commit:
-        continue
+    # pulls/comments have original_commit_id; issues/comments do not
+    if "original_commit_id" in c:
+        if c["original_commit_id"] != current_commit:
+            continue
+    # For issues/comments, include all matching-bot comments (no commit filter available)
     body = c.get("body", "").strip()
     if not body:
         continue
