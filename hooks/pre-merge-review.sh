@@ -341,6 +341,26 @@ for arg in "$@"; do
   fi
 done
 
+# --- Non-interactive flag gate ---
+# When invoked from Claude Code (CLAUDECODE set), require --squash and --delete-branch.
+# Without them the actual merge step will fail, wasting a full analysis cycle.
+if [[ -n "${CLAUDECODE:-}" ]]; then
+  _has_squash=false
+  _has_delete_branch=false
+  for _arg in "$@"; do
+    case "${_arg}" in
+      --squash) _has_squash=true ;;
+      --delete-branch) _has_delete_branch=true ;;
+      *) ;;
+    esac
+  done
+  if [[ "${_has_squash}" != "true" || "${_has_delete_branch}" != "true" ]]; then
+    log_error "Non-interactive merge requires --squash and --delete-branch"
+    log_error "Retry with: gh pr merge ${PR_NUMBER:-<PR>} --squash --delete-branch"
+    exit 1
+  fi
+fi
+
 # --- Fetch PR data ---
 log_info "Fetching PR review data..."
 
@@ -429,6 +449,9 @@ if [[ -x "${MERGE_LOCK}" ]]; then
   fi
   log_success "Merge authorization verified for PR #${PR_NUMBER}"
 fi
+
+# Track lock file path for dedup guard below (empty if merge-lock is not in use)
+MERGE_LOCK_FILE="${HOME}/.claude/merge-locks/pr-${PR_NUMBER}.lock"
 
 # --- Hard block: CHANGES_REQUESTED review state (issue #27) ---
 # Do NOT delegate review state enforcement to Claude. Claude can rationalize
@@ -903,7 +926,15 @@ if echo "${VERDICT_LINE}" | grep -qE "SAFE_TO_MERGE"; then
   # Authorization was already verified at the top of this script (early check).
   log_success "PR review analysis passed - safe to merge"
   # Create GitHub issues for any non-blocking concerns found during review.
-  create_nonblocking_issues "${ANALYSIS_TEXT}"
+  # Guard: if the merge fails and Claude retries within the same authorization
+  # window (30-min TTL), skip issue creation to prevent duplicates.
+  if [[ -f "${MERGE_LOCK_FILE}" ]] && grep -q "^ISSUES_CREATED=1$" "${MERGE_LOCK_FILE}" 2>/dev/null; then
+    log_info "Non-blocking issues already filed for PR #${PR_NUMBER} in this auth window — skipping"
+  else
+    create_nonblocking_issues "${ANALYSIS_TEXT}"
+    # Mark so a retry within the same auth window skips issue creation.
+    [[ -f "${MERGE_LOCK_FILE}" ]] && printf 'ISSUES_CREATED=1\n' >>"${MERGE_LOCK_FILE}" || true
+  fi
   exit 0
 elif echo "${VERDICT_LINE}" | grep -qE "BLOCK_MERGE"; then
   log_error "PR has unresolved review issues - merge blocked"
