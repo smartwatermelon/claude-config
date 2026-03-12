@@ -35,6 +35,8 @@ assert_not_contains() {
 
 gh() {
   local args="$*"
+  # Log all calls so tests can assert on owner/repo values flowing through
+  echo "MOCK_CALLED_WITH=${args}" >&2
   if echo "${args}" | grep -q "statusCheckRollup"; then
     echo '{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]}}}}}'
     return 0
@@ -48,6 +50,10 @@ gh() {
   {"id":4,"user":{"login":"claude[bot]"},"original_commit_id":"abc123","body":"Consider extracting this logic","path":"src/utils.ts","line":22}
 ]
 EOF
+    return 0
+  fi
+  if echo "${args}" | grep -q "pulls/99/comments"; then
+    echo '[]'
     return 0
   fi
   echo "UNEXPECTED gh call: ${args}" >&2
@@ -71,6 +77,14 @@ echo "=== Test: Finding fields present ==="
 assert_contains "file field present" "file=src/auth/token.ts" "${output}"
 assert_contains "line field present" "line=47" "${output}"
 assert_contains "comment text present" "null dereference" "${output}"
+
+echo ""
+echo "=== Test: POSTPUSH_OWNER/POSTPUSH_REPO override flows through to gh calls ==="
+# Capture both stdout and stderr; the mock writes MOCK_CALLED_WITH=... to stderr
+override_combined=$(POSTPUSH_OWNER=testowner POSTPUSH_REPO=testrepo \
+  POSTPUSH_CURRENT_COMMIT="abc123" bash "${SUBJECT}" 99 2>&1)
+assert_contains "gh called with testowner" "testowner" "${override_combined}"
+assert_contains "gh called with testrepo" "testrepo" "${override_combined}"
 
 echo ""
 echo "=== Summary ==="

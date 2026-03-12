@@ -50,8 +50,17 @@ GQL_QUERY=$(
 GQLEOF
 )
 
+GQL_STDERR=$(mktemp /tmp/post-push-gql-err.XXXXXX)
+TMPFILE=$(mktemp /tmp/post-push-comments.XXXXXX.json)
+trap 'rm -f "${GQL_STDERR}" "${TMPFILE}"' EXIT
+
 CI_JSON=$(gh api graphql -f query="${GQL_QUERY}" \
-  -f owner="${OWNER}" -f repo="${REPO}" -F number="${PR_NUMBER}" 2>/dev/null)
+  -f owner="${OWNER}" -f repo="${REPO}" -F number="${PR_NUMBER}" 2>"${GQL_STDERR}" || true)
+
+if [[ -z "${CI_JSON}" ]]; then
+  GQL_ERR=$(cat "${GQL_STDERR}")
+  echo "WARNING: GraphQL CI status fetch failed: ${GQL_ERR:-no output}" >&2
+fi
 
 CI_STATE=$(echo "${CI_JSON}" \
   | python3 -c "import sys,json; d=json.load(sys.stdin); \
@@ -63,14 +72,14 @@ CI_STATE=$(echo "${CI_JSON}" \
 echo "CI_STATE=${CI_STATE}"
 
 BOT_PATTERN='sentry\[bot\]|claude\[bot\]|coderabbit\[bot\]'
+# Note: fetches only page 1 (default 30 comments). --paginate is intentionally omitted:
+# it concatenates raw JSON arrays as "[...][...]" which is invalid JSON and breaks parsing.
+# Bot review comments typically appear early, so page 1 is sufficient in practice.
 COMMENTS_JSON=$(gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" \
-  --paginate 2>/dev/null || {
+  2>/dev/null || {
   echo "WARNING: failed to fetch PR comments; proceeding without findings" >&2
   echo "[]"
 })
-
-TMPFILE=$(mktemp /tmp/post-push-comments.XXXXXX.json)
-trap 'rm -f "${TMPFILE}"' EXIT
 printf '%s' "${COMMENTS_JSON}" >"${TMPFILE}"
 
 python3 - "${TMPFILE}" "${CURRENT_COMMIT}" "${BOT_PATTERN}" <<'PYEOF'
