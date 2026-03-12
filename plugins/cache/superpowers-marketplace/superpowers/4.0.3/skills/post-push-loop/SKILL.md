@@ -41,7 +41,9 @@ Poll every 30 seconds:
 bash ~/.claude/scripts/post-push-status.sh <PR_NUMBER>
 ```
 
-Continue polling while `CI_STATE=PENDING` or `CI_STATE=EXPECTED`.
+Continue polling while `CI_STATE=PENDING`, `CI_STATE=EXPECTED`, or `CI_STATE=UNKNOWN`.
+
+`CI_STATE=UNKNOWN` indicates a transient error (network failure or no CI checks registered yet) — treat it as pending and continue polling. It counts against the 15-minute timeout.
 
 Timeout: if `CI_STATE` has not resolved after 15 minutes, escalate with reason
 "CI did not complete within timeout — check for stuck jobs."
@@ -58,12 +60,21 @@ Parse script output using this exact decision table — evaluate in order:
 | `SUCCESS` | Yes | Proceed to Phase 3 |
 | `FAILURE` | Either | Proceed to Phase 3 |
 | `ERROR` | Either | Proceed to Phase 3 |
+| `UNKNOWN` | Either | Return to Phase 1 (transient — treat as pending) |
 
 `CI_STATE=SUCCESS` alone is NOT sufficient to exit — zero `FINDING` lines are also required.
 
 ---
 
 #### Phase 3 — CLASSIFY findings
+
+`FINDING` lines have the format:
+
+```
+FINDING source=<bot> file="<path>" line=<line> comment=<text>
+```
+
+The `file=` value is always double-quoted (strip the outer quotes when reading it). This handles file paths that contain spaces.
 
 For each `FINDING` line, classify as **CONFIDENT_FIX** or **ESCALATE**:
 

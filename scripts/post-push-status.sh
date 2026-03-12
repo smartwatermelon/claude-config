@@ -52,7 +52,7 @@ GQLEOF
 
 GQL_STDERR=$(mktemp /tmp/post-push-gql-err.XXXXXX)
 TMPFILE=$(mktemp /tmp/post-push-comments.XXXXXX.json)
-trap 'rm -f "${GQL_STDERR}" "${TMPFILE}"' EXIT
+trap 'rm -f "${GQL_STDERR}" "${TMPFILE}" "${TMPFILE}_pulls" "${TMPFILE}_issues"' EXIT
 
 CI_JSON=$(gh api graphql -f query="${GQL_QUERY}" \
   -f owner="${OWNER}" -f repo="${REPO}" -F number="${PR_NUMBER}" 2>"${GQL_STDERR}" || true)
@@ -75,12 +75,14 @@ BOT_PATTERN='sentry\[bot\]|claude\[bot\]|coderabbit\[bot\]'
 # Note: fetches only page 1 (default 30 comments). --paginate is intentionally omitted:
 # it concatenates raw JSON arrays as "[...][...]" which is invalid JSON and breaks parsing.
 # Bot review comments typically appear early, so page 1 is sufficient in practice.
-COMMENTS_JSON=$(gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" \
-  2>/dev/null || {
-  echo "WARNING: failed to fetch PR comments; proceeding without findings" >&2
-  echo "[]"
-})
-printf '%s' "${COMMENTS_JSON}" >"${TMPFILE}"
+#
+# Fetch both inline diff comments (pulls/comments) and PR conversation comments
+# (issues/comments). Bots like sentry[bot] post to issues/comments (the PR conversation
+# thread); code review bots typically post to pulls/comments (inline diff comments).
+{ gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" 2>/dev/null || echo "[]"; } >"${TMPFILE}_pulls"
+{ gh api "repos/${OWNER}/${REPO}/issues/${PR_NUMBER}/comments" 2>/dev/null || echo "[]"; } >"${TMPFILE}_issues"
+jq -s '.[0] + .[1]' "${TMPFILE}_pulls" "${TMPFILE}_issues" >"${TMPFILE}"
+rm -f "${TMPFILE}_pulls" "${TMPFILE}_issues"
 
 python3 - "${TMPFILE}" "${CURRENT_COMMIT}" "${BOT_PATTERN}" <<'PYEOF'
 import sys, json, re
@@ -112,5 +114,5 @@ for c in comments:
     path = c.get("path", "")
     line = c.get("line") or c.get("original_line") or ""
     body_oneline = " | ".join(body.splitlines())
-    print(f"FINDING source={login} file={path} line={line} comment={body_oneline}")
+    print(f'FINDING source={login} file="{path}" line={line} comment={body_oneline}')
 PYEOF
