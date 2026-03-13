@@ -1,0 +1,10 @@
+# Minimal local pre-commit config for the .claude repo.
+# The global config (~/.config/pre-commit/config.yaml) runs hooks like black, flake8,
+# prettier, and markdownlint via the pre-commit framework, which calls git write-tree
+# inside its staged_files_only context manager. This conflicts with the index.lock held
+# by git commit itself, causing "fatal: Unable to create .git/index.lock: File exists".
+#
+# Since none of those formatters apply to this repo's bash scripts, an empty repos list
+# is correct. The AI code review (run-review.sh) runs as a separate step in the same
+# pre-commit hook and is NOT affected by this config.
+repos: []
