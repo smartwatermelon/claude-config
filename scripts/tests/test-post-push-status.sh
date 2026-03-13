@@ -79,6 +79,23 @@ EOF
     echo '[]'
     return 0
   fi
+  if echo "${args}" | grep -q "pulls/43/comments"; then
+    echo '[]'
+    return 0
+  fi
+  # PR 43: issues/comments with a comment created between PST-string and UTC time of commit.
+  # Commit at 2026-03-13T02:08:00Z (= 2026-03-12T18:08:00-08:00 PST).
+  # Comment at 2026-03-13T01:00:00Z is 1 hour BEFORE commit in UTC (stale → should be filtered).
+  # Old bug: "2026-03-13T01:00:00Z" > "2026-03-12T18:08:00-08:00" (string compare) → not filtered.
+  # Fixed:   "2026-03-13T01:00:00Z" < "2026-03-13T02:08:00Z" (UTC vs UTC) → correctly filtered.
+  if echo "${args}" | grep -q "issues/43/comments"; then
+    cat <<'EOF'
+[
+  {"id":20,"user":{"login":"sentry[bot]"},"created_at":"2026-03-13T01:00:00Z","body":"Stale PST-timezone trap comment","html_url":"https://github.com/..."}
+]
+EOF
+    return 0
+  fi
   echo "UNEXPECTED gh call: ${args}" >&2
   return 1
 }
@@ -122,6 +139,20 @@ assert_contains "gh called with correct owner/repo (CI_STATE present)" "CI_STATE
 assert_not_contains "unexpected gh call (override values not routed)" "UNEXPECTED gh call" "${override_combined}"
 assert_contains "testowner in resolved owner" "RESOLVED_OWNER=testowner" "${override_combined}"
 assert_contains "testrepo in resolved repo" "RESOLVED_REPO=testrepo" "${override_combined}"
+
+echo ""
+echo "=== Test: UTC timestamp normalization filters stale PST-timezone-trap comments ==="
+# Scenario: commit at 2026-03-13T02:08:00Z (= 2026-03-12T18:08:00-08:00 in PST).
+# A stale bot comment was posted at 2026-03-13T01:00:00Z (1hr before commit in UTC).
+# Bug: %cI gave "2026-03-12T18:08:00-08:00"; string compare with "2026-03-13T01:00:00Z"
+#      incorrectly found comment AFTER commit (Z > - in ASCII) → stale not filtered.
+# Fix: TZ=UTC git show gives "2026-03-13T02:08:00Z"; string compare correctly finds
+#      "2026-03-13T01:00:00Z" < "2026-03-13T02:08:00Z" → stale filtered.
+pst_utc_output=$(POSTPUSH_CURRENT_COMMIT="abc123" \
+  POSTPUSH_COMMIT_TIMESTAMP="2026-03-13T02:08:00Z" \
+  bash "${SUBJECT}" 43 2>/dev/null)
+assert_not_contains "PST-timezone-trap stale comment filtered" "Stale PST-timezone trap comment" "${pst_utc_output}"
+assert_contains "CI_STATE present for PR 43" "CI_STATE=" "${pst_utc_output}"
 
 echo ""
 echo "=== Summary ==="

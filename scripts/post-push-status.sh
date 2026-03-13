@@ -32,7 +32,7 @@ if [[ -z "${CURRENT_COMMIT}" ]]; then
   exit 1
 fi
 
-COMMIT_TIMESTAMP="${POSTPUSH_COMMIT_TIMESTAMP:-$(git show -s --format=%cI "${CURRENT_COMMIT}" 2>/dev/null || echo "")}"
+COMMIT_TIMESTAMP="${POSTPUSH_COMMIT_TIMESTAMP:-$(TZ=UTC git show -s --format=%cd --date=format:'%Y-%m-%dT%H:%M:%SZ' "${CURRENT_COMMIT}" 2>/dev/null || echo "")}"
 
 GQL_QUERY=$(
   cat <<'GQLEOF'
