@@ -80,6 +80,12 @@
     "react-native-3d@smartwatermelon-marketplace": true,
     "frontend-design@claude-code-plugins": true
   },
+  "spinnerTipsOverride": {
+    "tips": [
+      "After pushing a PR, run /post-push-loop <pr-number> to monitor CI autonomously"
+    ],
+    "excludeDefault": false
+  },
   "alwaysThinkingEnabled": true,
   "gitAttribution": true,
   "skipDangerousModePermissionPrompt": true
