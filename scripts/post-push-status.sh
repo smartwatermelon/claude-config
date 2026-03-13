@@ -24,6 +24,8 @@ if [[ -z "${OWNER}" ]] || [[ -z "${REPO}" ]]; then
   fi
 fi
 
+echo "RESOLVED_OWNER=${OWNER} RESOLVED_REPO=${REPO}" >&2
+
 CURRENT_COMMIT="${POSTPUSH_CURRENT_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo "")}"
 if [[ -z "${CURRENT_COMMIT}" ]]; then
   echo "ERROR: cannot determine current commit" >&2

@@ -105,6 +105,8 @@ override_combined=$(POSTPUSH_OWNER=testowner POSTPUSH_REPO=testrepo \
   POSTPUSH_CURRENT_COMMIT="abc123" bash "${SUBJECT}" 99 2>&1)
 assert_contains "gh called with correct owner/repo (CI_STATE present)" "CI_STATE=" "${override_combined}"
 assert_not_contains "unexpected gh call (override values not routed)" "UNEXPECTED gh call" "${override_combined}"
+assert_contains "testowner in resolved owner" "RESOLVED_OWNER=testowner" "${override_combined}"
+assert_contains "testrepo in resolved repo" "RESOLVED_REPO=testrepo" "${override_combined}"
 
 echo ""
 echo "=== Summary ==="
