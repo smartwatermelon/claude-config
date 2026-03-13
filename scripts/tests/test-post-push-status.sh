@@ -69,7 +69,8 @@ EOF
   if echo "${args}" | grep -q "issues/42/comments"; then
     cat <<'EOF'
 [
-  {"id":10,"user":{"login":"sentry[bot]"},"body":"Critical: SQL injection vulnerability detected","html_url":"https://github.com/..."}
+  {"id":10,"user":{"login":"sentry[bot]"},"created_at":"2024-01-15T12:00:00Z","body":"Critical: SQL injection vulnerability detected","html_url":"https://github.com/..."},
+  {"id":11,"user":{"login":"sentry[bot]"},"created_at":"2024-01-14T08:00:00Z","body":"Stale finding from prior iteration","html_url":"https://github.com/..."}
 ]
 EOF
     return 0
@@ -84,7 +85,11 @@ EOF
 export -f gh
 
 echo "=== Test: CI state from statusCheckRollup ==="
-output=$(POSTPUSH_CURRENT_COMMIT="abc123" bash "${SUBJECT}" 42 2>/dev/null)
+# Commit timestamp set to 2024-01-15T10:00:00Z so:
+#   - issues/comment id=10 (created_at 2024-01-15T12:00:00Z) is FRESH → included
+#   - issues/comment id=11 (created_at 2024-01-14T08:00:00Z) is STALE → excluded
+output=$(POSTPUSH_CURRENT_COMMIT="abc123" POSTPUSH_COMMIT_TIMESTAMP="2024-01-15T10:00:00Z" \
+  bash "${SUBJECT}" 42 2>/dev/null)
 assert_contains "CI_STATE=FAILURE present" "CI_STATE=FAILURE" "${output}"
 
 echo ""
@@ -93,7 +98,11 @@ assert_contains "sentry[bot] finding included" "source=sentry[bot]" "${output}"
 assert_contains "claude[bot] finding included" "source=claude[bot]" "${output}"
 assert_not_contains "dependabot excluded" "source=dependabot[bot]" "${output}"
 assert_not_contains "stale commit excluded" "oldsha" "${output}"
-assert_contains "issues/comments sentry[bot] finding included" "SQL injection" "${output}"
+assert_contains "issues/comments fresh sentry[bot] finding included" "SQL injection" "${output}"
+
+echo ""
+echo "=== Test: Timestamp filter excludes stale issues/comments ==="
+assert_not_contains "stale issues/comment excluded" "Stale finding from prior iteration" "${output}"
 
 echo ""
 echo "=== Test: Finding fields present ==="

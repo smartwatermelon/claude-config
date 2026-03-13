@@ -32,6 +32,8 @@ if [[ -z "${CURRENT_COMMIT}" ]]; then
   exit 1
 fi
 
+COMMIT_TIMESTAMP="${POSTPUSH_COMMIT_TIMESTAMP:-$(git show -s --format=%cI "${CURRENT_COMMIT}" 2>/dev/null || echo "")}"
+
 GQL_QUERY=$(
   cat <<'GQLEOF'
   query($owner:String!, $repo:String!, $number:Int!) {
@@ -86,12 +88,13 @@ BOT_PATTERN='sentry\[bot\]|claude\[bot\]|coderabbit\[bot\]'
 jq -s '.[0] + .[1]' "${TMPFILE}_pulls" "${TMPFILE}_issues" >"${TMPFILE}" || echo "[]" >"${TMPFILE}"
 rm -f "${TMPFILE}_pulls" "${TMPFILE}_issues"
 
-python3 - "${TMPFILE}" "${CURRENT_COMMIT}" "${BOT_PATTERN}" <<'PYEOF'
+python3 - "${TMPFILE}" "${CURRENT_COMMIT}" "${BOT_PATTERN}" "${COMMIT_TIMESTAMP}" <<'PYEOF'
 import sys, json, re
 
-comments_file  = sys.argv[1]
-current_commit = sys.argv[2]
-bot_pattern    = sys.argv[3]
+comments_file    = sys.argv[1]
+current_commit   = sys.argv[2]
+bot_pattern      = sys.argv[3]
+commit_timestamp = sys.argv[4] if len(sys.argv) > 4 else ""
 
 try:
     with open(comments_file) as fh:
@@ -112,7 +115,14 @@ for c in comments:
     if "original_commit_id" in c:
         if c["original_commit_id"] != current_commit:
             continue
-    # For issues/comments, include all matching-bot comments (no commit filter available)
+    else:
+        # issues/comments: filter by created_at >= commit_timestamp to exclude stale
+        # findings from prior loop iterations. If either timestamp is unavailable,
+        # include the comment (fail open — better to surface a stale finding than miss a real one).
+        if commit_timestamp:
+            created_at = c.get("created_at", "")
+            if created_at and created_at < commit_timestamp:
+                continue
     body = c.get("body", "").strip()
     if not body:
         continue

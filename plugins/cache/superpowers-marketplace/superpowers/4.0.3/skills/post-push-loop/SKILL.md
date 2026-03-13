@@ -76,6 +76,12 @@ FINDING source=<bot> file="<path>" line=<line> comment=<text>
 
 The `file=` value is always double-quoted (strip the outer quotes when reading it). This handles file paths that contain spaces.
 
+**Note on `issues/comments` staleness:** Findings from the PR conversation thread
+(`issues/comments`) cannot be filtered by commit — that API provides no
+`original_commit_id` field. These findings may include bot comments from previous
+commits. Treat an `issues/comments` finding with an empty `file=` and `line=` as a
+potential staleness indicator; apply extra scrutiny before classifying as CONFIDENT_FIX.
+
 For each `FINDING` line, classify as **CONFIDENT_FIX** or **ESCALATE**:
 
 **CONFIDENT_FIX** (all of the following must be true):
@@ -199,3 +205,6 @@ Await human response. Do not proceed autonomously.
 - Never use `--no-verify` on any git command.
 - Never push to `main`.
 - Set `POSTPUSH_LOOP=1` on every `git push` call within this skill.
+- Never exceed 5 push iterations in a single loop session. After 5 iterations,
+  escalate with reason "Iteration limit reached — autonomous loop terminated to
+  prevent unbounded cost."
