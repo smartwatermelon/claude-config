@@ -4,6 +4,7 @@ set -euo pipefail
 # Unset BASH_ENV so child bash processes do not re-source the global functions.sh,
 # which would re-export the real gh() wrapper and override the test mock.
 unset BASH_ENV
+unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBJECT="${SCRIPT_DIR}/../post-push-status.sh"
@@ -42,6 +43,11 @@ gh() {
   # Log all calls so tests can assert on owner/repo values flowing through
   echo "MOCK_CALLED_WITH=${args}" >&2
   if echo "${args}" | grep -q "statusCheckRollup"; then
+    # For PR 99 (owner/repo override test), require owner=testowner so wrong owner hits UNEXPECTED
+    if echo "${args}" | grep -qF "number=99" && ! echo "${args}" | grep -qF "owner=testowner"; then
+      echo "UNEXPECTED gh call (wrong owner for PR 99 GQL): ${args}" >&2
+      return 1
+    fi
     echo '{"data":{"repository":{"pullRequest":{"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]}}}}}'
     return 0
   fi
@@ -56,7 +62,7 @@ gh() {
 EOF
     return 0
   fi
-  if echo "${args}" | grep -q "pulls/99/comments"; then
+  if echo "${args}" | grep -qF "testowner/testrepo/pulls/99/comments"; then
     echo '[]'
     return 0
   fi
@@ -68,7 +74,7 @@ EOF
 EOF
     return 0
   fi
-  if echo "${args}" | grep -q "issues/99/comments"; then
+  if echo "${args}" | grep -qF "testowner/testrepo/issues/99/comments"; then
     echo '[]'
     return 0
   fi
