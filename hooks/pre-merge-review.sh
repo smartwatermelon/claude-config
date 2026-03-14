@@ -512,6 +512,7 @@ fi
 # Exclude Netlify informational checks that return NEUTRAL when nothing changed:
 # - "Pages changed" / "Pages changed - <site-name>" - no pages modified
 # - "Header rules" / "Header rules - <site-name>" - no headers modified
+# - "Redirect rules" / "Redirect rules - <site-name>" - no redirects modified
 # These checks are informational only; NEUTRAL means "nothing to validate"
 NEUTRAL_CHECKS=$(echo "${PR_JSON}" | jq -r '
   .statusCheckRollup // []
@@ -520,6 +521,7 @@ NEUTRAL_CHECKS=$(echo "${PR_JSON}" | jq -r '
       .conclusion == "NEUTRAL"
       and (.name | startswith("Pages changed") | not)
       and (.name | startswith("Header rules") | not)
+      and (.name | startswith("Redirect rules") | not)
     )
   | "- \(.name): \(.conclusion)"
 ' 2>&1) || true
