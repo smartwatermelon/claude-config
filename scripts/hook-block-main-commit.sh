@@ -9,7 +9,7 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 
 if printf '%s\n' "${cmd}" | grep -qE '^git[[:space:]]' \
    && printf '%s\n' "${cmd}" | grep -qE '[[:space:]]commit([[:space:]]|$)'; then
-  git_dir=$(printf '%s\n' "${cmd}" | sed -En 's/.*git[[:space:]]+-C[[:space:]]+([^[:space:]]+).*/\1/p')
+  git_dir=$(printf '%s\n' "${cmd}" | sed -En 's/^git[[:space:]]+-C[[:space:]]+([^[:space:]]+).*/\1/p')
   if [[ -n "${git_dir}" ]]; then
     branch=$(git -C "${git_dir}" symbolic-ref --short HEAD 2>/dev/null || echo 'unknown')
   else
