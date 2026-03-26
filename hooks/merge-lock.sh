@@ -142,6 +142,7 @@ case "${1:-help}" in
     echo ""
     echo "Commands:"
     echo "  authorize <pr> [reason]  - Create merge authorization (30 min TTL)"
+    echo "     (or auth)"
     echo "  check <pr>               - Check if PR is authorized (exit 0/1)"
     echo "  status <pr>              - Show detailed authorization status"
     echo "  list                     - List all active authorizations"
