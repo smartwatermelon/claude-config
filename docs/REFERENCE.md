@@ -139,6 +139,34 @@ git push
 
 ---
 
+## Agent Reference
+
+### When to Use Agents
+
+| Task | Agent/Tool | Trigger |
+|------|------------|---------|
+| **Code Review** | `code-reviewer` | Before EVERY commit |
+| **Adversarial Review** | `code-critic:adversarial-reviewer` | Every commit (via git hook) |
+| **Architecture Review** | `architect-review` | Structural changes, new patterns |
+| **Security Audit** | `security-auditor` | Auth, data handling, API security |
+| **Library Docs** | `mcp__context7__*` | Framework/library questions |
+
+### Agent Naming Conventions
+
+- **Task tool** (interactive sessions): Use full format `plugin:agent` (e.g., `code-critic:adversarial-reviewer`)
+- **CLI `--agent` flag** (git hooks, scripts): Use short name `agent` (e.g., `adversarial-reviewer`)
+
+### Security-Critical File Patterns
+
+Git hooks detect these patterns and log "elevated scrutiny" during adversarial review:
+
+- **Auth**: `**/auth/**`, `**/oauth/**`, `**/jwt/**`, `**/password/**`, `**/session/**`
+- **Payment**: `**/payment/**`, `**/billing/**`, `**/stripe/**`, `**/paypal/**`
+- **Database**: `**/db/**`, `**/database/**`, `**/models/**`, `**/migrations/**`, `**/schema/**`
+- **Security**: `**/security/**`, `**/crypto/**`, `**/encryption/**`, `**/secrets/**`
+
+---
+
 ## Return to Main Documentation
 
 For mandatory protocols and standards:
