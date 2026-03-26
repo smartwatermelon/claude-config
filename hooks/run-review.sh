@@ -11,6 +11,7 @@ set -euo pipefail
 #
 # USAGE:
 #   git diff --cached | ~/.claude/hooks/run-review.sh
+#   git diff main...HEAD | ~/.claude/hooks/run-review.sh --mode=full-diff
 #
 # EXIT CODES:
 #   0 = Review passed (no blocking issues)
@@ -50,6 +51,15 @@ TIMEOUT_SECONDS=$(git config --get --type=int review.timeout 2>/dev/null || echo
 REVIEW_MAX_LINES=$(git config --get --type=int review.maxLines 2>/dev/null || echo "1000")
 REVIEW_SKIP_THRESHOLD=$(git config --get --type=int review.skipThreshold 2>/dev/null || echo "2500")
 REVIEW_CHUNK_SIZE=$(git config --get --type=int review.chunkSize 2>/dev/null || echo "800")
+
+# --- Mode ---
+REVIEW_MODE="commit"  # default: pre-commit review (code-reviewer + adversarial)
+for arg in "$@"; do
+  case "${arg}" in
+    --mode=full-diff) REVIEW_MODE="full-diff" ;;
+    --mode=*) echo "Unknown mode: ${arg}" >&2; exit 1 ;;
+  esac
+done
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -203,7 +213,7 @@ perform_chunked_review() {
     [[ -z "${file}" ]] && continue
 
     local file_diff
-    file_diff=$(git diff --cached -- "${file}" 2>/dev/null || echo "")
+    file_diff=$(git diff --cached -U10 -- "${file}" 2>/dev/null || echo "")
 
     [[ -z "${file_diff}" ]] && continue
 
@@ -446,6 +456,96 @@ if [[ -n "${CHANGED_FILES}" ]]; then
     log_info "Lockfile-only changes detected - skipping code review (generated files)"
     printf 'skipped: lockfile-only\n' >>"${REVIEW_LOG}" || true
     exit 0
+  fi
+fi
+
+# --- Full-diff mode (pre-push cross-file review) ---
+if [[ "${REVIEW_MODE}" == "full-diff" ]]; then
+  log_info "Full-diff review: analyzing complete feature branch diff"
+  log_info "Diff size: ${DIFF_LINES} lines"
+
+  FULL_DIFF_CACHE="${CACHE_DIR}/full-diff-${DIFF_HASH}"
+
+  # Check cache
+  if [[ -f "${FULL_DIFF_CACHE}" ]]; then
+    CACHED_VERDICT=$(head -1 "${FULL_DIFF_CACHE}")
+    if [[ "${CACHED_VERDICT}" == "PASS" ]]; then
+      log_success "Full-diff review cached: identical diff previously passed"
+      printf 'full-diff: cached PASS\n' >>"${REVIEW_LOG}" || true
+      exit 0
+    fi
+    rm -f "${FULL_DIFF_CACHE}"
+  fi
+
+  FULL_DIFF_PROMPT="You are performing a pre-push full-diff review of an entire feature branch.
+This diff represents ALL changes from main to HEAD — the complete PR surface area.
+
+IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
+Do NOT output Protocol 0 environment check or any preamble.
+Begin your response directly with the verdict in the specified format below.
+
+Focus on CROSS-FILE integration issues that per-commit reviews miss:
+1. Cross-file consistency: Are interfaces used correctly across file boundaries?
+2. State management: Do shared identifiers, IDs, or keys match across files?
+3. Error propagation: Do errors flow correctly from source to handler across files?
+4. Feature completeness: Are all entry points to new features discoverable?
+5. Platform guards: If platform-specific code exists, are both paths tested?
+6. Removed functionality: If UI elements or entry points were removed, is that intentional?
+7. Security surface: Do auth/RLS/permission changes have corresponding test coverage?
+
+Do NOT repeat per-line issues (those are caught in per-commit review).
+Focus ONLY on issues visible when examining the full change set together.
+
+CRITICAL: Respond with this exact format:
+
+VERDICT: [PASS or FAIL]
+
+[If FAIL, list each issue:]
+
+ISSUE: [one-line description]
+SEVERITY: [BLOCKING or WARNING]
+LOCATION: [file:line or file1+file2]
+DETAILS: [explanation of the cross-file issue]
+
+[If PASS:]
+
+No cross-file integration issues found.
+
+Review diff:
+\`\`\`diff
+${DIFF}
+\`\`\`"
+
+  FULL_DIFF_OUTPUT=$(invoke_agent "adversarial-reviewer" "${FULL_DIFF_PROMPT}" "${FULL_DIFF_CACHE}") || true
+
+  [[ -n "${FULL_DIFF_OUTPUT}" ]] || FULL_DIFF_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
+
+  echo "=== FULL-DIFF REVIEW (adversarial-reviewer) ===" >&2
+  echo "${FULL_DIFF_OUTPUT}" >&2
+  echo "" >&2
+
+  { printf '=== FULL-DIFF REVIEW ===\n%s\n' "${FULL_DIFF_OUTPUT}"; } >>"${REVIEW_LOG}" || true
+
+  if echo "${FULL_DIFF_OUTPUT}" | grep -q "VERDICT: PASS"; then
+    printf 'full-diff: PASS\n' >>"${REVIEW_LOG}" || true
+    log_success "Full-diff review passed"
+    exit 0
+  elif echo "${FULL_DIFF_OUTPUT}" | grep -q "VERDICT: FAIL"; then
+    if echo "${FULL_DIFF_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
+      printf 'full-diff: FAIL (blocking)\n' >>"${REVIEW_LOG}" || true
+      log_error "Full-diff review found blocking cross-file issues"
+      exit 1
+    else
+      printf 'full-diff: FAIL (warnings only)\n' >>"${REVIEW_LOG}" || true
+      log_warn "Full-diff review found warnings (non-blocking)"
+      exit 0
+    fi
+  else
+    log_error "Could not parse full-diff review verdict"
+    log_error "Output was:"
+    echo "${FULL_DIFF_OUTPUT}" | head -20 >&2
+    printf 'full-diff: FAIL (unparseable)\n' >>"${REVIEW_LOG}" || true
+    exit 1
   fi
 fi
 
