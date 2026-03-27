@@ -96,3 +96,4 @@ See `CLAUDE.md` for protocol documentation.
 - Superpowers marketplace: <https://github.com/obra/superpowers-marketplace>
 - claude-code-workflows: <https://github.com/wshobson/agents>
 - Humanizer skill: <https://github.com/blader/humanizer>
+# Token permission test — 2026-03-27T17:29:12Z
