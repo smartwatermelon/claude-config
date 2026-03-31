@@ -78,6 +78,7 @@
     "team-collaboration@claude-code-workflows": false,
     "code-critic@smartwatermelon-marketplace": true,
     "react-native-3d@smartwatermelon-marketplace": true,
+    "ci-workflows@smartwatermelon-marketplace": true,
     "frontend-design@claude-code-plugins": true,
     "imessage@claude-plugins-official": false
   },
@@ -90,7 +91,6 @@
     }
   },
   "spinnerTipsOverride": {
-    "excludeDefault": false,
     "tips": [
       "After pushing a PR, run /post-push-loop <pr-number> to monitor CI autonomously"
     ]
