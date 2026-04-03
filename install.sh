@@ -218,11 +218,16 @@ repair_symlinks() {
 
     # Only repair files that exist as regular files where symlinks should be
     if [[ -f "${link}" && ! -L "${link}" ]]; then
+      if [[ "${DRY_RUN}" == true ]]; then
+        _dry "Would repair: ${link} -> ${target}"
+        ((repair_count += 1))
+        continue
+      fi
       # Compare content — if deploy copy has edits, preserve them and stage
       if ! diff -q "${link}" "${target}" &>/dev/null; then
         _warn "Content differs — copying ${link} back to repo and staging"
         cp "${link}" "${target}"
-        git -C "${REPO_DIR}" add "${file}"
+        git -C "${REPO_DIR}" add "${file}" || _warn "git add failed for ${file} — stage manually"
       fi
       rm "${link}"
       ln -s "${target}" "${link}"
@@ -273,6 +278,10 @@ fi
 
 _info "Running smoke tests..."
 
+if [[ "${DRY_RUN}" == true ]]; then
+  _dry "Would run smoke tests (skipped in dry-run mode)"
+else
+
 # Key files must be symlinks
 for key_file in settings.json CLAUDE.md; do
   link="${DEPLOY_DIR}/${key_file}"
@@ -316,6 +325,8 @@ for file in "${_TRACKED_FILES[@]}"; do
     *) ;;
   esac
 done
+
+fi  # end dry-run skip for smoke tests
 
 # Full symlink health check — verify all non-excluded deploy paths
 if [[ "${DRY_RUN}" == true ]]; then
