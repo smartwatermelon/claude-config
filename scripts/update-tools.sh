@@ -6,6 +6,11 @@ set -euo pipefail
 # Maintains symlink health, updates submodules, and audits ~/.claude/.
 # Exit 0 always — must not break the update flow.
 
+if [[ "${BASH_VERSINFO[0]}" -lt 5 ]]; then
+  printf '[WARN]  update-tools.sh requires Bash 5+, found %s. Skipping.\n' "${BASH_VERSION}" >&2
+  exit 0
+fi
+
 trap 'exit 0' ERR
 
 # ── Constants ───────────────────────────────────────────

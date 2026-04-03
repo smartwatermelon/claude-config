@@ -218,10 +218,11 @@ repair_symlinks() {
 
     # Only repair files that exist as regular files where symlinks should be
     if [[ -f "${link}" && ! -L "${link}" ]]; then
-      # Compare content — if deploy copy has edits, preserve them
+      # Compare content — if deploy copy has edits, preserve them and stage
       if ! diff -q "${link}" "${target}" &>/dev/null; then
-        _warn "Content differs — copying ${link} back to repo"
+        _warn "Content differs — copying ${link} back to repo and staging"
         cp "${link}" "${target}"
+        git -C "${REPO_DIR}" add "${file}"
       fi
       rm "${link}"
       ln -s "${target}" "${link}"
