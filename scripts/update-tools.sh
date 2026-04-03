@@ -48,15 +48,32 @@ fi
 
 _info "Auditing ${DEPLOY_DIR}/..."
 
+# Directories containing symlinked repo files (not symlinks themselves)
+_REPO_MANAGED_DIRS=()
+mapfile -t _tracked_files < <(git -C "${REPO_DIR}" ls-files 2>/dev/null || true)
+for file in "${_tracked_files[@]}"; do
+  dir="${file%%/*}"
+  # Only add top-level dirs, skip top-level files
+  [[ "${dir}" != "${file}" ]] || continue
+  local_found=false
+  for existing in "${_REPO_MANAGED_DIRS[@]+"${_REPO_MANAGED_DIRS[@]}"}"; do
+    if [[ "${existing}" == "${dir}" ]]; then
+      local_found=true
+      break
+    fi
+  done
+  "${local_found}" || _REPO_MANAGED_DIRS+=("${dir}")
+done
+
 # Files and directories that Claude Code manages at runtime
 _KNOWN_RUNTIME=(
   # Directories
   "agents-local" "backups" "cache" "channels" "debug"
   "file-history" "logs" "memory" "merge-locks" "paste-cache"
-  "pending-issues" "plans" "projects" "sessions" "shell-snapshots"
-  "tasks" "telemetry" "todos"
+  "pending-issues" "plans" "projects" "sessions" "session-env"
+  "shell-snapshots" "statsig" "tasks" "telemetry" "todos"
   # Files
-  ".claude.json" "mcp.json" "mcp-needs-auth-cache.json"
+  ".claude.json" ".DS_Store" "mcp.json" "mcp-needs-auth-cache.json"
   "stats-cache.json" "blocked-commands.log" "last-review-result.log"
   "settings.local.json" ".credentials.json"
 )
@@ -97,7 +114,18 @@ for entry in "${DEPLOY_DIR}"/*  "${DEPLOY_DIR}"/.*; do
   # Skip if the glob didn't match anything
   [[ -e "${entry}" || -L "${entry}" ]] || continue
 
+  # Check if it's a repo-managed directory (contains symlinked files)
+  _is_repo_managed=false
+  for rdir in "${_REPO_MANAGED_DIRS[@]+"${_REPO_MANAGED_DIRS[@]}"}"; do
+    if [[ "${basename}" == "${rdir}" ]]; then
+      _is_repo_managed=true
+      break
+    fi
+  done
+
   if [[ -L "${entry}" ]]; then
+    symlinked_count=$((symlinked_count + 1))
+  elif "${_is_repo_managed}"; then
     symlinked_count=$((symlinked_count + 1))
   elif _is_known_runtime "${basename}"; then
     runtime_count=$((runtime_count + 1))
