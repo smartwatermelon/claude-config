@@ -4,21 +4,61 @@ Personal Claude Code configuration for Andrew Rich.
 
 ## Setup
 
-When cloning this repository, you need to initialize the git submodules:
+**Do NOT clone this repo directly into `~/.claude`.** The repo lives in your
+development directory and symlinks its tracked files into `~/.claude`.
 
 ```bash
-# Clone with submodules
-git clone --recurse-submodules git@github.com:smartwatermelon/claude-config.git ~/.claude
+# 1. Clone (with submodules) into your development directory
+git clone --recurse-submodules git@github.com:smartwatermelon/claude-config.git ~/Developer/claude-config
 
-# OR if already cloned, initialize submodules
-cd ~/.claude
-git submodule update --init --recursive
+# 2. Run the install script to create symlinks into ~/.claude
+~/Developer/claude-config/install.sh
 ```
 
-### What Gets Initialized
+That's it. All tracked files are now symlinked from `~/Developer/claude-config`
+into `~/.claude`. Runtime state (sessions, projects, telemetry, etc.) stays in
+`~/.claude` untouched.
 
-- **plugins/marketplaces/superpowers-marketplace** - The obra/superpowers-marketplace
-- **skills/humanizer** - The blader/humanizer skill
+### How it works
+
+`install.sh` discovers tracked files via `git ls-files` and creates per-file
+symlinks from the repo into `~/.claude`. Submodule directories get
+directory-level symlinks. Repo-meta files (`.github/`, tests, README, etc.)
+are excluded.
+
+```
+~/Developer/claude-config/settings.json  -->  ~/.claude/settings.json  (symlink)
+~/Developer/claude-config/hooks/run-review.sh  -->  ~/.claude/hooks/run-review.sh  (symlink)
+~/Developer/claude-config/plugins/marketplaces/superpowers-marketplace  -->  ~/.claude/plugins/marketplaces/superpowers-marketplace  (dir symlink)
+```
+
+Edits to symlinked files (by you or Claude Code) write through to the repo,
+so changes show up as unstaged diffs in `~/Developer/claude-config`.
+
+### install.sh flags
+
+| Flag | Effect |
+|------|--------|
+| `--dry-run` | Show what would be done without making changes |
+| `--repair` | Fix broken symlinks (atomic write recovery) |
+| `--help` | Show usage |
+
+The script is idempotent — safe to run repeatedly.
+
+### Ongoing maintenance: update-tools.sh
+
+`scripts/update-tools.sh` is called automatically by the `updates` shell
+command (via `_claude_update()`). It:
+
+1. **Repairs** broken symlinks via `install.sh --repair`
+2. **Updates** git submodules to latest remote
+3. **Audits** `~/.claude` — categorizes entries as symlinked (repo-managed),
+   known-runtime (Claude Code managed), or unknown (needs human triage)
+
+### Submodules
+
+- **plugins/marketplaces/superpowers-marketplace** — obra/superpowers-marketplace
+- **skills/humanizer** — blader/humanizer
 
 ## Installed Plugins
 
