@@ -370,6 +370,14 @@ fi
 # Only remove files that are git repo artifacts — not user config files.
 # .pre-commit-config.yaml, .flake8, .editorconfig are repo-tooling that
 # should not exist in the deploy dir, but are harmless if present.
+# Safety: if REPO_DIR and DEPLOY_DIR resolve to the same path, skip —
+# we'd be deleting our own repo's git data.
+_resolved_repo="$(cd "${REPO_DIR}" && pwd -P)"
+_resolved_deploy="$(cd "${DEPLOY_DIR}" && pwd -P)"
+if [[ "${_resolved_repo}" == "${_resolved_deploy}" ]]; then
+  _warn "REPO_DIR and DEPLOY_DIR are the same path — skipping git metadata cleanup"
+else
+
 _GIT_META_FILES=(".git" ".gitignore" ".gitmodules")
 
 for meta in "${_GIT_META_FILES[@]}"; do
@@ -390,6 +398,8 @@ for meta in "${_GIT_META_FILES[@]}"; do
     fi
   fi
 done
+
+fi  # end REPO_DIR != DEPLOY_DIR guard
 
 # ============================================================================
 # 9. SUMMARY
