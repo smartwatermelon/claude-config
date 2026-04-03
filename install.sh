@@ -362,7 +362,37 @@ else
 fi
 
 # ============================================================================
-# 8. SUMMARY
+# 8. CLEAN UP DEPLOY-DIR GIT METADATA
+# ============================================================================
+# If ~/.claude was previously its own git clone, remove the repo metadata.
+# Tracked files are now symlinks — the git repo belongs in ~/Developer/claude-config.
+
+# Only remove files that are git repo artifacts — not user config files.
+# .pre-commit-config.yaml, .flake8, .editorconfig are repo-tooling that
+# should not exist in the deploy dir, but are harmless if present.
+_GIT_META_FILES=(".git" ".gitignore" ".gitmodules")
+
+for meta in "${_GIT_META_FILES[@]}"; do
+  meta_path="${DEPLOY_DIR}/${meta}"
+  # Skip if it's already a symlink (managed by us)
+  [[ -L "${meta_path}" ]] && continue
+  if [[ -e "${meta_path}" ]]; then
+    if [[ "${DRY_RUN}" == true ]]; then
+      _dry "Would remove deploy-dir git metadata: ${meta_path}"
+    else
+      if rm -rf "${meta_path}"; then
+        _ok "Removed deploy-dir git metadata: ${meta_path}"
+        installed+=("removed:${meta}")
+      else
+        _err "Failed to remove: ${meta_path}"
+        failures+=("rm-failed:${meta}")
+      fi
+    fi
+  fi
+done
+
+# ============================================================================
+# 9. SUMMARY
 # ============================================================================
 
 echo ""
