@@ -11,6 +11,7 @@ set -euo pipefail
 #
 # USAGE:
 #   git diff --cached | ~/.claude/hooks/run-review.sh
+#   git diff main...HEAD | ~/.claude/hooks/run-review.sh --mode=full-diff
 #
 # EXIT CODES:
 #   0 = Review passed (no blocking issues)
@@ -51,6 +52,21 @@ REVIEW_MAX_LINES=$(git config --get --type=int review.maxLines 2>/dev/null || ec
 REVIEW_SKIP_THRESHOLD=$(git config --get --type=int review.skipThreshold 2>/dev/null || echo "2500")
 REVIEW_CHUNK_SIZE=$(git config --get --type=int review.chunkSize 2>/dev/null || echo "800")
 
+# --- Mode ---
+REVIEW_MODE="commit"  # default: pre-commit review (code-reviewer + adversarial)
+for arg in "$@"; do
+  case "${arg}" in
+    --mode=full-diff) REVIEW_MODE="full-diff" ;;
+    --mode=codebase) REVIEW_MODE="codebase" ;;
+    --mode=*) echo "Unknown mode: ${arg}" >&2; exit 1 ;;
+  esac
+done
+
+# Override timeout for codebase mode (longer due to tool-access exploration)
+if [[ "${REVIEW_MODE}" == "codebase" ]]; then
+  TIMEOUT_SECONDS=$(git config --get --type=int review.codebaseTimeout 2>/dev/null || echo "300")
+fi
+
 # --- Colors ---
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
@@ -63,6 +79,20 @@ log_info() { echo -e "${BLUE}[review]${NC} $*" >&2; }
 log_success() { echo -e "${GREEN}[review]${NC} $*" >&2; }
 log_warn() { echo -e "${YELLOW}[review]${NC} $*" >&2; }
 log_error() { echo -e "${RED}[review]${NC} $*" >&2; }
+
+# --- Shared issue library (for --mode=codebase non-blocking issues) ---
+_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-review-issues.sh
+source "${_LIB_DIR}/lib-review-issues.sh"
+
+# Resolve repo metadata for issue creation (best-effort)
+if [[ -z "${REPO_OWNER:-}" ]]; then
+  _remote_url=$(git remote get-url origin 2>/dev/null || echo "")
+  if [[ "${_remote_url}" =~ github\.com[:/]([^/]+)/([^/.]+) ]]; then
+    export REPO_OWNER="${BASH_REMATCH[1]}"
+    export REPO_NAME="${BASH_REMATCH[2]}"
+  fi
+fi
 
 # --- Preflight ---
 if [[ ! -x "${CLAUDE_CLI}" ]]; then
@@ -203,7 +233,7 @@ perform_chunked_review() {
     [[ -z "${file}" ]] && continue
 
     local file_diff
-    file_diff=$(git diff --cached -- "${file}" 2>/dev/null || echo "")
+    file_diff=$(git diff --cached -U10 -- "${file}" 2>/dev/null || echo "")
 
     [[ -z "${file_diff}" ]] && continue
 
@@ -446,6 +476,236 @@ if [[ -n "${CHANGED_FILES}" ]]; then
     log_info "Lockfile-only changes detected - skipping code review (generated files)"
     printf 'skipped: lockfile-only\n' >>"${REVIEW_LOG}" || true
     exit 0
+  fi
+fi
+
+# --- Full-diff mode (pre-push cross-file review) ---
+if [[ "${REVIEW_MODE}" == "full-diff" ]]; then
+  log_info "Full-diff review: analyzing complete feature branch diff"
+  log_info "Diff size: ${DIFF_LINES} lines"
+
+  FULL_DIFF_CACHE="${CACHE_DIR}/full-diff-${DIFF_HASH}"
+
+  # Check cache
+  if [[ -f "${FULL_DIFF_CACHE}" ]]; then
+    CACHED_VERDICT=$(head -1 "${FULL_DIFF_CACHE}")
+    if [[ "${CACHED_VERDICT}" == "PASS" ]]; then
+      log_success "Full-diff review cached: identical diff previously passed"
+      printf 'full-diff: cached PASS\n' >>"${REVIEW_LOG}" || true
+      exit 0
+    fi
+    rm -f "${FULL_DIFF_CACHE}"
+  fi
+
+  FULL_DIFF_PROMPT="You are performing a pre-push full-diff review of an entire feature branch.
+This diff represents ALL changes from main to HEAD — the complete PR surface area.
+
+IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
+Do NOT output Protocol 0 environment check or any preamble.
+Begin your response directly with the verdict in the specified format below.
+
+Focus on CROSS-FILE integration issues that per-commit reviews miss:
+1. Cross-file consistency: Are interfaces used correctly across file boundaries?
+2. State management: Do shared identifiers, IDs, or keys match across files?
+3. Error propagation: Do errors flow correctly from source to handler across files?
+4. Feature completeness: Are all entry points to new features discoverable?
+5. Platform guards: If platform-specific code exists, are both paths tested?
+6. Removed functionality: If UI elements or entry points were removed, is that intentional?
+7. Security surface: Do auth/RLS/permission changes have corresponding test coverage?
+
+Do NOT repeat per-line issues (those are caught in per-commit review).
+Focus ONLY on issues visible when examining the full change set together.
+
+CRITICAL: Respond with this exact format:
+
+VERDICT: [PASS or FAIL]
+
+[If FAIL, list each issue:]
+
+ISSUE: [one-line description]
+SEVERITY: [BLOCKING or WARNING]
+LOCATION: [file:line or file1+file2]
+DETAILS: [explanation of the cross-file issue]
+
+[If PASS:]
+
+No cross-file integration issues found.
+
+Review diff:
+\`\`\`diff
+${DIFF}
+\`\`\`"
+
+  FULL_DIFF_OUTPUT=$(invoke_agent "adversarial-reviewer" "${FULL_DIFF_PROMPT}" "${FULL_DIFF_CACHE}") || true
+
+  [[ -n "${FULL_DIFF_OUTPUT}" ]] || FULL_DIFF_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
+
+  echo "=== FULL-DIFF REVIEW (adversarial-reviewer) ===" >&2
+  echo "${FULL_DIFF_OUTPUT}" >&2
+  echo "" >&2
+
+  { printf '=== FULL-DIFF REVIEW ===\n%s\n' "${FULL_DIFF_OUTPUT}"; } >>"${REVIEW_LOG}" || true
+
+  if echo "${FULL_DIFF_OUTPUT}" | grep -q "VERDICT: PASS"; then
+    printf 'full-diff: PASS\n' >>"${REVIEW_LOG}" || true
+    log_success "Full-diff review passed"
+    exit 0
+  elif echo "${FULL_DIFF_OUTPUT}" | grep -q "VERDICT: FAIL"; then
+    if echo "${FULL_DIFF_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
+      printf 'full-diff: FAIL (blocking)\n' >>"${REVIEW_LOG}" || true
+      log_error "Full-diff review found blocking cross-file issues"
+      exit 1
+    else
+      printf 'full-diff: FAIL (warnings only)\n' >>"${REVIEW_LOG}" || true
+      log_warn "Full-diff review found warnings (non-blocking)"
+      exit 0
+    fi
+  else
+    log_error "Could not parse full-diff review verdict"
+    log_error "Output was:"
+    echo "${FULL_DIFF_OUTPUT}" | head -20 >&2
+    printf 'full-diff: FAIL (unparseable)\n' >>"${REVIEW_LOG}" || true
+    exit 1
+  fi
+fi
+
+# --- Codebase mode (pre-push whole-codebase review with tool access) ---
+if [[ "${REVIEW_MODE}" == "codebase" ]]; then
+  log_info "Codebase review: analyzing diff with full codebase tool access"
+  log_info "Diff size: ${DIFF_LINES} lines | Timeout: ${TIMEOUT_SECONDS}s"
+
+  CODEBASE_CACHE="${CACHE_DIR}/codebase-${DIFF_HASH}"
+
+  # Check cache
+  if [[ -f "${CODEBASE_CACHE}" ]]; then
+    CACHED_VERDICT=$(head -1 "${CODEBASE_CACHE}")
+    if [[ "${CACHED_VERDICT}" == "PASS" ]]; then
+      log_success "Codebase review cached: identical diff previously passed"
+      printf 'codebase: cached PASS\n' >>"${REVIEW_LOG}" || true
+      exit 0
+    fi
+    rm -f "${CODEBASE_CACHE}"
+  fi
+
+  # Write diff to temp file so the agent can re-read it via Read tool
+  DIFF_TMPFILE=$(mktemp "${TMPDIR:-/tmp}/codebase-review-diff.XXXXXX")
+  printf '%s\n' "${DIFF}" >"${DIFF_TMPFILE}"
+
+  REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd -L)
+
+  CODEBASE_PROMPT="You are performing a codebase-aware review of a feature branch diff.
+You have full tool access: Read, Grep, Glob. Use them to explore the repository.
+
+IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
+Do NOT output Protocol 0 environment check or any preamble.
+Begin your response directly with the analysis, then end with the verdict.
+
+Repository root: ${REPO_ROOT}
+Diff file (re-readable): ${DIFF_TMPFILE}
+
+REVIEW PROCEDURE:
+1. Read the diff file at ${DIFF_TMPFILE} to identify what changed.
+2. For each changed file, use Read to view the FULL file for surrounding context.
+3. Follow imports and references ONE level out — check callers/callees of changed functions.
+4. Look specifically for:
+   a. Field/contract violations: renamed or removed fields still referenced elsewhere
+   b. Data flow bugs: values passed to wrong parameters, type mismatches
+   c. Date/timezone inconsistencies: mixing UTC and local, wrong format strings
+   d. Dead UI elements: buttons/links pointing to removed routes or handlers
+   e. Cache key mismatches: cache writes and reads using different key patterns
+   f. Platform-specific gotchas: iOS/Android/web divergence without guards
+
+CLASSIFICATION:
+- BLOCK: Issue is INTRODUCED by this diff (new bug, new inconsistency). These BLOCK the push.
+- NON_BLOCKING_ISSUE: Issue is PRE-EXISTING (was there before this diff). These are filed as issues.
+
+CRITICAL: Respond with this exact format:
+
+If there are BLOCKING issues:
+
+VERDICT: FAIL
+
+ISSUE: <one-line title>
+SEVERITY: BLOCKING
+LOCATION: <file:line>
+DETAILS: <explanation of the bug and how to fix it>
+
+If there are NO blocking issues (with optional non-blocking issues):
+
+VERDICT: PASS
+
+No blocking issues found.
+
+NON_BLOCKING_ISSUE:
+TITLE: <one-line title>
+SOURCE: pre-push whole-codebase review
+LOCATION: <file:line>
+DETAILS: <explanation of the pre-existing issue>
+END_ISSUE"
+
+  log_info "Running codebase reviewer with tool access..."
+  codebase_start=$(date +%s)
+
+  codebase_exit=0
+  # Invoke WITHOUT --tools "" so agent gets default tool access (Read, Grep, Glob).
+  # --allowedTools restricts to safe read-only tools only.
+  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "adversarial-reviewer" -p --allowedTools "Read,Grep,Glob" --no-session-persistence 2>&1) || codebase_exit=$?
+
+  codebase_end=$(date +%s)
+  codebase_elapsed=$(( codebase_end - codebase_start ))
+  log_info "Codebase review completed in ${codebase_elapsed}s"
+
+  # Clean up temp file
+  rm -f "${DIFF_TMPFILE}"
+
+  # Handle timeout
+  if [[ ${codebase_exit} -eq 124 ]]; then
+    log_error "Codebase review timed out after ${TIMEOUT_SECONDS}s"
+    log_error "BLOCKING: Review timeout means review did not complete."
+    log_error "Increase timeout: git config review.codebaseTimeout 600"
+    printf 'codebase: FAIL (timeout)\n' >>"${REVIEW_LOG}" || true
+    exit 1
+  fi
+
+  # Handle other CLI errors
+  if [[ ${codebase_exit} -ne 0 ]]; then
+    log_error "Codebase reviewer exited with error code ${codebase_exit}"
+  fi
+
+  [[ -n "${CODEBASE_OUTPUT}" ]] || CODEBASE_OUTPUT="VERDICT: FAIL (agent error: invoke produced no output)"
+
+  echo "=== CODEBASE REVIEW ===" >&2
+  echo "${CODEBASE_OUTPUT}" >&2
+
+  # Parse verdict and handle results
+  if echo "${CODEBASE_OUTPUT}" | grep -q "VERDICT: PASS"; then
+    echo "PASS" >"${CODEBASE_CACHE}"
+    printf 'codebase: PASS\n' >>"${REVIEW_LOG}" || true
+    log_success "Codebase review passed"
+
+    # Extract and file non-blocking issues (best-effort, never blocks)
+    if echo "${CODEBASE_OUTPUT}" | grep -q "NON_BLOCKING_ISSUE:"; then
+      log_info "Filing non-blocking issues found during codebase review..."
+      create_nonblocking_issues "${CODEBASE_OUTPUT}" || true
+    fi
+
+    exit 0
+  elif echo "${CODEBASE_OUTPUT}" | grep -q "VERDICT: FAIL"; then
+    if echo "${CODEBASE_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
+      printf 'codebase: FAIL (blocking)\n' >>"${REVIEW_LOG}" || true
+      log_error "Codebase review found blocking issues"
+      exit 1
+    else
+      printf 'codebase: FAIL (warnings only)\n' >>"${REVIEW_LOG}" || true
+      log_warn "Codebase review found warnings (non-blocking)"
+      exit 0
+    fi
+  else
+    log_error "Could not parse codebase review verdict"
+    log_error "Output was:"
+    echo "${CODEBASE_OUTPUT}" | head -20 >&2
+    printf 'codebase: FAIL (unparseable)\n' >>"${REVIEW_LOG}" || true
+    exit 1
   fi
 fi
 
