@@ -421,7 +421,7 @@ fi
 # Progressive review strategy based on diff size
 DIFF_LINES=$(echo "${DIFF}" | wc -l | tr -d ' ')
 
-if [[ ${DIFF_LINES} -gt ${REVIEW_SKIP_THRESHOLD} ]]; then
+if [[ "${REVIEW_MODE}" != "full-diff" && "${REVIEW_MODE}" != "codebase" ]] && [[ ${DIFF_LINES} -gt ${REVIEW_SKIP_THRESHOLD} ]]; then
   show_large_diff_summary "${DIFF_LINES}"
   log_error ""
   log_error "BLOCKING: Diff too large for automated review (${DIFF_LINES} lines)"

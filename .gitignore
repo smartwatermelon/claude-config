@@ -1,6 +1,6 @@
 # Session state and temporary files
 todos/
-plans/
+/plans/
 file-history/
 debug/
 shell-snapshots/
@@ -65,3 +65,4 @@ merge-locks/
 pending-issues/
 plugins/blocklist.json
 .credentials.json
+sessions/
