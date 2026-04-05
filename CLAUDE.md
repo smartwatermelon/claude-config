@@ -147,14 +147,14 @@ If `gh pr merge` fails: report the failure, ask the human to merge manually. Nev
 ```bash
 git switch main
 git pull
-git branch -d <merged-branch>        # delete the local branch (safe — already merged)
+git branch -D <merged-branch>        # -D required: squash merge means -d always fails
 git status                            # examine any unstaged changes or untracked files
 # Review what's dirty — if safe to discard:
 git checkout -- .                     # discard unstaged changes
 git clean -fd                         # remove untracked files/dirs
 ```
 
-Before discarding, examine unstaged changes — they may be intentional uncommitted work. Ask before discarding if anything looks non-trivial. If `git branch -d` fails because the branch wasn't fully merged, investigate before using `-D`.
+Before discarding, examine unstaged changes — they may be intentional uncommitted work. Ask before discarding if anything looks non-trivial. Note: `-D` (force delete) is required because squash merges rewrite history, so git never considers the branch "fully merged."
 
 ---
 
