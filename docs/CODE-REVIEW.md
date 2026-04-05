@@ -69,6 +69,21 @@
 
 ---
 
+## When Reviews Find Issues — Rework, Don't Override
+
+When a pre-commit hook or review agent flags an issue, the **strongly preferred** response is to go back and rework the code until it passes cleanly. Do not ask the human to bypass hooks with `--no-verify` or similar overrides.
+
+**Escalation ladder:**
+
+1. **Rework the code** — Fix the flagged issue directly. This is the expected outcome ~90% of the time.
+2. **Rework differently** — If the first fix introduced new issues, try a different approach to the original change.
+3. **Narrow the commit** — Split the change so the problematic part is isolated and the rest can land cleanly.
+4. **After 3+ genuine rework attempts**, if the review agent is flagging something you believe is a false positive or an irreconcilable style disagreement, _then_ explain the situation to the human and ask whether they'd like to override. Present the specific findings and why you believe they're incorrect.
+
+**Never** jump straight to requesting `--no-verify`. The human should only need to override hooks in rare, genuinely exceptional cases — not as a routine escape hatch for review friction.
+
+---
+
 ## Return to Main Documentation
 
 → Return to `~/.claude/CLAUDE.md`
