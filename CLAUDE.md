@@ -121,7 +121,7 @@ After committing, verify the hook ran: `head -6 $(git rev-parse --git-dir)/last-
 
 After pushing, you are NOT DONE. Monitor CI and iterate until approved. Do not abandon the PR. If CI fails or remote review finds issues, fix locally, re-review, push again.
 
-Use `bash ~/.claude/scripts/post-push-status.sh <PR#>` to poll CI status. Seer Code Review is treated as blocking — do not merge until it passes.
+Use `bash ~/.claude/scripts/post-push-status.sh <PR#>` to poll CI status. Seer Code Review is **advisory / non-blocking** — its inline findings flow through to the local pre-merge AI analysis but do not block merge. (Seer runs on Sentry infrastructure, which is flaky and rate-limited; treating it as blocking creates merge stalls. Examine its findings as one input alongside CI, human reviewers, and the local code-reviewer agents.)
 
 Full procedure: `~/.claude/docs/CHECKLISTS.md` (Post-Push Procedure)
 

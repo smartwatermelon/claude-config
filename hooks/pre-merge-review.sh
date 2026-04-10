@@ -341,13 +341,17 @@ if [[ -n "${_CHANGES_REQUESTED}" ]]; then
 fi
 
 # --- Check for NEUTRAL CI status (blocking) ---
-# Sentry/Seer sets status to "neutral" when there are unresolved comments
-# This is a hard block - don't proceed to AI analysis
-# Exclude Netlify informational checks that return NEUTRAL when nothing changed:
-# - "Pages changed" / "Pages changed - <site-name>" - no pages modified
-# - "Header rules" / "Header rules - <site-name>" - no headers modified
-# - "Redirect rules" / "Redirect rules - <site-name>" - no redirects modified
-# These checks are informational only; NEUTRAL means "nothing to validate"
+# Some checks set status to "neutral" when there are unresolved comments.
+# This is a hard block - don't proceed to AI analysis.
+#
+# Exclusions (NEUTRAL on these is NOT a block):
+# - "Pages changed" / "Header rules" / "Redirect rules" — Netlify informational
+#   checks that return NEUTRAL when nothing changed. Informational only.
+# - "Seer Code Review" (and any "Seer*" check) — Sentry's Seer reports findings
+#   via NEUTRAL conclusion, but it runs on Sentry infrastructure (flaky/rate-
+#   limited). Treated as non-blocking advisory: Seer's inline comments still
+#   flow through to the AI analysis below via the inline comments fetcher,
+#   so any findings are surfaced as advisory input — just not as a hard block.
 NEUTRAL_CHECKS=$(echo "${PR_JSON}" | jq -r '
   .statusCheckRollup // []
   | .[]
@@ -356,6 +360,7 @@ NEUTRAL_CHECKS=$(echo "${PR_JSON}" | jq -r '
       and (.name | startswith("Pages changed") | not)
       and (.name | startswith("Header rules") | not)
       and (.name | startswith("Redirect rules") | not)
+      and (.name | startswith("Seer") | not)
     )
   | "- \(.name): \(.conclusion)"
 ' 2>&1) || true
@@ -643,6 +648,12 @@ CRITICAL RULES:
   - FAILURE/NEUTRAL conclusion = blocking issue that must be addressed
   - SUCCESS = CI passed, but still check inline comments for specific concerns
   - PENDING = check still running, cannot merge yet
+- **SEER EXCEPTION**: "Seer Code Review" check is NON-BLOCKING regardless of
+  conclusion (SUCCESS/FAILURE/NEUTRAL/PENDING). Seer runs on Sentry
+  infrastructure (flaky/rate-limited) and reports findings via NEUTRAL
+  conclusion. Its findings flow through as inline review comments below and
+  are advisory only. Do not block merge on Seer check status — examine its
+  inline comments alongside other input.
 - **INLINE COMMENTS**: Bots like "sentry[bot]" and "Seer" post comments on specific code lines, NOT as review summaries
   - These appear in the "Inline Review Comments" section below
   - IMPORTANT: Outdated comments (code changed) and resolved threads are already filtered out
