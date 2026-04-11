@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+
+# Re-exec under bash if invoked as "sh install.sh"
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@" || { echo "Error: bash is required but not found in PATH" >&2; exit 1; }
+fi
+
 set -euo pipefail
 
 # ~/Developer/claude-config/install.sh
