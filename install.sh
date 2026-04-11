@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+
+# Re-exec under bash if invoked as "sh install.sh"
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 # ~/Developer/claude-config/install.sh
