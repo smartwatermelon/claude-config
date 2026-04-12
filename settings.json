@@ -92,7 +92,8 @@
   "spinnerTipsOverride": {
     "excludeDefault": false,
     "tips": [
-      "After pushing a PR, run /post-push-loop <pr-number> to monitor CI autonomously"
+      "After pushing a PR, run /post-push-loop <pr-number> to monitor CI autonomously",
+      "Use the /copy command to copy Claude's output with no hard line-breaks or injected characters"
     ]
   },
   "alwaysThinkingEnabled": true,
