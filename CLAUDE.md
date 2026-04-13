@@ -125,6 +125,8 @@ Use `bash ~/.claude/scripts/post-push-status.sh <PR#>` to poll CI status. Seer C
 
 Full procedure: `~/.claude/docs/CHECKLISTS.md` (Post-Push Procedure)
 
+**Recurring CI findings = local-review failure**, not normal workflow. See `~/.claude/docs/CODE-REVIEW.md` (Recurring CI Findings Signal Local Review Gaps) for the feedback loop to close those gaps.
+
 ---
 
 ### Protocol 6: PR Lifecycle

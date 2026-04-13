@@ -84,6 +84,18 @@ When a pre-commit hook or review agent flags an issue, the **strongly preferred*
 
 ---
 
+## Recurring CI Findings Signal Local Review Gaps
+
+Local review (pre-commit code-reviewer + adversarial-reviewer, pre-push codebase-reviewer) exists to catch issues **before** push. Every finding that slips to CI costs real time and money; local verification is free.
+
+**The rule:** If CI consistently returns findings local review missed, treat it as a local-review failure — not as CI "catching extra stuff."
+
+**Feedback loop:** When a CI finding lands that local review should have caught, note the category. After 2–3 repeats of the same category, update local reviewer prompts, pre-commit hooks, or this file's checklists so the class of issue is caught locally.
+
+**Not normal workflow:** `post-push-loop` iterations are a safety net, not the primary review mechanism. A PR needing 3+ loop iterations means local review needs improvement.
+
+---
+
 ## Return to Main Documentation
 
 → Return to `~/.claude/CLAUDE.md`
