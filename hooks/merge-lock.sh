@@ -165,7 +165,7 @@ case "${1:-help}" in
     list_locks
     ;;
   *)
-    echo "Usage: $0 {authorize|check|status|list} <pr_number[,pr_number...]> [reason]"
+    echo "Usage: $0 {authorize|check|status|list} [args...]"
     echo ""
     echo "Commands:"
     echo "  authorize <pr[,pr...]> <reason>  - Create merge authorization(s) (30 min TTL)"
