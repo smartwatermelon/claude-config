@@ -15,13 +15,12 @@ NC='\033[0m'
 
 create_merge_lock() {
   local pr_number="$1"
-  local reason="${2:-Manual authorization}"
+  local reason="$2"
+  local ts="$3"
   local lock_file="${LOCK_DIR}/pr-${pr_number}.lock"
 
   local user
   user=$(whoami)
-  local ts
-  ts=$(date +%s)
 
   {
     echo "PR_NUMBER=${pr_number}"
@@ -109,10 +108,38 @@ list_locks() {
 case "${1:-help}" in
   authorize | auth)
     if [[ -z "${2:-}" ]]; then
-      echo "Usage: $0 authorize <pr_number> [reason]"
+      echo "Usage: $0 authorize <pr_number[,pr_number...]> <reason>" >&2
       exit 1
     fi
-    create_merge_lock "$2" "${3:-}"
+    if [[ -z "${3:-}" ]]; then
+      echo "Error: reason is required" >&2
+      echo "Usage: $0 authorize <pr_number[,pr_number...]> <reason>" >&2
+      exit 1
+    fi
+
+    # Parse comma-separated list into validated PR numbers.
+    IFS=',' read -r -a _pr_raw <<<"$2"
+    _pr_list=()
+    for _entry in "${_pr_raw[@]}"; do
+      # Trim leading/trailing whitespace.
+      _entry="${_entry#"${_entry%%[![:space:]]*}"}"
+      _entry="${_entry%"${_entry##*[![:space:]]}"}"
+      if [[ -z "${_entry}" ]]; then
+        echo "Error: empty PR number in list" >&2
+        exit 1
+      fi
+      if [[ ! "${_entry}" =~ ^[0-9]+$ ]]; then
+        echo "Error: invalid PR number: ${_entry}" >&2
+        exit 1
+      fi
+      _pr_list+=("${_entry}")
+    done
+
+    # Shared timestamp so all TTLs align.
+    _ts=$(date +%s)
+    for _pr in "${_pr_list[@]}"; do
+      create_merge_lock "${_pr}" "$3" "${_ts}"
+    done
     ;;
   check)
     if [[ -z "${2:-}" ]]; then
@@ -138,10 +165,10 @@ case "${1:-help}" in
     list_locks
     ;;
   *)
-    echo "Usage: $0 {authorize|check|status|list} [pr_number] [reason]"
+    echo "Usage: $0 {authorize|check|status|list} [args...]"
     echo ""
     echo "Commands:"
-    echo "  authorize <pr> [reason]  - Create merge authorization (30 min TTL)"
+    echo "  authorize <pr[,pr...]> <reason>  - Create merge authorization(s) (30 min TTL)"
     echo "  check <pr>               - Check if PR is authorized (exit 0/1)"
     echo "  status <pr>              - Show detailed authorization status"
     echo "  list                     - List all active authorizations"
