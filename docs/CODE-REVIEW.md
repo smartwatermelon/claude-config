@@ -37,6 +37,7 @@
 - [ ] No dead code (remove, don't comment out)
 - [ ] DRY — no unnecessary duplication
 - [ ] Appropriate level of abstraction
+- [ ] **Diagnostic granularity**: distinct failure modes produce distinct error messages (missing dependency ≠ missing file ≠ parse error ≠ value mismatch). Don't let `|| true` or empty-default fallbacks collapse several failure modes into one misleading message. See §Recurring CI Findings for the example-driven rule.
 
 ---
 
@@ -93,6 +94,23 @@ Local review (pre-commit code-reviewer + adversarial-reviewer, pre-push codebase
 **Feedback loop:** When a CI finding lands that local review should have caught, note the category. After 2–3 repeats of the same category, update local reviewer prompts, pre-commit hooks, or this file's checklists so the class of issue is caught locally.
 
 **Not normal workflow:** `post-push-loop` iterations are a safety net, not the primary review mechanism. A PR needing 3+ loop iterations means local review needs improvement.
+
+### Logged patterns
+
+These classes of finding have recurred enough that local review must catch them before push.
+
+**Error-path diagnostic granularity** (logged 2026-04-16 after PR #15, scripts repo, took 5 push cycles)
+
+Every distinct failure mode in a script must produce a distinct, actionable error message. Fallbacks like `$(cmd || true)` or `jq '.x // empty'` merge "dependency missing", "file missing", "parse failed", and "value wrong" into one generic message, forcing the operator to guess which one actually happened.
+
+Checks to apply during pre-commit review of any script:
+
+1. For every `[[ -z "${var}" ]]` check: is there a distinct branch for each way `var` could end up empty (command missing, command ran but no data, data exists but is empty)?
+2. For every `cmd || true` / `cmd || :` / `jq '.x // empty'`: is a genuine parse/tool failure swallowed and redirected into a downstream check that names something else?
+3. For every external tool invocation (`jq`, `awk`, `curl`, `gh`, ...) used beyond a single one-liner: is there a `command -v <tool>` preflight with a `brew install <tool>` hint?
+4. For every file read (`cat`, `jq <file>`, `source <file>`): is there a `[[ -f "${file}" ]]` preflight with a remediation message before the parser runs?
+
+If any of these are missing, flag as BLOCKING in local review — not as a non-blocking observation. The CI reviewer has repeatedly treated these as non-blocking, then flagged the next one after the first was fixed. Treating them as blocking locally breaks that cycle.
 
 ---
 
