@@ -191,6 +191,7 @@ Before declaring work done, output the full Completion Verification template fro
 - Never use `((var++))` with `set -e` — when var=0, this exits. Use `((var += 1))` instead.
 - Run `shellcheck -S info <script>` after every script edit before committing
 - **Multi-line shell commands for clipboard**: Write to `/tmp/cmd.sh` then `cat /tmp/cmd.sh | pbcopy` so the user gets clean clipboard content. The terminal renderer breaks copy-paste on code blocks (adds indentation/trailing spaces). See [claude-code#18170](https://github.com/anthropics/claude-code/issues/18170).
+- **PATH-shim wrappers — reload shell before testing**: After symlinking a new script into `~/.local/bin` that shadows a system binary (ssh, gh, claude, etc.), bash's per-session hash table still points at the cached old location even though `command -v` reports the new one. Plain `cmd` invocations silently run the old binary; full-path invocations correctly hit the new shim. Always instruct the user to run `hash -r` or reload their profile before any functional verification. When debugging a "wrapper not running" complaint on any PATH-shim, first ask for `hash <cmd>` and `type -a <cmd>` output before diving into the wrapper's logic.
 
 ### Git Rules
 
