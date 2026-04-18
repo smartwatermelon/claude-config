@@ -98,5 +98,6 @@
   },
   "alwaysThinkingEnabled": true,
   "skipDangerousModePermissionPrompt": true,
-  "gitAttribution": true
+  "gitAttribution": true,
+  "useAutoModeDuringPlan": false
 }
