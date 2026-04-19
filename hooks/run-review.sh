@@ -531,15 +531,20 @@ if [[ "${REVIEW_MODE}" != "full-diff" && "${REVIEW_MODE}" != "codebase" ]] && [[
   printf 'blocked: diff too large (%d lines > %d threshold)\n' "${DIFF_LINES}" "${REVIEW_SKIP_THRESHOLD}" >>"${REVIEW_LOG}" || true
   exit 1
 
-elif [[ ${DIFF_LINES} -gt ${REVIEW_MAX_LINES} ]]; then
-  # Medium diff - use chunked review
+elif [[ "${REVIEW_MODE}" != "full-diff" && "${REVIEW_MODE}" != "codebase" ]] && [[ ${DIFF_LINES} -gt ${REVIEW_MAX_LINES} ]]; then
+  # Medium diff (commit-mode only) — use chunked review.
+  # full-diff and codebase modes have their own dedicated handlers below
+  # (lines 582+ and 672+) and are INTENDED for large cross-file analysis.
+  # Routing them to chunked here would bypass their dedicated prompts
+  # whenever the feature-branch diff exceeds REVIEW_MAX_LINES, defeating
+  # their purpose. Issue #127.
   log_warn "Diff is large (${DIFF_LINES} lines), using chunked file-by-file review"
   printf 'diff_lines: %d (chunked review)\n' "${DIFF_LINES}" >>"${REVIEW_LOG}" || true
   perform_chunked_review "${DIFF_LINES}"
   exit $? # Exit with chunked review result
 
-elif [[ ${DIFF_LINES} -gt $((REVIEW_MAX_LINES * 3 / 4)) ]]; then
-  # Approaching limit - warn but proceed with full review
+elif [[ "${REVIEW_MODE}" != "full-diff" && "${REVIEW_MODE}" != "codebase" ]] && [[ ${DIFF_LINES} -gt $((REVIEW_MAX_LINES * 3 / 4)) ]]; then
+  # Approaching limit (commit mode) — warn but proceed with full review.
   log_warn "Diff is approaching review limit (${DIFF_LINES}/${REVIEW_MAX_LINES} lines)"
 fi
 
