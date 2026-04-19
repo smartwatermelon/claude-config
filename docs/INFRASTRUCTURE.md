@@ -44,6 +44,7 @@ The following are blocked by `hook-block-api-merge.sh` and the `gh()` wrapper:
 ✗ gh api graphql --input=<file>  (equals form)
 ✗ gh api graphql --input -       (stdin)
 ✗ gh api graphql -F input=@<file>  (-F equivalent)
+✗ gh api graphql --field input=@<file>  (--field long form of -F)
 ✗ gh -R owner/repo pr merge NNN  (global flag prefix)
 ```
 

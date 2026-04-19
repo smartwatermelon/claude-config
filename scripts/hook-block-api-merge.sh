@@ -83,7 +83,7 @@ fi
 # linting, block this pattern unconditionally. Legitimate data queries
 # rarely need --input; they can be expressed inline via -f query=.
 # Previously documented as a known gap (Protocol 6 in CLAUDE.md) — now closed.
-if printf '%s\n' "${cmd}" | grep -qE 'gh[[:space:]]+api[[:space:]].*graphql.*(--input([[:space:]=]|$)|-F[[:space:]]*input)'; then
+if printf '%s\n' "${cmd}" | grep -qE 'gh[[:space:]]+api[[:space:]].*graphql.*(--input([[:space:]=]|$)|(-F|--field)[[:space:]=]*input)'; then
   printf '%s BLOCKED GRAPHQL --input: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log"
   printf '🛑 BLOCKED: gh api graphql --input reads the mutation from a file,\n' >&2
   printf '   hiding its contents from the command-line merge-bypass scanners.\n' >&2
