@@ -28,7 +28,10 @@ set -euo pipefail
 
 # --- Configuration ---
 CLAUDE_CLI="${CLAUDE_CLI:-${HOME}/.local/bin/claude}"
-TIMEOUT_SECONDS=120
+# Default 180s handles typical PRs; large PRs with 30k+ token smart-diffs
+# routinely exceeded the prior 120s default and timed out unnecessarily.
+# Override via `git config review.preMergeTimeout N` when needed.
+TIMEOUT_SECONDS=$(git config --get --type=int review.preMergeTimeout 2>/dev/null || echo "180")
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -366,13 +369,17 @@ NEUTRAL_CHECKS=$(echo "${PR_JSON}" | jq -r '
 ' 2>&1) || true
 
 if [[ -n "${NEUTRAL_CHECKS}" ]]; then
+  # Reached only when a non-Netlify, non-Seer check is NEUTRAL. Seer is
+  # explicitly excluded by the filter above (treated as advisory), so its
+  # findings are never the trigger for this branch.
   echo "" >&2
   log_error "CI checks with NEUTRAL status (indicates unresolved issues):"
   echo "${NEUTRAL_CHECKS}" >&2
   echo "" >&2
   log_error "NEUTRAL status means the check found issues that need attention."
   log_error "Common causes:"
-  log_error "  - Sentry/Seer Code Review: Has inline comments on code"
+  log_error "  - Non-Seer review bots: Inline comments on code requiring resolution"
+  log_error "  - Coverage / quality gates: Threshold not met (soft-failing as NEUTRAL)"
   log_error "  - Other reviewers: Requested changes not yet addressed"
   echo "" >&2
   log_error "Actions:"
