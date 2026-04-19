@@ -558,9 +558,24 @@ if ! echo "${DIFF}" | grep -qE '^[+-][^+-]'; then
   exit 0
 fi
 
-# --- Check for documentation-only changes ---
+# --- Check for documentation-only / lockfile-only changes (commit mode only) ---
+# These short-circuits compare staged-index file names against skip-eligible
+# patterns. In --mode=full-diff and --mode=codebase the real diff source is
+# stdin (piped main...HEAD), NOT the staged index; the staged index may be
+# markdown-only while the branch's piped diff contains code. Skipping based
+# on the wrong source silently bypasses the full-branch review those modes
+# are designed for. Commit-mode DIFF is piped from `git diff --cached` so
+# staged index aligns with the review input — the short-circuits are safe
+# only there. Issue #131.
+#
+# Derive CHANGED_FILES outside the guard so it's defined (empty) in other
+# modes; the two checks below are both no-ops when unset.
+CHANGED_FILES=""
+if [[ "${REVIEW_MODE}" == "commit" ]]; then
+  CHANGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
+fi
+
 # Skip code review for markdown files - they're handled by markdownlint
-CHANGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
 if [[ -n "${CHANGED_FILES}" ]]; then
   # Check if ALL changed files are markdown
   NON_MD_FILES=$(echo "${CHANGED_FILES}" | grep -vE '\.md$' || echo "")
@@ -571,7 +586,6 @@ if [[ -n "${CHANGED_FILES}" ]]; then
   fi
 fi
 
-# --- Check for lockfile-only changes ---
 # Skip code review for lockfiles - they're generated files
 if [[ -n "${CHANGED_FILES}" ]]; then
   # Check if ALL changed files are lockfiles
