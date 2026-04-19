@@ -39,7 +39,24 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # Net: `git commit -m "... gh api ..."` is exempted, but
 # `git diff && gh api .../merge` is NOT (the gh after && is a real call).
 if printf '%s\n' "${cmd}" | grep -qE '^[[:space:]]*git[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*(commit|log|show|diff)([[:space:]]|$)' \
-  && ! printf '%s\n' "${cmd}" | grep -qE '(^|[;&|(`])[[:space:]]*gh[[:space:]]+'; then
+  && ! printf '%s\n' "${cmd}" | grep -qE '[;&|(`][[:space:]]*gh[[:space:]]+'; then
+  exit 0
+fi
+
+# Early-exempt: gh pr|issue create|edit|comment invocations whose text args
+# (--body, --title, --message) may legitimately contain trigger patterns
+# (discovered during Batch D — I had to reword a PR body to avoid false-
+# positive on the literal gh api graphql --input mention). Fires only when:
+#   1. The primary verb is gh (pr|issue) (create|edit|comment), with optional
+#      interposed flags (-R owner/repo, --repo owner/repo, etc.) between gh
+#      and the subcommand.
+#   2. No OTHER gh call appears after a shell-operator boundary (; & | ( `).
+#      The leading gh is at command start and is not preceded by an operator,
+#      so only chained follow-on gh calls match the negation regex.
+# Net: `gh pr create --body "... gh api graphql --input ..."` is exempted,
+# but `gh pr create --body "..." && gh api .../merge` is NOT.
+if printf '%s\n' "${cmd}" | grep -qE '^[[:space:]]*gh[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*(pr|issue)[[:space:]]+(create|edit|comment)([[:space:]]|$)' \
+  && ! printf '%s\n' "${cmd}" | grep -qE '[;&|(`][[:space:]]*gh[[:space:]]+'; then
   exit 0
 fi
 
@@ -50,7 +67,7 @@ fi
 #   gh api /repos/owner/repo/pulls/123/merge
 #   gh api "repos/owner/repo/pulls/123/merge"
 #   echo x && gh api repos/o/r/pulls/1/merge --method PUT
-if printf '%s\n' "${cmd}" | grep -qE 'gh[[:space:]]+api[[:space:]].*pulls/[0-9]+/merge([[:space:]]|$|[^[:alnum:]_])'; then
+if printf '%s\n' "${cmd}" | grep -qE 'gh[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*api[[:space:]].*pulls/[0-9]+/merge([[:space:]]|$|[^[:alnum:]_])'; then
   printf '%s BLOCKED API MERGE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log"
   printf '🛑 BLOCKED: Direct REST API PR merge bypasses code quality gates.\n' >&2
   printf '\n' >&2
@@ -66,7 +83,7 @@ fi
 # Block: gh api graphql with mergePullRequest mutation
 # GraphQL offers the same merge capability as the REST endpoint above.
 # Covers inline mutations passed via -f query=... or --field query=...
-if printf '%s\n' "${cmd}" | grep -qE 'gh[[:space:]]+api[[:space:]].*graphql.*mergePullRequest'; then
+if printf '%s\n' "${cmd}" | grep -qE 'gh[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*api[[:space:]].*graphql.*mergePullRequest'; then
   printf '%s BLOCKED GRAPHQL MERGE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log"
   printf '🛑 BLOCKED: GraphQL mergePullRequest mutation bypasses code quality gates.\n' >&2
   printf '\n' >&2
@@ -83,13 +100,29 @@ fi
 # linting, block this pattern unconditionally. Legitimate data queries
 # rarely need --input; they can be expressed inline via -f query=.
 # Previously documented as a known gap (Protocol 6 in CLAUDE.md) — now closed.
-if printf '%s\n' "${cmd}" | grep -qE 'gh[[:space:]]+api[[:space:]].*graphql.*(--input([[:space:]=]|$)|(-F|--field)[[:space:]=]*input)'; then
+if printf '%s\n' "${cmd}" | grep -qE 'gh[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*api[[:space:]].*graphql.*(--input([[:space:]=]|$)|(-F|--field)[[:space:]=]*input)'; then
   printf '%s BLOCKED GRAPHQL --input: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log"
   printf '🛑 BLOCKED: gh api graphql --input reads the mutation from a file,\n' >&2
   printf '   hiding its contents from the command-line merge-bypass scanners.\n' >&2
   printf '\n' >&2
   printf 'If you are trying to merge a PR, use `gh pr merge <number>` instead.\n' >&2
   printf 'If you need a legitimate GraphQL query, pass it inline via -f query=.\n' >&2
+  printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
+  exit 2
+fi
+
+# Block: gh api graphql with -f/-F/--field name=@file  (value-from-file)
+# gh'"'"'s @<filename> convention for -f / --field reads the value from a file,
+# which lets a mutation body live on disk and still get executed. Covers the
+# gap left by the --input check above. Issue #133.
+if printf '%s\n' "${cmd}" | grep -qE 'gh[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*api[[:space:]].*graphql.*(-[fF]|--field)[[:space:]=]*(query|mutation)[[:space:]]*=[[:space:]]*@'; then
+  printf '%s BLOCKED GRAPHQL @file: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log"
+  printf '🛑 BLOCKED: gh api graphql with -f/-F query=@<file> (or mutation=@<file>)\n' >&2
+  printf '   reads the payload body from a file via gh'"'"'s @<filename> convention,\n' >&2
+  printf '   hiding its contents from the command-line merge-bypass scanners.\n' >&2
+  printf '\n' >&2
+  printf 'If you are trying to merge a PR, use `gh pr merge <number>` instead.\n' >&2
+  printf 'If you need a legitimate GraphQL query, pass it inline via -f query=<body> (no @).\n' >&2
   printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
   exit 2
 fi

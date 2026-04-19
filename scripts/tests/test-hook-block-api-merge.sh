@@ -51,6 +51,20 @@ inp="$(make_input 'gh api graphql --field input=@mutation.json')"
 check "GraphQL: --field input=@file (long form of -F)" 2 "${inp}"
 inp="$(make_input 'gh api graphql --field=input=@mutation.json')"
 check "GraphQL: --field=input=@file (equals long form)" 2 "${inp}"
+
+# -f/--field query=@file (value-from-file convention) — blocks (#133)
+inp="$(make_input 'gh api graphql -f query=@mutation.txt')"
+check "GraphQL: -f query=@file (value-from-file)" 2 "${inp}"
+inp="$(make_input 'gh api graphql -F query=@mutation.txt')"
+check "GraphQL: -F query=@file (value-from-file)" 2 "${inp}"
+inp="$(make_input 'gh api graphql --field query=@mutation.txt')"
+check "GraphQL: --field query=@file (long form)" 2 "${inp}"
+inp="$(make_input 'gh api graphql -f mutation=@body.txt')"
+check "GraphQL: -f mutation=@file (alternate field name)" 2 "${inp}"
+
+# Negative: -f query=inline body (no @) must NOT trigger
+inp="$(make_input 'gh api graphql -f query=query{viewer{login}}')"
+check "GraphQL: inline -f query= body (no @) not blocked" 0 "${inp}"
 inp="$(make_input 'cat mutation.json | gh api graphql --input -')"
 check "GraphQL: piped to --input -" 2 "${inp}"
 
@@ -59,6 +73,24 @@ inp="$(make_input 'gh -R owner/repo pr merge 123')"
 check "Global flag: gh -R owner/repo pr merge" 2 "${inp}"
 inp="$(make_input 'gh --repo owner/repo pr merge 123 --squash')"
 check "Global flag: gh --repo owner/repo pr merge" 2 "${inp}"
+
+# Global-flag-prefix api-merge bypass — the api-merge regexes previously
+# required `gh api` to be adjacent; `gh --repo=... api .../merge` sailed
+# past all four checks. Now each pattern accepts optional flag tokens
+# between gh and api. Flagged by Seer on PR #136; the claim was misattributed
+# to the exemption but digging uncovered this real gap.
+inp="$(make_input 'gh --repo=o/r api repos/o/r/pulls/1/merge --method PUT')"
+check "Global-flag-api: gh --repo=o/r api .../merge (equals)" 2 "${inp}"
+inp="$(make_input 'gh --repo o/r api repos/o/r/pulls/1/merge')"
+check "Global-flag-api: gh --repo o/r api .../merge (space)" 2 "${inp}"
+inp="$(make_input 'gh -R o/r api repos/o/r/pulls/1/merge')"
+check "Global-flag-api: gh -R o/r api .../merge" 2 "${inp}"
+inp="$(make_input 'gh --repo=o/r api graphql -f query=@m.txt')"
+check "Global-flag-api: gh --repo=o/r api graphql @file" 2 "${inp}"
+inp="$(make_input 'gh --repo=o/r api graphql --input /tmp/m.json')"
+check "Global-flag-api: gh --repo=o/r api graphql --input" 2 "${inp}"
+inp="$(make_input 'gh --hostname github.com -R o/r api repos/o/r/pulls/1/merge')"
+check "Global-flag-api: multiple flags then api merge" 2 "${inp}"
 
 # Legitimate uses — should PASS (exit 0)
 inp="$(make_input 'gh api repos/owner/repo/pulls/123')"
@@ -116,6 +148,36 @@ inp="$(make_input 'git --no-pager log -5')"
 check "Exempt: git --no-pager log" 0 "${inp}"
 inp="$(make_input 'git -C /repo --no-pager show HEAD')"
 check "Exempt: git -C /repo --no-pager show" 0 "${inp}"
+
+# Regression: a multi-line heredoc body containing an indented gh api
+# example line must not break the git-verb exemption. Previously the
+# negation regex used `(^|[;&|(`])` and the `^` alternative matched at
+# every line start in grep's multi-line mode, including body lines that
+# happened to start with whitespace + gh. Now the negation only fires
+# when a real shell-operator boundary precedes the gh call.
+msg_at=$(printf 'feat: test\n\nExample:\n  gh api graphql -f query=%cmut.txt\n' 64)
+cmd_multiline=$(printf 'git -C /path commit -m "$(cat <<EOF\n%sEOF\n)"' "${msg_at}")
+inp="$(make_input "${cmd_multiline}")"
+check "Exempt: git commit with indented gh api in heredoc body" 0 "${inp}"
+
+# Exempt: gh (pr|issue) (create|edit|comment) with text args that legitimately
+# mention trigger patterns.
+inp="$(make_input 'gh pr create --title "feat" --body "mentions gh api graphql --input"')"
+check "Exempt: gh pr create --body with trigger text" 0 "${inp}"
+inp="$(make_input 'gh pr edit 42 --body "describes gh api .../pulls/1/merge"')"
+check "Exempt: gh pr edit --body with REST merge text" 0 "${inp}"
+inp="$(make_input 'gh issue create --title "track" --body "mentions gh api graphql --input"')"
+check "Exempt: gh issue create --body with trigger text" 0 "${inp}"
+inp="$(make_input 'gh pr comment 42 --body "discusses gh api graphql --input variant"')"
+check "Exempt: gh pr comment --body with trigger text" 0 "${inp}"
+inp="$(make_input 'gh --repo owner/name pr create --body "mentions gh api graphql --input"')"
+check "Exempt: gh --repo <r> pr create with interposed flag" 0 "${inp}"
+
+# Negative: gh pr create body is exempted BUT a chained gh api merge still blocks.
+inp="$(make_input 'gh pr create --body "..." && gh api repos/o/r/pulls/1/merge')"
+check "Not exempt: gh pr create && gh api merge chain" 2 "${inp}"
+inp="$(make_input 'gh pr create --body "$(gh api repos/o/r/pulls/1/merge)"')"
+check "Not exempt: gh pr create body with \$(gh api merge)" 2 "${inp}"
 
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"

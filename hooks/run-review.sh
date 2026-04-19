@@ -256,7 +256,13 @@ perform_chunked_review() {
   # from launching 50 concurrent claude processes.
   local CHUNK_PARALLEL
   CHUNK_PARALLEL=$(git config --get --type=int review.chunkParallel 2>/dev/null || echo "4")
-  local _chunk_results
+  # Not `local`: the EXIT trap references this by name for cleanup on
+  # abnormal exit (SIGINT while the function is on the call stack). Bash's
+  # visibility of function-local variables to traps is implementation-
+  # dependent, so keep this at script scope where the trap can always see
+  # it. On the normal return path the in-function `rm -rf` below still
+  # handles cleanup; the trap is the backstop for SIGINT / errexit.
+  # Issue #130.
   _chunk_results=$(mktemp -d)
   local -a _chunk_pids=()
 
@@ -323,7 +329,13 @@ ${file_diff}
     # Create per-file cache key. Includes SCRIPT_SHA so prompt/logic edits
     # invalidate stale PASS entries (see DIFF_HASH above for rationale).
     local file_cache_key
-    file_cache_key=$(printf '%s\n%s\n' "${SCRIPT_SHA:-nover}" "${file_diff}" | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "nocache")
+    # Use `shasum -a 256` (BSD) rather than `sha256sum` (GNU-only) so the cache
+    # works on macOS by default. Previously this fell to the "nocache" fallback
+    # on every Darwin host unless the user had installed GNU coreutils, which
+    # silently disabled per-file chunked caching. Matches the DIFF_HASH tool
+    # choice elsewhere in this file. Issue #126.
+    file_cache_key=$(printf '%s\n%s\n' "${SCRIPT_SHA:-nover}" "${file_diff}" | shasum -a 256 2>/dev/null | awk '{print $1}' || echo "nocache")
+    [[ -n "${file_cache_key}" ]] || file_cache_key="nocache"
     local file_cache="${CACHE_DIR}/${file//\//_}_${file_cache_key}"
 
     # Sanitize file path to a safe filename for the result file.
@@ -519,15 +531,20 @@ if [[ "${REVIEW_MODE}" != "full-diff" && "${REVIEW_MODE}" != "codebase" ]] && [[
   printf 'blocked: diff too large (%d lines > %d threshold)\n' "${DIFF_LINES}" "${REVIEW_SKIP_THRESHOLD}" >>"${REVIEW_LOG}" || true
   exit 1
 
-elif [[ ${DIFF_LINES} -gt ${REVIEW_MAX_LINES} ]]; then
-  # Medium diff - use chunked review
+elif [[ "${REVIEW_MODE}" != "full-diff" && "${REVIEW_MODE}" != "codebase" ]] && [[ ${DIFF_LINES} -gt ${REVIEW_MAX_LINES} ]]; then
+  # Medium diff (commit-mode only) — use chunked review.
+  # full-diff and codebase modes have their own dedicated handlers below
+  # (lines 582+ and 672+) and are INTENDED for large cross-file analysis.
+  # Routing them to chunked here would bypass their dedicated prompts
+  # whenever the feature-branch diff exceeds REVIEW_MAX_LINES, defeating
+  # their purpose. Issue #127.
   log_warn "Diff is large (${DIFF_LINES} lines), using chunked file-by-file review"
   printf 'diff_lines: %d (chunked review)\n' "${DIFF_LINES}" >>"${REVIEW_LOG}" || true
   perform_chunked_review "${DIFF_LINES}"
   exit $? # Exit with chunked review result
 
-elif [[ ${DIFF_LINES} -gt $((REVIEW_MAX_LINES * 3 / 4)) ]]; then
-  # Approaching limit - warn but proceed with full review
+elif [[ "${REVIEW_MODE}" != "full-diff" && "${REVIEW_MODE}" != "codebase" ]] && [[ ${DIFF_LINES} -gt $((REVIEW_MAX_LINES * 3 / 4)) ]]; then
+  # Approaching limit (commit mode) — warn but proceed with full review.
   log_warn "Diff is approaching review limit (${DIFF_LINES}/${REVIEW_MAX_LINES} lines)"
 fi
 
@@ -541,9 +558,24 @@ if ! echo "${DIFF}" | grep -qE '^[+-][^+-]'; then
   exit 0
 fi
 
-# --- Check for documentation-only changes ---
+# --- Check for documentation-only / lockfile-only changes (commit mode only) ---
+# These short-circuits compare staged-index file names against skip-eligible
+# patterns. In --mode=full-diff and --mode=codebase the real diff source is
+# stdin (piped main...HEAD), NOT the staged index; the staged index may be
+# markdown-only while the branch's piped diff contains code. Skipping based
+# on the wrong source silently bypasses the full-branch review those modes
+# are designed for. Commit-mode DIFF is piped from `git diff --cached` so
+# staged index aligns with the review input — the short-circuits are safe
+# only there. Issue #131.
+#
+# Derive CHANGED_FILES outside the guard so it's defined (empty) in other
+# modes; the two checks below are both no-ops when unset.
+CHANGED_FILES=""
+if [[ "${REVIEW_MODE}" == "commit" ]]; then
+  CHANGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
+fi
+
 # Skip code review for markdown files - they're handled by markdownlint
-CHANGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
 if [[ -n "${CHANGED_FILES}" ]]; then
   # Check if ALL changed files are markdown
   NON_MD_FILES=$(echo "${CHANGED_FILES}" | grep -vE '\.md$' || echo "")
@@ -554,7 +586,6 @@ if [[ -n "${CHANGED_FILES}" ]]; then
   fi
 fi
 
-# --- Check for lockfile-only changes ---
 # Skip code review for lockfiles - they're generated files
 if [[ -n "${CHANGED_FILES}" ]]; then
   # Check if ALL changed files are lockfiles
