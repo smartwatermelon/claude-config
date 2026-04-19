@@ -40,14 +40,19 @@ The following are blocked by `hook-block-api-merge.sh` and the `gh()` wrapper:
 ```
 ✗ gh api repos/.../pulls/NNN/merge --method PUT  (REST endpoint)
 ✗ gh api graphql -f query=mutation{mergePullRequest...}  (GraphQL inline)
+✗ gh api graphql --input <file>  (file-backed mutation; closed 2026-04-18)
+✗ gh api graphql --input=<file>  (equals form)
+✗ gh api graphql --input -       (stdin)
+✗ gh api graphql -F input=@<file>  (-F equivalent)
+✗ gh api graphql --field input=@<file>  (--field long form of -F)
 ✗ gh -R owner/repo pr merge NNN  (global flag prefix)
 ```
 
 **Only allowed**: `gh pr merge <number>` (routes through pre-merge-review.sh)
 
-### Known Enforcement Gap
+### File-Backed GraphQL Mutation Bypass (blocked 2026-04-18)
 
-`gh api graphql --input mutation.json` where the file contains a `mergePullRequest` mutation cannot be blocked by regex pattern matching. Protocol 6 itself is the enforcement for this case: do not construct mutation files containing `mergePullRequest`.
+Previously the `--input <file>` variant of `gh api graphql` could not be inspected at command-line scan time because the mutation body lived in a file or on stdin. That gap is now closed: the hook blocks all `--input` forms (file, `=<path>`, stdin `-`, and `-F input=@file`) with a clear message. The git commit/log/show/diff exemption at the top of the hook allows documentation and commit messages to legitimately reference the pattern without false-positive.
 
 ### Global Flag Prefix Bypass (blocked 2026-02-25)
 
