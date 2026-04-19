@@ -256,7 +256,13 @@ perform_chunked_review() {
   # from launching 50 concurrent claude processes.
   local CHUNK_PARALLEL
   CHUNK_PARALLEL=$(git config --get --type=int review.chunkParallel 2>/dev/null || echo "4")
-  local _chunk_results
+  # Not `local`: the EXIT trap references this by name for cleanup on
+  # abnormal exit (SIGINT while the function is on the call stack). Bash's
+  # visibility of function-local variables to traps is implementation-
+  # dependent, so keep this at script scope where the trap can always see
+  # it. On the normal return path the in-function `rm -rf` below still
+  # handles cleanup; the trap is the backstop for SIGINT / errexit.
+  # Issue #130.
   _chunk_results=$(mktemp -d)
   local -a _chunk_pids=()
 
