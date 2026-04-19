@@ -249,26 +249,48 @@ perform_chunked_review() {
   local skipped_files=0
   local issues_output=""
 
-  # Review each file separately
+  # Parallel dispatch: up to CHUNK_PARALLEL claude invocations in flight.
+  # Each subshell writes its result (file path on line 1, agent output from
+  # line 2 onwards) to a unique file under _chunk_results. Aggregation runs
+  # serially after `wait`. Bound prevents pathological diffs (50 files)
+  # from launching 50 concurrent claude processes.
+  local CHUNK_PARALLEL
+  CHUNK_PARALLEL=$(git config --get --type=int review.chunkParallel 2>/dev/null || echo "4")
+  local _chunk_results
+  _chunk_results=$(mktemp -d)
+  local -a _chunk_pids=()
+
+  # Dispatch phase: build per-file prompt, spawn background invoke_agent.
+  # Skip-if-too-large is still serial (and bumps skipped_files directly).
   while IFS= read -r file; do
     [[ -z "${file}" ]] && continue
 
     local file_diff
     file_diff=$(git diff --cached -U10 -- "${file}" 2>/dev/null || echo "")
-
     [[ -z "${file_diff}" ]] && continue
 
     local file_lines
     file_lines=$(echo "${file_diff}" | wc -l | tr -d ' ')
 
-    # Skip if file diff is too large
     if [[ ${file_lines} -gt ${REVIEW_CHUNK_SIZE} ]]; then
       log_warn "Skipping ${file} (${file_lines} lines > ${REVIEW_CHUNK_SIZE} chunk size)"
       ((skipped_files += 1))
       continue
     fi
 
-    # Build prompt for this file
+    # Bounded concurrency: reap finished pids, sleep if still at cap.
+    while [[ ${#_chunk_pids[@]} -ge ${CHUNK_PARALLEL} ]]; do
+      local -a _alive_pids=()
+      local _p
+      for _p in "${_chunk_pids[@]}"; do
+        if kill -0 "${_p}" 2>/dev/null; then
+          _alive_pids+=("${_p}")
+        fi
+      done
+      _chunk_pids=("${_alive_pids[@]}")
+      [[ ${#_chunk_pids[@]} -lt ${CHUNK_PARALLEL} ]] || sleep 0.1
+    done
+
     local file_prompt
     file_prompt="Reviewing file: ${file}
 
@@ -304,36 +326,65 @@ ${file_diff}
     file_cache_key=$(printf '%s\n%s\n' "${SCRIPT_SHA:-nover}" "${file_diff}" | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "nocache")
     local file_cache="${CACHE_DIR}/${file//\//_}_${file_cache_key}"
 
-    # Invoke agent for this file (|| prevents set -e from propagating on CLI failure)
-    local file_output
-    local agent_exit=0
-    file_output=$(invoke_agent "code-reviewer" "${file_prompt}" "${file_cache}") || agent_exit=$?
+    # Sanitize file path to a safe filename for the result file.
+    local _safe_name="${file//\//__}"
+    _safe_name="${_safe_name// /_}"
 
-    # If agent failed (timeout, error), skip this file — don't block the commit
-    if [[ ${agent_exit} -ne 0 ]]; then
-      log_warn "Agent timeout/error for ${file} - skipping this file"
+    # Background dispatch. Each subshell captures invoke_agent stdout;
+    # stderr (progress lines) flows through to the user's terminal. Empty
+    # output on agent error is normalized here so the aggregate loop can
+    # treat it uniformly.
+    (
+      _fout=$(invoke_agent "code-reviewer" "${file_prompt}" "${file_cache}") || true
+      [[ -n "${_fout}" ]] || _fout="VERDICT: FAIL (agent error: invoke_agent produced no output)"
+      {
+        printf '%s\n' "${file}"
+        printf '%s\n' "${_fout}"
+      } >"${_chunk_results}/${_safe_name}"
+    ) &
+    _chunk_pids+=("$!")
+  done <<<"${files}"
+
+  # Wait for all remaining background jobs.
+  wait 2>/dev/null || true
+
+  # Aggregate phase: walk the per-file result files, accumulate counts,
+  # build the issues_output digest. Runs serially on the main shell so
+  # all state updates are safe.
+  local _result_file _rfile _rout
+  for _result_file in "${_chunk_results}"/*; do
+    [[ -f "${_result_file}" ]] || continue
+    _rfile=$(head -1 "${_result_file}")
+    _rout=$(tail -n +2 "${_result_file}")
+
+    # "agent error" synthetic verdict indicates the agent failed — skip the
+    # file rather than counting it as a blocking issue. Matches the prior
+    # serial behavior where agent_exit != 0 incremented skipped_files.
+    if echo "${_rout}" | grep -q "VERDICT: FAIL (agent error"; then
+      log_warn "Agent timeout/error for ${_rfile} - skipping this file"
       ((skipped_files += 1))
       continue
     fi
 
-    # Parse verdict
-    if echo "${file_output}" | grep -q "VERDICT: FAIL"; then
-      if echo "${file_output}" | grep -q "SEVERITY: BLOCKING"; then
+    if echo "${_rout}" | grep -q "VERDICT: FAIL"; then
+      if echo "${_rout}" | grep -q "SEVERITY: BLOCKING"; then
         ((blocking_count += 1))
         overall_verdict="FAIL"
       else
         ((warning_count += 1))
       fi
 
-      # Accumulate issues for final display
       issues_output="${issues_output}
 
-=== Issues in ${file} ===
-${file_output}"
+=== Issues in ${_rfile} ===
+${_rout}"
     fi
 
     ((reviewed_files += 1))
-  done <<<"${files}"
+  done
+
+  rm -rf "${_chunk_results}"
+  unset _chunk_results _chunk_pids
 
   # Display accumulated issues
   if [[ -n "${issues_output}" ]]; then
@@ -788,15 +839,57 @@ ${DIFF}
 printf 'diff_lines: %d\n' "${DIFF_LINES}" >>"${REVIEW_LOG}" || true
 log_info "Review log: ${REVIEW_LOG}"
 
-# Step 1: Run code-reviewer (always)
-# || true: invoke_agent may return 1 on transient CLI failure; set -e must not kill the script.
-# Errors surface as "VERDICT: FAIL (agent error: N)" in output and are handled below.
-CODE_REVIEWER_OUTPUT=$(invoke_agent "code-reviewer" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}") || true
+# Run code-reviewer and adversarial-reviewer in parallel when both are
+# available. Each reviewer's stdout is captured to its own temp file so
+# the outputs don't interleave. stderr (log_info progress lines) flows
+# through to the user's terminal — it may interleave between the two
+# agents but remains readable because each log line is agent-prefixed.
+#
+# Parallelization roughly halves wall time on the common two-agent path
+# (previously serial at 60-120s each; now both run concurrently).
+#
+# Serial fallback: when adversarial-reviewer isn't installed, only
+# code-reviewer runs (unchanged from the prior serial behavior).
+
+ADVERSARIAL_OUTPUT=""
+ADVERSARIAL_VERDICT="N/A"
+ADVERSARIAL_AVAILABLE=true
+if ! find -L "${HOME}/.claude/plugins/marketplaces" -name "adversarial-reviewer.md" -type f 2>/dev/null | grep -q .; then
+  log_warn "adversarial-reviewer agent not found - skipping (see ~/.claude/docs/CUSTOM_AGENTS.md for setup)"
+  ADVERSARIAL_AVAILABLE=false
+fi
+
+if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
+  _cr_out=$(mktemp)
+  _ar_out=$(mktemp)
+  # Subshells inherit set -e. invoke_agent handles its own errors and always
+  # echoes a verdict line (real output, or synthetic "VERDICT: FAIL (agent
+  # error/timeout)"). `|| true` on the wait calls suppresses propagation of
+  # the subshell's exit status; the same empty-output guard below handles
+  # any silent failure.
+  (invoke_agent "code-reviewer" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}" >"${_cr_out}") &
+  _cr_pid=$!
+  (invoke_agent "adversarial-reviewer" "${AGENT_PROMPT}" "${ADVERSARIAL_CACHE}" >"${_ar_out}") &
+  _ar_pid=$!
+  wait "${_cr_pid}" || true
+  wait "${_ar_pid}" || true
+  CODE_REVIEWER_OUTPUT=$(cat "${_cr_out}")
+  ADVERSARIAL_OUTPUT=$(cat "${_ar_out}")
+  rm -f "${_cr_out}" "${_ar_out}"
+  unset _cr_out _ar_out _cr_pid _ar_pid
+else
+  # Serial path (no adversarial): only code-reviewer runs.
+  CODE_REVIEWER_OUTPUT=$(invoke_agent "code-reviewer" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}") || true
+fi
+
 # Guard: invoke_agent may exit 0 but produce no output (silent agent failure).
 # Normalise to a transient-error verdict so the non-blocking check below handles it.
 [[ -n "${CODE_REVIEWER_OUTPUT}" ]] || CODE_REVIEWER_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
+if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
+  [[ -n "${ADVERSARIAL_OUTPUT}" ]] || ADVERSARIAL_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
+fi
 
-# Parse verdict from output (errors produce "VERDICT: FAIL (agent error: ...)")
+# Parse verdict from code-reviewer output
 if echo "${CODE_REVIEWER_OUTPUT}" | grep -q "VERDICT: PASS"; then
   CODE_REVIEWER_VERDICT="PASS"
 elif echo "${CODE_REVIEWER_OUTPUT}" | grep -q "VERDICT: FAIL"; then
@@ -810,21 +903,8 @@ else
   exit 1
 fi
 
-# Step 2: Run adversarial-reviewer (always)
-# The adversarial-reviewer runs on every commit alongside code-reviewer.
-ADVERSARIAL_OUTPUT=""
-ADVERSARIAL_VERDICT="N/A"
-
-# Check if adversarial-reviewer agent exists
-if ! find -L "${HOME}/.claude/plugins/marketplaces" -name "adversarial-reviewer.md" -type f 2>/dev/null | grep -q .; then
-  log_warn "adversarial-reviewer agent not found - skipping (see ~/.claude/docs/CUSTOM_AGENTS.md for setup)"
-  ADVERSARIAL_VERDICT="N/A"
-else
-  # || true: same set -e guard as code-reviewer above
-  ADVERSARIAL_OUTPUT=$(invoke_agent "adversarial-reviewer" "${AGENT_PROMPT}" "${ADVERSARIAL_CACHE}") || true
-  # Guard: same silent-failure normalisation as code-reviewer above
-  [[ -n "${ADVERSARIAL_OUTPUT}" ]] || ADVERSARIAL_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
-
+# Parse verdict from adversarial-reviewer output (when available)
+if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
   if echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: PASS"; then
     ADVERSARIAL_VERDICT="PASS"
   elif echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: FAIL"; then
