@@ -432,11 +432,56 @@ assert_eq \
   "${exit_t8}"
 
 # =========================================================
+# TEST 9: Chunked-mode timeout verdicts are counted as skips, not warnings
+#
+# invoke_agent emits two distinct synthetic verdicts on transient failure:
+#   - "VERDICT: FAIL (timeout)"       — exit 124 from `timeout` command
+#   - "VERDICT: FAIL (agent error: N)" — any other non-zero exit
+# The parallel aggregate loop greps for "VERDICT: FAIL (" so both are
+# classified as skips (non-fatal, don't count toward blocking_count).
+# Regression test: previously the grep was "VERDICT: FAIL (agent error",
+# which missed the timeout case and miscounted timeouts as warnings.
+# Caught by Seer on PR #128; see issue #129.
+# =========================================================
+echo ""
+echo "=== Test 9: chunked-mode timeout verdicts classified as skips ==="
+
+setup_repo
+stage_large_change
+
+# Mock emits a timeout-style synthetic verdict (matches what invoke_agent
+# produces on real timeout) instead of actual sleep — faster, deterministic.
+MOCK9_DIR="${TMPDIR_TEST}/mock9"
+make_mock_claude "${MOCK9_DIR}" 0 "VERDICT: FAIL (timeout)"
+
+TEST9_LOG="${TMPDIR_TEST}/test9-review.log"
+rm -f "${TEST9_LOG}"
+
+exit_t9=0
+cd "${REPO_DIR}"
+git config review.maxLines 10
+REVIEW_LOG="${TEST9_LOG}" CLAUDE_CLI="${MOCK9_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t9=$?
+git config --unset review.maxLines 2>/dev/null || true
+cd - >/dev/null
+
+log_content9="$(cat "${TEST9_LOG}" 2>/dev/null || echo "")"
+
+assert_eq \
+  "chunked timeout does not block commit (exit 0)" \
+  "0" \
+  "${exit_t9}"
+
+assert_contains \
+  "log notes files were skipped (not counted as warnings)" \
+  "skipped" \
+  "${log_content9}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 11 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 13 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then

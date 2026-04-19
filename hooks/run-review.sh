@@ -361,10 +361,14 @@ ${file_diff}
     [[ -f "${_result_file}" ]] || continue
     _rout=$(tail -n +2 "${_result_file}")
 
-    # "agent error" synthetic verdict indicates the agent failed — skip the
-    # file rather than counting it as a blocking issue. Matches the prior
-    # serial behavior where agent_exit != 0 incremented skipped_files.
-    if echo "${_rout}" | grep -q "VERDICT: FAIL (agent error"; then
+    # Synthetic transient-failure verdicts (timeout or agent error) indicate
+    # the agent failed — skip the file rather than counting it as a blocking
+    # issue. Matches the prior serial behavior where agent_exit != 0 always
+    # incremented skipped_files. invoke_agent emits either "(timeout)" or
+    # "(agent error: N)"; real content failures produce a bare "VERDICT: FAIL"
+    # followed by SEVERITY/ISSUE/LOCATION lines with no parens on the verdict.
+    # Match any "VERDICT: FAIL (" (parenthesis-suffixed) to catch both.
+    if echo "${_rout}" | grep -q "VERDICT: FAIL ("; then
       log_warn "Agent timeout/error for ${_rfile} - skipping this file"
       ((skipped_files += 1))
       continue
