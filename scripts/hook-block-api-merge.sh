@@ -39,7 +39,7 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # Net: `git commit -m "... gh api ..."` is exempted, but
 # `git diff && gh api .../merge` is NOT (the gh after && is a real call).
 if printf '%s\n' "${cmd}" | grep -qE '^[[:space:]]*git[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*(commit|log|show|diff)([[:space:]]|$)' \
-  && ! printf '%s\n' "${cmd}" | grep -qE '(^|[;&|(`])[[:space:]]*gh[[:space:]]+'; then
+  && ! printf '%s\n' "${cmd}" | grep -qE '[;&|(`][[:space:]]*gh[[:space:]]+'; then
   exit 0
 fi
 
@@ -107,6 +107,22 @@ if printf '%s\n' "${cmd}" | grep -qE 'gh[[:space:]]+api[[:space:]].*graphql.*(--
   printf '\n' >&2
   printf 'If you are trying to merge a PR, use `gh pr merge <number>` instead.\n' >&2
   printf 'If you need a legitimate GraphQL query, pass it inline via -f query=.\n' >&2
+  printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
+  exit 2
+fi
+
+# Block: gh api graphql with -f/-F/--field name=@file  (value-from-file)
+# gh'"'"'s @<filename> convention for -f / --field reads the value from a file,
+# which lets a mutation body live on disk and still get executed. Covers the
+# gap left by the --input check above. Issue #133.
+if printf '%s\n' "${cmd}" | grep -qE 'gh[[:space:]]+api[[:space:]].*graphql.*(-[fF]|--field)[[:space:]=]*(query|mutation)[[:space:]]*=[[:space:]]*@'; then
+  printf '%s BLOCKED GRAPHQL @file: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log"
+  printf '🛑 BLOCKED: gh api graphql with -f/-F query=@<file> (or mutation=@<file>)\n' >&2
+  printf '   reads the payload body from a file via gh'"'"'s @<filename> convention,\n' >&2
+  printf '   hiding its contents from the command-line merge-bypass scanners.\n' >&2
+  printf '\n' >&2
+  printf 'If you are trying to merge a PR, use `gh pr merge <number>` instead.\n' >&2
+  printf 'If you need a legitimate GraphQL query, pass it inline via -f query=<body> (no @).\n' >&2
   printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
   exit 2
 fi
