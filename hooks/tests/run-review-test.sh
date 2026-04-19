@@ -102,12 +102,23 @@ stage_large_change() {
 # Output is written to a separate file and cat'd by the mock to avoid
 # heredoc expansion issues when output contains double-quotes or other
 # special characters that would break an inline printf '%s\n' "${output}".
+#
+# The mock short-circuits on --version so run-review.sh's CLI preflight
+# passes quickly (preflight calls `timeout 5 ${CLI} --version` and only
+# fails the whole script on exit 124). Without this fast-path, a mock
+# configured to exit nonzero would still pass preflight (preflight tolerates
+# non-124 exits) but a mock that sleeps — like Test 5's inline sleep mock —
+# would hit the 5s timeout and kill the whole test run.
 make_mock_claude() {
   local mock_dir="$1" exit_code="$2" output="$3"
   mkdir -p "${mock_dir}"
   printf '%s\n' "${output}" >"${mock_dir}/output.txt"
   cat >"${mock_dir}/claude" <<EOF
 #!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
 cat "${mock_dir}/output.txt"
 exit ${exit_code}
 EOF
@@ -294,8 +305,14 @@ stage_small_change
 # If review.timeout is ignored (TIMEOUT_SECONDS=120 hardcoded), the mock would finish in ~2s.
 MOCK5_DIR="${TMPDIR_TEST}/mock5"
 mkdir -p "${MOCK5_DIR}"
+# Fast-path --version so the CLI preflight (timeout 5) doesn't kill us before
+# the real test scenario. The real invocation (without --version) still sleeps.
 cat >"${MOCK5_DIR}/claude" <<'MOCKEOF'
 #!/usr/bin/env bash
+if [[ "$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
 sleep 5
 echo "VERDICT: PASS"
 echo "No blocking issues found."
@@ -393,6 +410,11 @@ MOCK8_DIR="${TMPDIR_TEST}/mock8"
 mkdir -p "${MOCK8_DIR}"
 cat >"${MOCK8_DIR}/claude" <<'MOCKEOF'
 #!/usr/bin/env bash
+# Fast-path --version so CLI preflight passes (see make_mock_claude).
+if [[ "$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
 # Exits successfully but produces no output (simulates a silent agent failure)
 exit 0
 MOCKEOF
@@ -410,11 +432,56 @@ assert_eq \
   "${exit_t8}"
 
 # =========================================================
+# TEST 9: Chunked-mode timeout verdicts are counted as skips, not warnings
+#
+# invoke_agent emits two distinct synthetic verdicts on transient failure:
+#   - "VERDICT: FAIL (timeout)"       — exit 124 from `timeout` command
+#   - "VERDICT: FAIL (agent error: N)" — any other non-zero exit
+# The parallel aggregate loop greps for "VERDICT: FAIL (" so both are
+# classified as skips (non-fatal, don't count toward blocking_count).
+# Regression test: previously the grep was "VERDICT: FAIL (agent error",
+# which missed the timeout case and miscounted timeouts as warnings.
+# Caught by Seer on PR #128; see issue #129.
+# =========================================================
+echo ""
+echo "=== Test 9: chunked-mode timeout verdicts classified as skips ==="
+
+setup_repo
+stage_large_change
+
+# Mock emits a timeout-style synthetic verdict (matches what invoke_agent
+# produces on real timeout) instead of actual sleep — faster, deterministic.
+MOCK9_DIR="${TMPDIR_TEST}/mock9"
+make_mock_claude "${MOCK9_DIR}" 0 "VERDICT: FAIL (timeout)"
+
+TEST9_LOG="${TMPDIR_TEST}/test9-review.log"
+rm -f "${TEST9_LOG}"
+
+exit_t9=0
+cd "${REPO_DIR}"
+git config review.maxLines 10
+REVIEW_LOG="${TEST9_LOG}" CLAUDE_CLI="${MOCK9_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t9=$?
+git config --unset review.maxLines 2>/dev/null || true
+cd - >/dev/null
+
+log_content9="$(cat "${TEST9_LOG}" 2>/dev/null || echo "")"
+
+assert_eq \
+  "chunked timeout does not block commit (exit 0)" \
+  "0" \
+  "${exit_t9}"
+
+assert_contains \
+  "log notes files were skipped (not counted as warnings)" \
+  "skipped" \
+  "${log_content9}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 11 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 13 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
