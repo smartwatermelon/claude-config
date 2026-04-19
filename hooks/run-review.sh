@@ -323,7 +323,13 @@ ${file_diff}
     # Create per-file cache key. Includes SCRIPT_SHA so prompt/logic edits
     # invalidate stale PASS entries (see DIFF_HASH above for rationale).
     local file_cache_key
-    file_cache_key=$(printf '%s\n%s\n' "${SCRIPT_SHA:-nover}" "${file_diff}" | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "nocache")
+    # Use `shasum -a 256` (BSD) rather than `sha256sum` (GNU-only) so the cache
+    # works on macOS by default. Previously this fell to the "nocache" fallback
+    # on every Darwin host unless the user had installed GNU coreutils, which
+    # silently disabled per-file chunked caching. Matches the DIFF_HASH tool
+    # choice elsewhere in this file. Issue #126.
+    file_cache_key=$(printf '%s\n%s\n' "${SCRIPT_SHA:-nover}" "${file_diff}" | shasum -a 256 2>/dev/null | awk '{print $1}' || echo "nocache")
+    [[ -n "${file_cache_key}" ]] || file_cache_key="nocache"
     local file_cache="${CACHE_DIR}/${file//\//_}_${file_cache_key}"
 
     # Sanitize file path to a safe filename for the result file.
