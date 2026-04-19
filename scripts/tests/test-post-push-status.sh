@@ -42,6 +42,20 @@ gh() {
   local args="$*"
   # Log all calls so tests can assert on owner/repo values flowing through
   echo "MOCK_CALLED_WITH=${args}" >&2
+  # Preflight: bare pulls/<N> existence check (no /comments suffix, no GraphQL).
+  # post-push-status.sh calls `gh api "repos/<O>/<R>/pulls/<N>" --jq .number` as
+  # a preflight to confirm the PR exists in the resolved repo. Always returns
+  # a minimal valid body here so the script proceeds to the real GQL+comments
+  # mocks below. Owner/repo mismatch is still enforced by those downstream
+  # mocks (see PR 99 statusCheckRollup gate).
+  if echo "${args}" | grep -qE 'pulls/[0-9]+( |$)' \
+    && ! echo "${args}" | grep -q "/comments" \
+    && ! echo "${args}" | grep -q "statusCheckRollup"; then
+    local _preflight_pr_num
+    _preflight_pr_num=$(echo "${args}" | grep -oE 'pulls/[0-9]+' | tail -1 | grep -oE '[0-9]+')
+    echo "{\"number\":${_preflight_pr_num}}"
+    return 0
+  fi
   if echo "${args}" | grep -q "statusCheckRollup"; then
     # For PR 99 (owner/repo override test), require owner=testowner so wrong owner hits UNEXPECTED
     if echo "${args}" | grep -qF "number=99" && ! echo "${args}" | grep -qF "owner=testowner"; then
