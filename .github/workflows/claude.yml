@@ -34,6 +34,10 @@ jobs:
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
+          # claude-code-action rejects non-User actors unless explicitly allowed.
+          # The `if:` guard above still filters on @claude mention content; this
+          # list only names bots whose comments/issues are legitimate triggers.
+          allowed_bots: "claude[bot],github-actions[bot]"
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
           # This is an optional setting that allows Claude to read CI results on PRs
