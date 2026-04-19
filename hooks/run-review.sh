@@ -101,6 +101,27 @@ if [[ ! -x "${CLAUDE_CLI}" ]]; then
   exit 1
 fi
 
+# Responsiveness check: if the CLI is hung, each agent invocation below
+# burns TIMEOUT_SECONDS (120-300s) before failing. A --version call should
+# return within a few seconds; if `timeout` has to kill it (exit 124), the
+# CLI is hung — fail fast so the caller can diagnose instead of waiting
+# through multiple long timeouts.
+#
+# Note: we ONLY fail on exit 124 (timeout). A CLI that responds with any
+# other nonzero status (broken install, auth expired, etc.) is still
+# responsive — let the real invocation surface the actionable error. Mock
+# CLIs in the test suite exit with configured codes; those must not trip
+# this preflight. See hooks/tests/run-review-test.sh.
+_preflight_rc=0
+timeout 5 "${CLAUDE_CLI}" --version >/dev/null 2>&1 || _preflight_rc=$?
+if [[ ${_preflight_rc} -eq 124 ]]; then
+  log_error "Claude CLI did not respond to --version within 5s: ${CLAUDE_CLI}"
+  log_error "CLI may be hung. Diagnose:"
+  log_error "  timeout 5 ${CLAUDE_CLI} --version"
+  exit 1
+fi
+unset _preflight_rc
+
 # --- Agent invocation function ---
 invoke_agent() {
   local agent_name="$1"
@@ -277,9 +298,10 @@ Review this diff:
 ${file_diff}
 \`\`\`"
 
-    # Create per-file cache key
+    # Create per-file cache key. Includes SCRIPT_SHA so prompt/logic edits
+    # invalidate stale PASS entries (see DIFF_HASH above for rationale).
     local file_cache_key
-    file_cache_key=$(echo "${file_diff}" | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "nocache")
+    file_cache_key=$(printf '%s\n%s\n' "${SCRIPT_SHA:-nover}" "${file_diff}" | sha256sum 2>/dev/null | cut -d' ' -f1 || echo "nocache")
     local file_cache="${CACHE_DIR}/${file//\//_}_${file_cache_key}"
 
     # Invoke agent for this file (|| prevents set -e from propagating on CLI failure)
@@ -404,7 +426,13 @@ mkdir -p "${CACHE_DIR}"
 # Clean up cache entries older than 30 days to prevent unbounded growth
 find "${CACHE_DIR}" -type f -mtime +30 -delete 2>/dev/null || true
 
-DIFF_HASH=$(echo "${DIFF}" | shasum -a 256 | awk '{print $1}')
+# Cache key includes the hash of THIS script so edits to review logic or
+# prompt text automatically invalidate stale PASS entries. Without this,
+# a tightened adversarial prompt would read old PASS cache for identical
+# diffs and silently skip the stricter review. Fail open on shasum miss
+# (falls back to diff-only hash) so cache still works in stripped envs.
+SCRIPT_SHA=$(shasum -a 256 "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}' | cut -c1-12 || echo "nover")
+DIFF_HASH=$(printf '%s\n%s\n' "${SCRIPT_SHA}" "${DIFF}" | shasum -a 256 | awk '{print $1}')
 CACHE_FILE="${CACHE_DIR}/${DIFF_HASH}"
 
 if [[ -f "${CACHE_FILE}" ]]; then
@@ -709,102 +737,14 @@ END_ISSUE"
   fi
 fi
 
-# --- Detect when adversarial review is warranted ---
-# EXPANDED: More aggressive detection - extra review time beats CI cycles
-detect_security_critical() {
-  local files
-  files=$(git diff --cached --name-only 2>/dev/null || echo "")
-
-  # Path-based patterns (primary detection) - SIGNIFICANTLY EXPANDED
-  # Philosophy: Better to over-review than under-review
-  local path_patterns=(
-    # Authentication & Authorization
-    'auth|oauth|jwt|password|session|login|register|signin|signup|sso|saml|ldap|credential|token'
-    # Payment & Financial
-    'payment|billing|stripe|paypal|checkout|transaction|invoice|subscription|pricing|cart|order'
-    # Database & Data
-    'db|database|model|migration|schema|query|sql|orm|prisma|sequelize|typeorm|repository|entity'
-    # Security & Cryptography
-    'security|crypto|encryption|secret|vault|key|certificate|hash|cipher'
-    # API & External Services
-    'api|webhook|endpoint|middleware|interceptor|gateway|route|controller|handler'
-    # User Data & Privacy
-    'user|account|profile|permission|role|access|admin|privilege|member'
-    # Configuration & Infrastructure
-    'config|env|environment|setting|\.env|secret|credential'
-    # State Management (often security-sensitive)
-    'store|state|reducer|context|provider'
-    # Forms & Input (validation, injection risks)
-    'form|input|validate|sanitize|filter'
-    # File Operations (path traversal, uploads)
-    'file|upload|download|storage|asset|media'
-    # Network & Communication
-    'http|fetch|axios|request|socket|websocket|sse'
-    # Testing (ensure security tests exist)
-    'test|spec|\.test\.|\.spec\.'
-  )
-
-  local combined_pattern
-  combined_pattern=$(printf '%s|' "${path_patterns[@]}")
-  combined_pattern="${combined_pattern%|}" # Remove trailing |
-
-  if echo "${files}" | grep -qiE "(${combined_pattern})"; then
-    return 0 # Warrants adversarial review
-  fi
-
-  # Content-based detection (scan diff for sensitive patterns)
-  local content_patterns=(
-    # Secrets & Keys
-    'API_KEY|SECRET_KEY|PRIVATE_KEY|ACCESS_TOKEN|REFRESH_TOKEN|BEARER|PASSWORD'
-    # Auth patterns
-    'bcrypt|argon2|pbkdf2|authenticate|authorize|permission|isAdmin|hasRole'
-    # Payment
-    'stripe|paypal|braintree|credit.?card|payment.?intent|charge'
-    # Database queries
-    'SELECT|INSERT|UPDATE|DELETE|DROP|CREATE TABLE|ALTER TABLE|query\(|execute\('
-    # Security functions
-    'encrypt|decrypt|hash|salt|nonce|cipher|sign|verify'
-    # Dangerous patterns (injection risks)
-    'eval\(|exec\(|system\(|shell_exec|child_process|subprocess|dangerouslySetInnerHTML'
-    # File operations
-    'readFile|writeFile|unlink|rmdir|chmod|chown|createReadStream|createWriteStream'
-    # Network
-    'fetch\(|axios\.|http\.|https\.|request\(|\.get\(|\.post\(|\.put\(|\.delete\('
-    # Environment variables
-    'process\.env|import\.meta\.env|getenv|os\.environ'
-    # Error handling (often reveals sensitive info)
-    'catch\s*\(|\.catch\(|try\s*{|throw\s+new'
-  )
-
-  local content_pattern
-  content_pattern=$(printf '%s|' "${content_patterns[@]}")
-  content_pattern="${content_pattern%|}"
-
-  if echo "${DIFF}" | grep -qiE "(${content_pattern})"; then
-    return 0 # Warrants adversarial review
-  fi
-
-  # File extension check - certain extensions always warrant scrutiny
-  if echo "${files}" | grep -qiE '\.(sql|env|key|pem|crt|p12|pfx|jks)$'; then
-    return 0
-  fi
-
-  # Size-based heuristic: Larger changes warrant more scrutiny
-  local line_count
-  line_count=$(echo "${DIFF}" | wc -l | tr -d ' ')
-  if [[ ${line_count} -gt 200 ]]; then
-    return 0 # Large changes warrant adversarial review
-  fi
-
-  return 1 # Doesn't need adversarial review
-}
-
-IS_SECURITY_CRITICAL=false
-if detect_security_critical; then
-  IS_SECURITY_CRITICAL=true
-fi
-
 # --- Agent-Based Review Flow ---
+# Both code-reviewer and adversarial-reviewer run on every commit regardless
+# of content. The prior detect_security_critical heuristic (~90 lines of
+# regex patterns matching paths/content/extensions) was removed because its
+# only consumer was a single log_info — it never changed reviewer behavior,
+# prompt content, or cache policy. If differentiated scrutiny is ever
+# needed, wire it with intent (different prompt, different timeout, or
+# separate cache bucket) instead of resurrecting the dead heuristic.
 
 # Build cache keys
 CODE_REVIEWER_CACHE="${CACHE_DIR}/code-reviewer-${DIFF_HASH}"
@@ -872,13 +812,8 @@ fi
 
 # Step 2: Run adversarial-reviewer (always)
 # The adversarial-reviewer runs on every commit alongside code-reviewer.
-# Security-critical detection is still logged for informational purposes.
 ADVERSARIAL_OUTPUT=""
 ADVERSARIAL_VERDICT="N/A"
-
-if [[ "${IS_SECURITY_CRITICAL}" == true ]]; then
-  log_info "Security-critical files detected — adversarial review has elevated scrutiny"
-fi
 
 # Check if adversarial-reviewer agent exists
 if ! find -L "${HOME}/.claude/plugins/marketplaces" -name "adversarial-reviewer.md" -type f 2>/dev/null | grep -q .; then
