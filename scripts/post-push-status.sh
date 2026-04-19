@@ -26,6 +26,16 @@ fi
 
 echo "RESOLVED_OWNER=${OWNER} RESOLVED_REPO=${REPO}" >&2
 
+# Preflight: confirm the PR exists in the resolved repo before continuing.
+# Without this, running from the wrong CWD silently polls the wrong repo and
+# produces confusing downstream errors (jq blowups on 404 error bodies etc).
+if ! gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}" --jq '.number' >/dev/null 2>&1; then
+  echo "ERROR: PR #${PR_NUMBER} not found in ${OWNER}/${REPO}." >&2
+  echo "  If the PR is in a different repo, set POSTPUSH_OWNER=<owner> POSTPUSH_REPO=<repo>" >&2
+  echo "  or re-run from that repo's directory." >&2
+  exit 1
+fi
+
 CURRENT_COMMIT="${POSTPUSH_CURRENT_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo "")}"
 if [[ -z "${CURRENT_COMMIT}" ]]; then
   echo "ERROR: cannot determine current commit" >&2
@@ -83,8 +93,26 @@ BOT_PATTERN='sentry\[bot\]|claude\[bot\]|coderabbit\[bot\]'
 # Fetch both inline diff comments (pulls/comments) and PR conversation comments
 # (issues/comments). Bots like sentry[bot] post to issues/comments (the PR conversation
 # thread); code review bots typically post to pulls/comments (inline diff comments).
-{ gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" 2>/dev/null || echo "[]"; } >"${TMPFILE}_pulls"
-{ gh api "repos/${OWNER}/${REPO}/issues/${PR_NUMBER}/comments" 2>/dev/null || echo "[]"; } >"${TMPFILE}_issues"
+#
+# _safe_api_array: `gh api` prints its error body to stdout BEFORE exiting nonzero,
+# so `{ gh api ... || echo "[]"; }` leaves the file with BOTH the error JSON object
+# and "[]" concatenated — then jq's `.[0] + .[1]` tries to add object+array and
+# explodes. Capture output to a variable first, shape-validate as a JSON array,
+# and only write `[]` if validation fails. Preserves empty-list semantics without
+# letting malformed/error bodies leak through.
+_safe_api_array() {
+  local url="$1"
+  local body
+  if body=$(gh api "${url}" 2>/dev/null) \
+    && echo "${body}" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    printf '%s\n' "${body}"
+  else
+    printf '%s\n' "[]"
+  fi
+}
+
+_safe_api_array "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" >"${TMPFILE}_pulls"
+_safe_api_array "repos/${OWNER}/${REPO}/issues/${PR_NUMBER}/comments" >"${TMPFILE}_issues"
 jq -s '.[0] + .[1]' "${TMPFILE}_pulls" "${TMPFILE}_issues" >"${TMPFILE}" || echo "[]" >"${TMPFILE}"
 rm -f "${TMPFILE}_pulls" "${TMPFILE}_issues"
 
