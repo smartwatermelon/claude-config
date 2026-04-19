@@ -74,6 +74,24 @@ check "Global flag: gh -R owner/repo pr merge" 2 "${inp}"
 inp="$(make_input 'gh --repo owner/repo pr merge 123 --squash')"
 check "Global flag: gh --repo owner/repo pr merge" 2 "${inp}"
 
+# Global-flag-prefix api-merge bypass — the api-merge regexes previously
+# required `gh api` to be adjacent; `gh --repo=... api .../merge` sailed
+# past all four checks. Now each pattern accepts optional flag tokens
+# between gh and api. Flagged by Seer on PR #136; the claim was misattributed
+# to the exemption but digging uncovered this real gap.
+inp="$(make_input 'gh --repo=o/r api repos/o/r/pulls/1/merge --method PUT')"
+check "Global-flag-api: gh --repo=o/r api .../merge (equals)" 2 "${inp}"
+inp="$(make_input 'gh --repo o/r api repos/o/r/pulls/1/merge')"
+check "Global-flag-api: gh --repo o/r api .../merge (space)" 2 "${inp}"
+inp="$(make_input 'gh -R o/r api repos/o/r/pulls/1/merge')"
+check "Global-flag-api: gh -R o/r api .../merge" 2 "${inp}"
+inp="$(make_input 'gh --repo=o/r api graphql -f query=@m.txt')"
+check "Global-flag-api: gh --repo=o/r api graphql @file" 2 "${inp}"
+inp="$(make_input 'gh --repo=o/r api graphql --input /tmp/m.json')"
+check "Global-flag-api: gh --repo=o/r api graphql --input" 2 "${inp}"
+inp="$(make_input 'gh --hostname github.com -R o/r api repos/o/r/pulls/1/merge')"
+check "Global-flag-api: multiple flags then api merge" 2 "${inp}"
+
 # Legitimate uses — should PASS (exit 0)
 inp="$(make_input 'gh api repos/owner/repo/pulls/123')"
 check "REST: gh api .../pulls/N (no /merge)" 0 "${inp}"
