@@ -117,6 +117,25 @@ check "Exempt: git --no-pager log" 0 "${inp}"
 inp="$(make_input 'git -C /repo --no-pager show HEAD')"
 check "Exempt: git -C /repo --no-pager show" 0 "${inp}"
 
+# Exempt: gh (pr|issue) (create|edit|comment) with text args that legitimately
+# mention trigger patterns.
+inp="$(make_input 'gh pr create --title "feat" --body "mentions gh api graphql --input"')"
+check "Exempt: gh pr create --body with trigger text" 0 "${inp}"
+inp="$(make_input 'gh pr edit 42 --body "describes gh api .../pulls/1/merge"')"
+check "Exempt: gh pr edit --body with REST merge text" 0 "${inp}"
+inp="$(make_input 'gh issue create --title "track" --body "mentions gh api graphql --input"')"
+check "Exempt: gh issue create --body with trigger text" 0 "${inp}"
+inp="$(make_input 'gh pr comment 42 --body "discusses gh api graphql --input variant"')"
+check "Exempt: gh pr comment --body with trigger text" 0 "${inp}"
+inp="$(make_input 'gh --repo owner/name pr create --body "mentions gh api graphql --input"')"
+check "Exempt: gh --repo <r> pr create with interposed flag" 0 "${inp}"
+
+# Negative: gh pr create body is exempted BUT a chained gh api merge still blocks.
+inp="$(make_input 'gh pr create --body "..." && gh api repos/o/r/pulls/1/merge')"
+check "Not exempt: gh pr create && gh api merge chain" 2 "${inp}"
+inp="$(make_input 'gh pr create --body "$(gh api repos/o/r/pulls/1/merge)"')"
+check "Not exempt: gh pr create body with \$(gh api merge)" 2 "${inp}"
+
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]

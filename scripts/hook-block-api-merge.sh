@@ -43,6 +43,23 @@ if printf '%s\n' "${cmd}" | grep -qE '^[[:space:]]*git[[:space:]]+(-[^[:space:]]
   exit 0
 fi
 
+# Early-exempt: gh pr|issue create|edit|comment invocations whose text args
+# (--body, --title, --message) may legitimately contain trigger patterns
+# (discovered during Batch D — I had to reword a PR body to avoid false-
+# positive on the literal gh api graphql --input mention). Fires only when:
+#   1. The primary verb is gh (pr|issue) (create|edit|comment), with optional
+#      interposed flags (-R owner/repo, --repo owner/repo, etc.) between gh
+#      and the subcommand.
+#   2. No OTHER gh call appears after a shell-operator boundary (; & | ( `).
+#      The leading gh is at command start and is not preceded by an operator,
+#      so only chained follow-on gh calls match the negation regex.
+# Net: `gh pr create --body "... gh api graphql --input ..."` is exempted,
+# but `gh pr create --body "..." && gh api .../merge` is NOT.
+if printf '%s\n' "${cmd}" | grep -qE '^[[:space:]]*gh[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*(pr|issue)[[:space:]]+(create|edit|comment)([[:space:]]|$)' \
+  && ! printf '%s\n' "${cmd}" | grep -qE '[;&|(`][[:space:]]*gh[[:space:]]+'; then
+  exit 0
+fi
+
 # Block: gh api .../pulls/{number}/merge  (REST endpoint)
 # Suffix boundary ([[:space:]]|$|[^[:alnum:]_]) prevents false positives on
 # hypothetical paths like pulls/NNN/merge_status while still matching:
