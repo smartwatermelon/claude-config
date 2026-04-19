@@ -41,9 +41,19 @@ assert_false() {
 }
 
 # Source just the function definitions we need
-# Extract and evaluate the function definitions without executing the main script
+# Extract and evaluate the function definitions without executing the main script.
+#
+# End-marker for the Diff Summarization block is `# --- Non-Blocking Issue Functions`
+# (NOT `# --- Preflight`) so the eval does NOT pull in the lines that follow —
+# specifically the `_LIB_DIR=... && source ${_LIB_DIR}/lib-review-issues.sh` block.
+# Those lines resolve `${BASH_SOURCE[0]}` to THIS test script rather than the
+# production hook, so the source failed with "No such file or directory".
+# We source lib-review-issues.sh explicitly below with the correct absolute path
+# so `is_security_critical` is available for the test block that uses it.
 eval "$(sed -n '/^# --- File Classification Functions/,/^# --- Diff Summarization Functions/p' ~/.claude/hooks/pre-merge-review.sh | grep -v '^# ---' || true)"
-eval "$(sed -n '/^# --- Diff Summarization Functions/,/^# --- Preflight/p' ~/.claude/hooks/pre-merge-review.sh | grep -v '^# ---' || true)"
+eval "$(sed -n '/^# --- Diff Summarization Functions/,/^# --- Non-Blocking Issue Functions/p' ~/.claude/hooks/pre-merge-review.sh | grep -v '^# ---' || true)"
+# shellcheck source=hooks/lib-review-issues.sh
+source ~/.claude/hooks/lib-review-issues.sh
 
 echo "Running pre-merge-review.sh function tests..."
 echo ""
