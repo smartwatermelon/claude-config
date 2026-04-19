@@ -348,13 +348,17 @@ ${file_diff}
   # Wait for all remaining background jobs.
   wait 2>/dev/null || true
 
-  # Aggregate phase: walk the per-file result files, accumulate counts,
-  # build the issues_output digest. Runs serially on the main shell so
-  # all state updates are safe.
-  local _result_file _rfile _rout
-  for _result_file in "${_chunk_results}"/*; do
+  # Aggregate phase: walk per-file results in the original git-diff file
+  # order (so the issues_output digest is deterministic and matches the
+  # pre-parallel serial order, not alphabetic-by-sanitized-name). Runs
+  # serially on the main shell so accumulator updates are safe.
+  local _result_file _rfile _rout _agg_safe
+  while IFS= read -r _rfile; do
+    [[ -z "${_rfile}" ]] && continue
+    _agg_safe="${_rfile//\//__}"
+    _agg_safe="${_agg_safe// /_}"
+    _result_file="${_chunk_results}/${_agg_safe}"
     [[ -f "${_result_file}" ]] || continue
-    _rfile=$(head -1 "${_result_file}")
     _rout=$(tail -n +2 "${_result_file}")
 
     # "agent error" synthetic verdict indicates the agent failed — skip the
@@ -381,7 +385,7 @@ ${_rout}"
     fi
 
     ((reviewed_files += 1))
-  done
+  done <<<"${files}"
 
   rm -rf "${_chunk_results}"
   unset _chunk_results _chunk_pids
@@ -462,7 +466,7 @@ _global_log="${HOME}/.claude/last-review-result.log"
 } >"${_global_log}" || true
 
 _ec=0 # captured by EXIT trap; declared here so shellcheck sees the assignment
-trap '_ec=$?; [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >> "${REVIEW_LOG}" || true' EXIT
+trap '_ec=$?; rm -rf "${_chunk_results:-}" 2>/dev/null; rm -f "${_cr_out:-}" "${_ar_out:-}" 2>/dev/null; [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >> "${REVIEW_LOG}" || true' EXIT
 
 if [[ -z "${DIFF}" ]]; then
   log_warn "No staged changes to review"
