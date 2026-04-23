@@ -517,6 +517,19 @@ if [[ -f "${CACHE_FILE}" ]]; then
   rm -f "${CACHE_FILE}"
 fi
 
+# Skip review entirely on sync branches.
+# `sync/*` branches are created by sync-to-public.sh and contain content
+# that has already passed full review in the source (private) repo. Running
+# the size-cap check against an aggregated sync diff produces false blocks
+# on legitimate, already-reviewed code.
+_current_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+if [[ "${REVIEW_MODE}" == "commit" ]] && [[ "${_current_branch}" == sync/* ]]; then
+  log_info "Sync branch (${_current_branch}) - skipping review (content already reviewed upstream)"
+  printf 'skipped: sync branch (%s)\n' "${_current_branch}" >>"${REVIEW_LOG}" || true
+  exit 0
+fi
+unset _current_branch
+
 # Progressive review strategy based on diff size
 DIFF_LINES=$(echo "${DIFF}" | wc -l | tr -d ' ')
 
