@@ -477,11 +477,57 @@ assert_contains \
   "${log_content9}"
 
 # =========================================================
+# TEST 10: sync/* branches skip review regardless of diff size
+#
+# Sync commits aggregate content already reviewed in the source repo.
+# Running the size cap against them produces false blocks, so `sync/*`
+# branches must exit 0 without invoking the reviewer.
+# =========================================================
+echo ""
+echo "=== Test 10: sync/* branch skips review even when diff > skipThreshold ==="
+
+setup_repo
+cd "${REPO_DIR}"
+git checkout -q -b "sync/2026-04-23-test"
+# Stage a diff well above the default 2500-line skipThreshold so the
+# test would hit the "BLOCKING: Diff too large" path if the sync-skip
+# logic regressed.
+for i in $(seq 1 3000); do echo "line_${i}_content" >>bigfile.sh; done
+git add bigfile.sh
+cd - >/dev/null
+
+MOCK10_DIR="${TMPDIR_TEST}/mock10"
+# Mock should never be invoked — if run-review.sh calls it, the sync skip
+# broke and the test's "skipped: sync branch" assertion will also fail.
+make_mock_claude "${MOCK10_DIR}" 1 "MOCK SHOULD NOT RUN"
+
+TEST10_LOG="${TMPDIR_TEST}/test10-review.log"
+rm -f "${TEST10_LOG}"
+
+exit_t10=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST10_LOG}" CLAUDE_CLI="${MOCK10_DIR}/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t10=$?
+cd - >/dev/null
+
+assert_eq \
+  "sync branch exits 0 (review skipped)" \
+  "0" \
+  "${exit_t10}"
+
+log_content10="$(cat "${TEST10_LOG}" 2>/dev/null || echo "")"
+
+assert_contains \
+  "log notes sync-branch skip reason" \
+  "skipped: sync branch" \
+  "${log_content10}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 13 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 15 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
