@@ -98,6 +98,8 @@
   },
   "alwaysThinkingEnabled": true,
   "skipDangerousModePermissionPrompt": true,
+  "useAutoModeDuringPlan": false,
   "gitAttribution": true,
-  "useAutoModeDuringPlan": false
+  "verbose": true,
+  "agentPushNotifEnabled": true
 }
