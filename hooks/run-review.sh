@@ -195,6 +195,49 @@ invoke_agent() {
 
 # --- Helper Functions for Progressive Review ---
 
+# Read the developer's commit message for the current invocation, so it can be
+# injected into review prompts as "DEVELOPER INTENT". Without this, the
+# chunked reviewer judges each file in isolation and can flag false positives
+# when the rationale spans files (e.g. a project rename where storage-key
+# changes look unsafe unless you also see the bundle-ID change that makes the
+# renamed app a fresh install). Echoes nothing when no message is available
+# so callers can omit the header entirely instead of emitting an empty one.
+#
+# Sources by mode:
+#   commit                  -> $GIT_DIR/COMMIT_EDITMSG (template '#' lines stripped)
+#   full-diff / pre-push    -> git log -1 --format=%B HEAD
+#   codebase                -> empty (no specific commit context)
+_read_commit_message() {
+  local msg=""
+  case "${REVIEW_MODE}" in
+    codebase)
+      return 0
+      ;;
+    commit)
+      local git_dir editmsg
+      git_dir=$(git rev-parse --git-dir 2>/dev/null || echo "")
+      [[ -n "${git_dir}" ]] || return 0
+      editmsg="${git_dir}/COMMIT_EDITMSG"
+      [[ -f "${editmsg}" ]] || return 0
+      # Strip git-template comment lines (leading '#') and leading/trailing
+      # blank lines. Use grep -v to drop comments; awk trims surrounding blanks.
+      msg=$(grep -v '^#' "${editmsg}" 2>/dev/null \
+        | awk 'NF{found=1} found{print}' \
+        | awk 'BEGIN{n=0} {lines[n++]=$0} END{end=n-1; while(end>=0 && lines[end]~/^[[:space:]]*$/) end--; for(i=0;i<=end;i++) print lines[i]}')
+      ;;
+    *)
+      # full-diff, pre-push, and any future post-commit modes
+      msg=$(git log -1 --format=%B HEAD 2>/dev/null \
+        | awk 'NF{found=1} found{print}' \
+        | awk 'BEGIN{n=0} {lines[n++]=$0} END{end=n-1; while(end>=0 && lines[end]~/^[[:space:]]*$/) end--; for(i=0;i<=end;i++) print lines[i]}')
+      ;;
+  esac
+  # Suppress whitespace-only results so callers can test for "non-empty" cleanly.
+  if [[ -n "${msg//[[:space:]]/}" ]]; then
+    printf '%s\n' "${msg}"
+  fi
+}
+
 show_large_diff_summary() {
   local total_lines="$1"
 
@@ -266,6 +309,21 @@ perform_chunked_review() {
   _chunk_results=$(mktemp -d)
   local -a _chunk_pids=()
 
+  # Read the commit message ONCE for this run; injected into every per-file
+  # prompt so the reviewer sees developer intent across chunks. See
+  # _read_commit_message for source-by-mode behavior.
+  local commit_msg commit_msg_section
+  commit_msg=$(_read_commit_message)
+  if [[ -n "${commit_msg}" ]]; then
+    commit_msg_section="DEVELOPER INTENT (commit message):
+${commit_msg}
+---
+
+"
+  else
+    commit_msg_section=""
+  fi
+
   # Dispatch phase: build per-file prompt, spawn background invoke_agent.
   # Skip-if-too-large is still serial (and bumps skipped_files directly).
   while IFS= read -r file; do
@@ -298,7 +356,7 @@ perform_chunked_review() {
     done
 
     local file_prompt
-    file_prompt="Reviewing file: ${file}
+    file_prompt="${commit_msg_section}Reviewing file: ${file}
 
 IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
 Do NOT output Protocol 0 environment check or any preamble.
@@ -855,7 +913,22 @@ ADVERSARIAL_CACHE="${CACHE_DIR}/adversarial-${DIFF_HASH}"
 
 # Build structured prompt for agents
 # Use string concatenation - safe variable expansion without command execution
-AGENT_PROMPT="You are performing a pre-commit code review. Analyze the diff below and identify issues BEFORE code is committed.
+#
+# Inject the developer's commit message (when available) so the reviewer sees
+# intent before code. Same pattern as the chunked path; section is omitted
+# entirely when no message is available.
+COMMIT_MSG=$(_read_commit_message)
+if [[ -n "${COMMIT_MSG}" ]]; then
+  COMMIT_MSG_SECTION="DEVELOPER INTENT (commit message):
+${COMMIT_MSG}
+---
+
+"
+else
+  COMMIT_MSG_SECTION=""
+fi
+
+AGENT_PROMPT="${COMMIT_MSG_SECTION}You are performing a pre-commit code review. Analyze the diff below and identify issues BEFORE code is committed.
 
 IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
 Do NOT output Protocol 0 environment check or any preamble.
