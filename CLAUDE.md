@@ -175,6 +175,13 @@ Before declaring work done, output the full Completion Verification template fro
 
 ---
 
+## Execution Preferences
+
+- **Plan execution defaults to subagent-driven.** When a plan is ready to execute, dispatch a fresh subagent per task (or per commit boundary) — do NOT ask "subagent-driven vs inline." The decision is pre-made. Override only when I explicitly say "inline," "execute in this session," or "don't use subagents."
+- Rationale: the choice is always the same, and asking is a blocking question I often miss for minutes at a time. Defaulting eliminates wasted wall-clock time.
+
+---
+
 ## Technical Standards
 
 ### Architecture
