@@ -80,34 +80,57 @@ EOF
     echo '[]'
     return 0
   fi
-  if echo "${args}" | grep -q "issues/42/comments"; then
-    cat <<'EOF'
-[
-  {"id":10,"user":{"login":"sentry[bot]"},"created_at":"2024-01-15T12:00:00Z","body":"Critical: SQL injection vulnerability detected","html_url":"https://github.com/..."},
-  {"id":11,"user":{"login":"sentry[bot]"},"created_at":"2024-01-14T08:00:00Z","body":"Stale finding from prior iteration","html_url":"https://github.com/..."}
-]
-EOF
-    return 0
-  fi
-  if echo "${args}" | grep -qF "testowner/testrepo/issues/99/comments"; then
-    echo '[]'
+  # GraphQL issues/comments fetch (replaces former REST issues/<N>/comments path).
+  # Detect by the comments(last:...) selector inside a pullRequest(number:...) query.
+  # The production code passes the PR number via `-F number=<N>`, so the args
+  # string contains `number=<N>` reliably; route by that.
+  #
+  # The real `gh api graphql --jq <filter>` applies the filter to the response
+  # before returning it. To exercise the production --jq projection (Bot →
+  # `<login>[bot]` reconstruction, isMinimized filter), this mock returns the
+  # raw GraphQL response and then pipes it through the actual `--jq` value
+  # extracted from the call's args. That way the test verifies the real
+  # production projection: minimized comments dropped, Bot authors reshaped.
+  if echo "${args}" | grep -q "comments(last:" && echo "${args}" | grep -q "pullRequest(number:"; then
+    local raw=""
+    if echo "${args}" | grep -qF "number=42"; then
+      raw='{"data":{"repository":{"pullRequest":{"comments":{"nodes":[
+        {"body":"Critical: SQL injection vulnerability detected","createdAt":"2024-01-15T12:00:00Z","isMinimized":false,"author":{"__typename":"Bot","login":"sentry"}},
+        {"body":"Stale finding from prior iteration","createdAt":"2024-01-14T08:00:00Z","isMinimized":false,"author":{"__typename":"Bot","login":"sentry"}},
+        {"body":"<!-- claude-blocking-review --> VERDICT: PASS minimized","createdAt":"2024-01-15T13:00:00Z","isMinimized":true,"author":{"__typename":"Bot","login":"claude"}}
+      ]}}}}}'
+    elif echo "${args}" | grep -qF "number=99" && echo "${args}" | grep -qF "owner=testowner"; then
+      raw='{"data":{"repository":{"pullRequest":{"comments":{"nodes":[]}}}}}'
+    elif echo "${args}" | grep -qF "number=43"; then
+      # PR 43: comment between PST-string and UTC commit time (timezone trap).
+      raw='{"data":{"repository":{"pullRequest":{"comments":{"nodes":[
+        {"body":"Stale PST-timezone trap comment","createdAt":"2026-03-13T01:00:00Z","isMinimized":false,"author":{"__typename":"Bot","login":"sentry"}}
+      ]}}}}}'
+    else
+      echo "UNEXPECTED GraphQL comments call: ${args}" >&2
+      return 1
+    fi
+    # Extract the --jq filter from the original argv (positional, not flatten)
+    # so we apply the real production projection on the raw response.
+    local jq_filter="" capture=0
+    for a in "$@"; do
+      if [[ "${capture}" == "1" ]]; then
+        jq_filter="${a}"
+        break
+      fi
+      if [[ "${a}" == "--jq" ]]; then
+        capture=1
+      fi
+    done
+    if [[ -n "${jq_filter}" ]]; then
+      printf '%s' "${raw}" | jq -c "${jq_filter}"
+    else
+      printf '%s' "${raw}"
+    fi
     return 0
   fi
   if echo "${args}" | grep -q "pulls/43/comments"; then
     echo '[]'
-    return 0
-  fi
-  # PR 43: issues/comments with a comment created between PST-string and UTC time of commit.
-  # Commit at 2026-03-13T02:08:00Z (= 2026-03-12T18:08:00-08:00 PST).
-  # Comment at 2026-03-13T01:00:00Z is 1 hour BEFORE commit in UTC (stale → should be filtered).
-  # Old bug: "2026-03-13T01:00:00Z" > "2026-03-12T18:08:00-08:00" (string compare) → not filtered.
-  # Fixed:   "2026-03-13T01:00:00Z" < "2026-03-13T02:08:00Z" (UTC vs UTC) → correctly filtered.
-  if echo "${args}" | grep -q "issues/43/comments"; then
-    cat <<'EOF'
-[
-  {"id":20,"user":{"login":"sentry[bot]"},"created_at":"2026-03-13T01:00:00Z","body":"Stale PST-timezone trap comment","html_url":"https://github.com/..."}
-]
-EOF
     return 0
   fi
   echo "UNEXPECTED gh call: ${args}" >&2
@@ -134,6 +157,15 @@ assert_contains "issues/comments fresh sentry[bot] finding included" "SQL inject
 echo ""
 echo "=== Test: Timestamp filter excludes stale issues/comments ==="
 assert_not_contains "stale issues/comment excluded" "Stale finding from prior iteration" "${output}"
+
+echo ""
+echo "=== Test: Minimized GraphQL comments are filtered out ==="
+# PR 42 mock has a claude[bot] comment with isMinimized:true. The new
+# _fetch_issue_comments_gql jq filter should drop it before the python parser
+# sees it, so VERDICT: PASS body must NOT appear in output. (claude[bot]'s
+# inline pulls/comment finding from PR 42 still appears — different code path,
+# different content.)
+assert_not_contains "minimized PASS comment dropped" "VERDICT: PASS" "${output}"
 
 echo ""
 echo "=== Test: Finding fields present ==="
