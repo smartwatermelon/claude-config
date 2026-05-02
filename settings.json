@@ -4,6 +4,7 @@
     "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash"
   },
   "includeCoAuthoredBy": true,
+  "model": "claude-opus-4-6",
   "permissions": {},
   "hooks": {
     "PreToolUse": [
