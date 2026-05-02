@@ -111,8 +111,79 @@ _safe_api_array() {
   fi
 }
 
+# _fetch_issue_comments_gql: GraphQL fetch for PR conversation (issues/comments).
+# Why GraphQL instead of REST: the REST issues/comments endpoint does not return
+# `isMinimized`, so previously-collapsed bot comments (e.g. PASS reviews
+# minimized by claude-blocking-review.yml's minimizeComment mutation) were still
+# surfaced as findings. GraphQL exposes `isMinimized`, letting us skip them.
+#
+# The --jq projection reshapes GraphQL nodes into the REST-compatible JSON
+# shape the python parser expects (user.login, created_at, body, path, line),
+# so the parser block stays unchanged. Bot authors are reported by GraphQL as
+# `Bot` __typename with login stripped of the `[bot]` suffix; we re-append it
+# so BOT_PATTERN (which expects `claude[bot]` etc.) still matches.
+_fetch_issue_comments_gql() {
+  local owner="$1" repo="$2" number="$3"
+  # Heredoc keeps $owner/$name/$number literal — they're GraphQL variables, not
+  # bash expansions. `gh api -f owner=... -f name=... -F number=...` substitutes them.
+  local query
+  query=$(
+    cat <<'GQLEOF'
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      comments(last: 100) {
+        nodes {
+          body
+          createdAt
+          isMinimized
+          author {
+            __typename
+            login
+          }
+        }
+      }
+    }
+  }
+}
+GQLEOF
+  )
+  # Reshape GraphQL nodes into REST-compatible objects so the python parser is
+  # unchanged. Bot authors come back from GraphQL with `[bot]` stripped from
+  # login; re-append it so BOT_PATTERN matches `claude[bot]`, `sentry[bot]`, etc.
+  local jq_filter
+  jq_filter=$(
+    cat <<'JQEOF'
+.data.repository.pullRequest.comments.nodes
+  | map(select(.isMinimized == false))
+  | map({
+      user: { login: (
+        if .author == null then ""
+        elif .author.__typename == "Bot" then (.author.login + "[bot]")
+        else .author.login
+        end
+      ) },
+      created_at: .createdAt,
+      body: .body,
+      path: "",
+      line: null
+    })
+JQEOF
+  )
+  local body
+  if body=$(gh api graphql \
+        -f query="${query}" \
+        -f owner="${owner}" -f name="${repo}" -F number="${number}" \
+        --jq "${jq_filter}" 2>/dev/null) \
+    && echo "${body}" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    printf '%s\n' "${body}"
+  else
+    printf '%s\n' "[]"
+  fi
+}
+
 _safe_api_array "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/comments" >"${TMPFILE}_pulls"
-_safe_api_array "repos/${OWNER}/${REPO}/issues/${PR_NUMBER}/comments" >"${TMPFILE}_issues"
+_fetch_issue_comments_gql "${OWNER}" "${REPO}" "${PR_NUMBER}" >"${TMPFILE}_issues"
 jq -s '.[0] + .[1]' "${TMPFILE}_pulls" "${TMPFILE}_issues" >"${TMPFILE}" || echo "[]" >"${TMPFILE}"
 rm -f "${TMPFILE}_pulls" "${TMPFILE}_issues"
 
