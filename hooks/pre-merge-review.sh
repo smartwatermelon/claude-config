@@ -19,6 +19,11 @@ set -euo pipefail
 #     * Large diffs (> 1000 lines): Extracts complete diff sections
 #       for files with inline comments, summarizes others
 #     * Ensures critical review context is always visible
+#   - Honors `gh --repo OWNER/NAME` (and `-R`, `--repo=`, `-R=`) so the
+#     caller can invoke `gh pr merge` from any directory. When --repo is
+#     supplied, REPO_OWNER/REPO_NAME are parsed directly from the flag and
+#     propagated to all downstream `gh pr view` / `gh pr diff` calls,
+#     bypassing the CWD-dependent `gh repo view` resolution.
 #
 # EXIT CODES:
 #   0 = Review passed (safe to merge)
@@ -164,19 +169,58 @@ if ! command -v gh &>/dev/null; then
 fi
 
 # --- Parse arguments ---
-# Expected: pr merge [PR_NUMBER] [--flags...]
-# PR number might be positional or we use current branch's PR
-
-shift 2 # Remove "pr" and "merge"
-
+# Expected forms (the wrappers pass the full original $@ through):
+#   pr merge [PR_NUMBER] [--flags...]
+#   -R owner/repo pr merge [PR_NUMBER] [--flags...]
+#   --repo owner/repo pr merge [PR_NUMBER] [--flags...]
+#   --repo=owner/repo pr merge [PR_NUMBER] [--flags...]
+#
+# We can't naively `shift 2` because global flags may precede `pr merge`.
+# Walk the args once, skipping flags (and their separated values for the
+# known two-token globals), and treat the third positional as PR_NUMBER.
+# Also capture --repo / -R for downstream propagation.
 PR_NUMBER=""
+GH_REPO_OVERRIDE=""
+_skip_next=0
+_pending_capture=""
+_positional_count=0
 for arg in "$@"; do
-  # If arg is a number, it's the PR number
-  if [[ "${arg}" =~ ^[0-9]+$ ]]; then
-    PR_NUMBER="${arg}"
-    break
+  if [[ "${_skip_next}" == "1" ]]; then
+    if [[ "${_pending_capture}" == "repo" ]]; then
+      GH_REPO_OVERRIDE="${arg}"
+    fi
+    _pending_capture=""
+    _skip_next=0
+    continue
   fi
+  case "${arg}" in
+    -R | --repo)
+      _skip_next=1
+      _pending_capture=repo
+      ;;
+    --hostname | --config-dir | --token)
+      _skip_next=1
+      ;;
+    --repo=*) GH_REPO_OVERRIDE="${arg#*=}" ;;
+    -R=*) GH_REPO_OVERRIDE="${arg#*=}" ;;
+    --*=* | -*) ;; # other flags: pass over (single-token; no value to skip)
+    *)
+      # Positional. Order: [pr] [merge] [PR_NUMBER]
+      _positional_count=$((_positional_count + 1))
+      if [[ ${_positional_count} -ge 3 && -z "${PR_NUMBER}" && "${arg}" =~ ^[0-9]+$ ]]; then
+        PR_NUMBER="${arg}"
+      fi
+      ;;
+  esac
 done
+
+# Build REPO_FLAG passthrough array for downstream gh calls.
+# When empty, "${REPO_FLAG[@]}" expands to nothing under bash 5+ on macOS
+# (the script's target platform), so call sites can spread it unconditionally.
+REPO_FLAG=()
+if [[ -n "${GH_REPO_OVERRIDE}" ]]; then
+  REPO_FLAG=(--repo "${GH_REPO_OVERRIDE}")
+fi
 
 # --- Non-interactive flag gate ---
 # When invoked from Claude Code (CLAUDECODE set), require --squash and --delete-branch.
@@ -216,7 +260,7 @@ _fetch_pr_json() {
   local stderr_file
   stderr_file=$(mktemp)
   for fields in "${PR_JSON_FIELDS}" "${PR_JSON_FIELDS_FALLBACK}"; do
-    if result=$(command gh pr view "${pr_args[@]}" --json "${fields}" 2>"${stderr_file}"); then
+    if result=$(command gh pr view "${pr_args[@]}" "${REPO_FLAG[@]}" --json "${fields}" 2>"${stderr_file}"); then
       rm -f "${stderr_file}"
       echo "${result}"
       return 0
@@ -398,21 +442,29 @@ fi
 
 # --- Fetch detailed review comments ---
 # Get review threads which include inline comments
-REVIEW_COMMENTS=$(command gh pr view "${PR_NUMBER}" --comments 2>&1) || {
+REVIEW_COMMENTS=$(command gh pr view "${PR_NUMBER}" "${REPO_FLAG[@]}" --comments 2>&1) || {
   log_warn "Could not fetch detailed comments, continuing with basic review data"
   REVIEW_COMMENTS=""
 }
 
 # --- Fetch inline review comments (where Sentry bot posts) ---
 # These are comments on specific lines of code, separate from review summaries
-REPO_OWNER=$(command gh repo view --json owner -q '.owner.login' 2>&1) || {
-  log_warn "Could not determine repo owner"
-  REPO_OWNER=""
-}
-REPO_NAME=$(command gh repo view --json name -q '.name' 2>&1) || {
-  log_warn "Could not determine repo name"
-  REPO_NAME=""
-}
+if [[ -n "${GH_REPO_OVERRIDE}" ]]; then
+  # --repo was provided explicitly; parse OWNER/NAME directly. Avoids a
+  # `gh repo view` call that would fall back to CWD (which may not be the
+  # target repo at all when the caller is invoking from elsewhere).
+  REPO_OWNER="${GH_REPO_OVERRIDE%/*}"
+  REPO_NAME="${GH_REPO_OVERRIDE#*/}"
+else
+  REPO_OWNER=$(command gh repo view --json owner -q '.owner.login' 2>&1) || {
+    log_warn "Could not determine repo owner"
+    REPO_OWNER=""
+  }
+  REPO_NAME=$(command gh repo view --json name -q '.name' 2>&1) || {
+    log_warn "Could not determine repo name"
+    REPO_NAME=""
+  }
+fi
 
 INLINE_COMMENTS=""
 if [[ -n "${REPO_OWNER}" && -n "${REPO_NAME}" ]]; then
@@ -507,7 +559,7 @@ else
 fi
 
 # Get the full diff for context
-PR_DIFF=$(command gh pr diff "${PR_NUMBER}" 2>&1) || {
+PR_DIFF=$(command gh pr diff "${PR_NUMBER}" "${REPO_FLAG[@]}" 2>&1) || {
   log_warn "Could not fetch PR diff"
   PR_DIFF=""
 }
