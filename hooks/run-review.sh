@@ -79,8 +79,13 @@ while [[ $# -gt 0 ]]; do
     --mode=*) echo "Unknown mode: $1" >&2; exit 1 ;;
     --message-file=*) MESSAGE_FILE="${1#*=}" ;;
     --message-file)
-      shift
-      MESSAGE_FILE="${1:-}"
+      # Space-form: consume value as $2, then shift past it. We do NOT inner-
+      # shift first and then rely on the outer shift, because if the flag was
+      # the LAST argument with no value (`--message-file` alone), the outer
+      # shift would fail with "shift count out of range" under set -e and
+      # abort the script. `${2:-}` safely returns "" when $2 is unset.
+      MESSAGE_FILE="${2:-}"
+      [[ $# -ge 2 ]] && shift
       ;;
   esac
   shift

@@ -72,14 +72,18 @@ _stage_tiny_diff() {
 }
 
 # Invoke run-review.sh in commit mode (default), feeding the staged diff
-# on stdin. Pass any extra args through.
+# on stdin. Pass any extra args through. Runs in a subshell so the cd does
+# not leak into the parent bats process; uses `return 1` instead of `exit 1`
+# on cd failure so a single broken test doesn't tear down the whole suite.
 _run_review() {
   local diff
   diff=$(_stage_tiny_diff)
-  cd "${TMPDIR_TEST}" || exit 1
-  printf '%s\n' "${diff}" \
-    | REVIEW_LOG="${EXPECTED_LOG}" CLAUDE_CLI="${CLAUDE_CLI}" \
-      bash "${HOME}/.claude/hooks/run-review.sh" "$@"
+  (
+    cd "${TMPDIR_TEST}" || return 1
+    printf '%s\n' "${diff}" \
+      | REVIEW_LOG="${EXPECTED_LOG}" CLAUDE_CLI="${CLAUDE_CLI}" \
+        bash "${HOME}/.claude/hooks/run-review.sh" "$@"
+  )
 }
 
 @test "--message-file=PATH (equals form) injects the file contents into the review prompt" {
