@@ -4,8 +4,8 @@
     "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash"
   },
   "includeCoAuthoredBy": true,
-  "model": "claude-opus-4-6",
   "permissions": {},
+  "model": "claude-opus-4-6",
   "hooks": {
     "PreToolUse": [
       {
@@ -99,8 +99,8 @@
   },
   "alwaysThinkingEnabled": true,
   "skipDangerousModePermissionPrompt": true,
-  "useAutoModeDuringPlan": false,
-  "gitAttribution": true,
   "verbose": true,
-  "agentPushNotifEnabled": true
+  "agentPushNotifEnabled": true,
+  "useAutoModeDuringPlan": false,
+  "gitAttribution": true
 }
