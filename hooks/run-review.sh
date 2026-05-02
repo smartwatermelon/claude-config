@@ -13,6 +13,18 @@ set -euo pipefail
 #   git diff --cached | ~/.claude/hooks/run-review.sh
 #   git diff main...HEAD | ~/.claude/hooks/run-review.sh --mode=full-diff
 #
+# FLAGS:
+#   --mode=full-diff | --mode=codebase
+#       Switch review mode (default: commit / pre-commit).
+#   --message-file=PATH | --message-file PATH
+#       Read the commit message from PATH instead of $GIT_DIR/COMMIT_EDITMSG.
+#       Used by the commit-msg hook to inject the actual in-progress
+#       message; pre-commit hooks cannot read the message because git
+#       has not yet written it to COMMIT_EDITMSG at pre-commit time
+#       (per `man githooks`: pre-commit "is invoked before obtaining
+#       the proposed commit log message"). When this flag is absent,
+#       behavior is unchanged.
+#
 # EXIT CODES:
 #   0 = Review passed (no blocking issues)
 #   1 = Review failed (issues found or error)
@@ -54,12 +66,24 @@ REVIEW_CHUNK_SIZE=$(git config --get --type=int review.chunkSize 2>/dev/null || 
 
 # --- Mode ---
 REVIEW_MODE="commit"  # default: pre-commit review (code-reviewer + adversarial)
-for arg in "$@"; do
-  case "${arg}" in
+# --- Optional commit-message override ---
+# When set, _read_commit_message reads from this path instead of the
+# default per-mode source. Wired by the commit-msg hook so the reviewer
+# sees the actual in-progress message (pre-commit cannot do this — see
+# header comment block above and `man githooks`).
+MESSAGE_FILE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --mode=full-diff) REVIEW_MODE="full-diff" ;;
     --mode=codebase) REVIEW_MODE="codebase" ;;
-    --mode=*) echo "Unknown mode: ${arg}" >&2; exit 1 ;;
+    --mode=*) echo "Unknown mode: $1" >&2; exit 1 ;;
+    --message-file=*) MESSAGE_FILE="${1#*=}" ;;
+    --message-file)
+      shift
+      MESSAGE_FILE="${1:-}"
+      ;;
   esac
+  shift
 done
 
 # Override timeout for codebase mode (longer due to tool-access exploration)
@@ -203,12 +227,44 @@ invoke_agent() {
 # renamed app a fresh install). Echoes nothing when no message is available
 # so callers can omit the header entirely instead of emitting an empty one.
 #
-# Sources by mode:
+# Sources by priority:
+#   --message-file=PATH     -> read from PATH (highest priority, regardless of mode)
 #   commit                  -> $GIT_DIR/COMMIT_EDITMSG (template '#' lines stripped)
+#                              NOTE: during pre-commit hook execution this
+#                              ALWAYS contains the PREVIOUS commit's message
+#                              (per `man githooks`: pre-commit "is invoked
+#                              before obtaining the proposed commit log
+#                              message"). Use --message-file from the
+#                              commit-msg hook to inject the real one.
 #   full-diff / pre-push    -> git log -1 --format=%B HEAD
 #   codebase                -> empty (no specific commit context)
 _read_commit_message() {
   local msg=""
+
+  # Highest priority: explicit --message-file flag. Used by the commit-msg
+  # hook to inject the in-progress message (the only context where it is
+  # actually written to disk). Applies regardless of REVIEW_MODE so future
+  # callers can override the default source for full-diff / pre-push too.
+  #
+  # When the flag is set, it is authoritative: if the file is missing or
+  # unreadable, return empty (do NOT fall through to the per-mode source).
+  # Callers who want the fallback should simply omit --message-file.
+  # Rationale: silently substituting a different source on a missing
+  # --message-file would re-introduce the very stale-message bug this flag
+  # exists to fix (commit-msg hook hands us $1; if $1 is moved/deleted by
+  # the time we read it, COMMIT_EDITMSG would be PRE-rewrite and stale).
+  if [[ -n "${MESSAGE_FILE:-}" ]]; then
+    if [[ -r "${MESSAGE_FILE}" ]]; then
+      msg=$(grep -v '^#' "${MESSAGE_FILE}" 2>/dev/null \
+        | awk 'NF{found=1} found{print}' \
+        | awk 'BEGIN{n=0} {lines[n++]=$0} END{end=n-1; while(end>=0 && lines[end]~/^[[:space:]]*$/) end--; for(i=0;i<=end;i++) print lines[i]}')
+      if [[ -n "${msg//[[:space:]]/}" ]]; then
+        printf '%s\n' "${msg}"
+      fi
+    fi
+    return 0
+  fi
+
   case "${REVIEW_MODE}" in
     codebase)
       return 0
