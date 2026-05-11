@@ -80,7 +80,7 @@ _KNOWN_RUNTIME=(
   # Files
   ".claude.json" ".DS_Store" "mcp.json" "mcp-needs-auth-cache.json"
   "stats-cache.json" "blocked-commands.log" "last-review-result.log"
-  "settings.local.json" ".credentials.json"
+  "settings.local.json" ".credentials.json" ".last-cleanup"
 )
 
 _is_known_runtime() {
