@@ -33,6 +33,7 @@ set -euo pipefail
 #   review.maxLines        - Max lines for full review (default: 1000)
 #   review.skipThreshold   - Skip AI review beyond this (default: 2500)
 #   review.chunkSize       - Max lines per file in chunked mode (default: 800)
+#   review.model           - Claude model ID (default: haiku for commits, sonnet for full-diff/codebase)
 #
 # EXAMPLES:
 #   git config --global review.maxLines 2000
@@ -94,6 +95,23 @@ done
 # Override timeout for codebase mode (longer due to tool-access exploration)
 if [[ "${REVIEW_MODE}" == "codebase" ]]; then
   TIMEOUT_SECONDS=$(git config --get --type=int review.codebaseTimeout 2>/dev/null || echo "300")
+fi
+
+# --- Model selection ---
+# Priority: git config review.model > mode-based default > CLI default
+# Haiku for commit-level (small diffs, fast feedback); Sonnet for branch/codebase analysis.
+REVIEW_MODEL=$(git config --get review.model 2>/dev/null || echo "")
+if [[ -z "${REVIEW_MODEL}" ]]; then
+  case "${REVIEW_MODE}" in
+    commit)   REVIEW_MODEL="claude-haiku-4-5-20251001" ;;
+    full-diff) REVIEW_MODEL="claude-sonnet-4-6" ;;
+    codebase) REVIEW_MODEL="claude-sonnet-4-6" ;;
+    *)        REVIEW_MODEL="" ;;
+  esac
+fi
+MODEL_ARGS=()
+if [[ -n "${REVIEW_MODEL}" ]]; then
+  MODEL_ARGS=(--model "${REVIEW_MODEL}")
 fi
 
 # --- Colors ---
@@ -183,7 +201,7 @@ invoke_agent() {
   local exit_code=0
   # Use || to prevent set -e from propagating if the CLI exits non-zero.
   # exit_code is then set to the actual failure code for the handler below.
-  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p --tools "" --no-session-persistence 2>&1) || exit_code=$?
+  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p "${MODEL_ARGS[@]}" --tools "" --no-session-persistence 2>&1) || exit_code=$?
 
   # Handle timeout - BLOCK commit (strict mode)
   if [[ ${exit_code} -eq 124 ]]; then
@@ -899,7 +917,7 @@ END_ISSUE"
   codebase_exit=0
   # Invoke WITHOUT --tools "" so agent gets default tool access (Read, Grep, Glob).
   # --allowedTools restricts to safe read-only tools only.
-  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "adversarial-reviewer" -p --allowedTools "Read,Grep,Glob" --no-session-persistence 2>&1) || codebase_exit=$?
+  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "adversarial-reviewer" -p "${MODEL_ARGS[@]}" --allowedTools "Read,Grep,Glob" --no-session-persistence 2>&1) || codebase_exit=$?
 
   codebase_end=$(date +%s)
   codebase_elapsed=$(( codebase_end - codebase_start ))
@@ -1024,6 +1042,10 @@ ${DIFF}
 # Bash tool even when subsequent output is swallowed by the nested claude process.
 printf 'diff_lines: %d\n' "${DIFF_LINES}" >>"${REVIEW_LOG}" || true
 log_info "Review log: ${REVIEW_LOG}"
+if [[ -n "${REVIEW_MODEL}" ]]; then
+  log_info "Model: ${REVIEW_MODEL}"
+  printf 'model: %s\n' "${REVIEW_MODEL}" >>"${REVIEW_LOG}" || true
+fi
 
 # Run code-reviewer and adversarial-reviewer in parallel when both are
 # available. Each reviewer's stdout is captured to its own temp file so
