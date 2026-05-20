@@ -702,7 +702,7 @@ fi
 
 # --- Check for empty diff (permission/mode changes only) ---
 # Skip review if diff contains no actual code changes
-if ! echo "${DIFF}" | grep -qE '^[+-][^+-]'; then
+if ! echo "${DIFF}" 2>/dev/null | grep -qE '^[+-][^+-]'; then
   log_info "No code changes detected (permission/metadata only) - skipping review"
   printf 'skipped: permission/metadata only\n' >>"${REVIEW_LOG}" || true
   exit 0
