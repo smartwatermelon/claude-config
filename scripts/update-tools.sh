@@ -75,12 +75,12 @@ _KNOWN_RUNTIME=(
   # Directories
   "agents-local" "backups" "cache" "channels" "debug"
   "file-history" "logs" "memory" "merge-locks" "paste-cache"
-  "pending-issues" "plans" "projects" "sessions" "session-env"
+  "pending-issues" "plans" "projects" "review-cache" "sessions" "session-env"
   "shell-snapshots" "statsig" "tasks" "telemetry" "todos"
   # Files
   ".claude.json" ".DS_Store" "mcp.json" "mcp-needs-auth-cache.json"
   "stats-cache.json" "blocked-commands.log" "last-review-result.log"
-  "settings.local.json" ".credentials.json" ".last-cleanup"
+  "settings.local.json" ".credentials.json" ".last-cleanup" "policy-limits.json"
 )
 
 _is_known_runtime() {
