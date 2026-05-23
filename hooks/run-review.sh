@@ -523,7 +523,7 @@ ${file_diff}
       continue
     fi
 
-    if echo "${_rout}" | grep -q "VERDICT: FAIL"; then
+    if echo "${_rout}" | grep -qE "VERDICT: (FAIL|Revise)"; then
       if echo "${_rout}" | grep -q "SEVERITY: BLOCKING"; then
         ((blocking_count += 1))
         overall_verdict="FAIL"
@@ -818,7 +818,7 @@ ${DIFF}
     printf 'full-diff: PASS\n' >>"${REVIEW_LOG}" || true
     log_success "Full-diff review passed"
     exit 0
-  elif echo "${FULL_DIFF_OUTPUT}" | grep -q "VERDICT: FAIL"; then
+  elif echo "${FULL_DIFF_OUTPUT}" | grep -qE "VERDICT: (FAIL|Revise)"; then
     if echo "${FULL_DIFF_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
       printf 'full-diff: FAIL (blocking)\n' >>"${REVIEW_LOG}" || true
       log_error "Full-diff review found blocking cross-file issues"
@@ -958,7 +958,7 @@ END_ISSUE"
     fi
 
     exit 0
-  elif echo "${CODEBASE_OUTPUT}" | grep -q "VERDICT: FAIL"; then
+  elif echo "${CODEBASE_OUTPUT}" | grep -qE "VERDICT: (FAIL|Revise)"; then
     if echo "${CODEBASE_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
       printf 'codebase: FAIL (blocking)\n' >>"${REVIEW_LOG}" || true
       log_error "Codebase review found blocking issues"
@@ -1100,7 +1100,7 @@ fi
 # Parse verdict from code-reviewer output
 if echo "${CODE_REVIEWER_OUTPUT}" | grep -q "VERDICT: PASS"; then
   CODE_REVIEWER_VERDICT="PASS"
-elif echo "${CODE_REVIEWER_OUTPUT}" | grep -q "VERDICT: FAIL"; then
+elif echo "${CODE_REVIEWER_OUTPUT}" | grep -qE "VERDICT: (FAIL|Revise)"; then
   CODE_REVIEWER_VERDICT="FAIL"
 else
   log_error "Could not parse code-reviewer verdict"
@@ -1115,7 +1115,7 @@ fi
 if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
   if echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: PASS"; then
     ADVERSARIAL_VERDICT="PASS"
-  elif echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: FAIL"; then
+  elif echo "${ADVERSARIAL_OUTPUT}" | grep -qE "VERDICT: (FAIL|Revise)"; then
     ADVERSARIAL_VERDICT="FAIL"
   else
     log_error "Could not parse adversarial-reviewer verdict"

@@ -523,11 +523,52 @@ assert_contains \
   "${log_content10}"
 
 # =========================================================
+# TEST 11: "VERDICT: Revise" is treated as FAIL (blocking)
+#
+# Reviewers sometimes emit "VERDICT: Revise" instead of "VERDICT: FAIL".
+# The script must treat Revise as a synonym for FAIL: when combined with
+# SEVERITY: BLOCKING, it should block the commit (exit 1).
+# =========================================================
+echo ""
+echo "=== Test 11: VERDICT: Revise treated as blocking FAIL ==="
+
+setup_repo
+stage_small_change
+
+MOCK11_DIR="${TMPDIR_TEST}/mock11"
+make_mock_claude "${MOCK11_DIR}" 0 "VERDICT: Revise
+
+ISSUE: Hardcoded secret
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Remove the hardcoded credential."
+
+TEST11_LOG="${TMPDIR_TEST}/test11-review.log"
+rm -f "${TEST11_LOG}"
+
+exit_t11=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST11_LOG}" CLAUDE_CLI="${MOCK11_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t11=$?
+cd - >/dev/null
+
+assert_eq \
+  "VERDICT: Revise with BLOCKING severity blocks commit (exit 1)" \
+  "1" \
+  "${exit_t11}"
+
+log_content11="$(cat "${TEST11_LOG}" 2>/dev/null || echo "")"
+
+assert_contains \
+  "log records FAIL verdict (Revise normalized to FAIL)" \
+  "FAIL" \
+  "${log_content11}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 15 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 17 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
