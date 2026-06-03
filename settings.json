@@ -5,7 +5,7 @@
   },
   "includeCoAuthoredBy": true,
   "permissions": {},
-  "model": "claude-opus-4-6",
+  "model": "sonnet",
   "hooks": {
     "PreToolUse": [
       {
@@ -100,7 +100,9 @@
   "alwaysThinkingEnabled": true,
   "skipDangerousModePermissionPrompt": true,
   "verbose": true,
+  "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
   "useAutoModeDuringPlan": false,
-  "gitAttribution": true
+  "gitAttribution": true,
+  "effortLevel": "medium"
 }
