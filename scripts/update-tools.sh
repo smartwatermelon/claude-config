@@ -73,14 +73,15 @@ done
 # Files and directories that Claude Code manages at runtime
 _KNOWN_RUNTIME=(
   # Directories
-  "agents-local" "backups" "cache" "channels" "debug"
-  "file-history" "logs" "memory" "merge-locks" "paste-cache"
+  "agents-local" "backups" "cache" "channels" "debug" "daemon"
+  "file-history" "jobs" "logs" "memory" "merge-locks" "paste-cache"
   "pending-issues" "plans" "projects" "review-cache" "sessions" "session-env"
   "shell-snapshots" "statsig" "tasks" "telemetry" "todos"
   # Files
   ".claude.json" ".DS_Store" "mcp.json" "mcp-needs-auth-cache.json"
   "stats-cache.json" "blocked-commands.log" "last-review-result.log"
   "settings.local.json" ".credentials.json" ".last-cleanup" "policy-limits.json"
+  "daemon.log" ".last-update-result.json"
 )
 
 _is_known_runtime() {
