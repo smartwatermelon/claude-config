@@ -73,17 +73,33 @@ Plugins are sourced from four marketplaces. Enabled state is tracked in `setting
 - **comprehensive-review** ✓ — 3 agents: code-reviewer, architect-review, security-auditor
 - **tdd-workflows** ✓ — test-driven development workflows
 - **debugging-toolkit** ✓ — debugging and error analysis
-- **frontend-mobile-development** ✓ — React, Next.js, React Native patterns
+- **frontend-mobile-development** — React, Next.js, React Native patterns (disabled on some machines — see [Per-Machine Notes](#per-machine-notes))
 - git-pr-workflows, error-debugging, code-refactoring, dependency-management, code-documentation, backend-development, unit-testing, security-compliance, incident-response, team-collaboration (available, not enabled)
 
 ### From smartwatermelon-marketplace
 
 - **code-critic** ✓ — adversarial code review agent
-- **react-native-3d** ✓ — 3D rendering with React Three Fiber, expo-gl, Three.js
+- **react-native-3d** — 3D rendering with React Three Fiber, expo-gl, Three.js (disabled on some machines — see [Per-Machine Notes](#per-machine-notes))
 
 ### From claude-code-plugins
 
 - **frontend-design** ✓ — production-grade frontend UI generation
+
+## Per-Machine Notes
+
+`settings.json` is shared across every machine via the symlink install, so
+plugin choices are global by default. Machines with a narrower purpose
+disable what they don't need rather than forking the config:
+
+| Machine | Purpose | Deviates from default by |
+|---|---|---|
+| Beacon Biosignals work laptop (`arich@...`, provisioned 2026-07-12) | Senior SRE work: Python/Bash, infra CLIs, web-based tools, ssh. No app/mobile dev. | `frontend-mobile-development` and `react-native-3d` disabled — no Android/iOS/Expo/React Native work happens on this machine. |
+
+When setting up a new machine: check this table first. If the new machine's
+purpose matches an existing entry, replicate its deviations; if it's closer
+to the personal-dev default, leave everything enabled and don't add a row
+just to say so. Add a row only when a machine's plugin set actually diverges
+from the tracked default.
 
 ## Architecture
 
