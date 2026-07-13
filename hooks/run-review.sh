@@ -717,6 +717,22 @@ if ! echo "${DIFF}" 2>/dev/null | grep -qE '^[+-][^+-]'; then
   exit 0
 fi
 
+# --- Check for submodule-pointer-only changes ---
+# A `Subproject commit <sha>` bump is opaque to every review mode here — this
+# script has no access to the submodule's own history, so codebase-mode review
+# can only ever restate "contents not inspectable" as a non-blocking issue on
+# every bump (see claude-config#192). Operates on DIFF content directly (not
+# file names), so — unlike the markdown/lockfile skips below — it's safe to
+# apply in every mode, including full-diff/codebase where DIFF is piped from
+# main...HEAD rather than the staged index.
+SUBMODULE_ONLY_LINES=$(echo "${DIFF}" | grep -E '^[+-][^+-]' | grep -vE '^[+-]Subproject commit [0-9a-f]{40}$' || true)
+if [[ -z "${SUBMODULE_ONLY_LINES}" ]]; then
+  log_info "Submodule-pointer-only changes detected - skipping review (contents not inspectable)"
+  printf 'skipped: submodule-pointer-only\n' >>"${REVIEW_LOG}" || true
+  exit 0
+fi
+unset SUBMODULE_ONLY_LINES
+
 # --- Check for documentation-only / lockfile-only changes (commit mode only) ---
 # These short-circuits compare staged-index file names against skip-eligible
 # patterns. In --mode=full-diff and --mode=codebase the real diff source is
