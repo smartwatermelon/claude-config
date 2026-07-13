@@ -1,6 +1,6 @@
 {
   "env": {
-    "BASH_ENV": "/Users/andrewrich/.config/bash/functions.sh",
+    "BASH_ENV": "~/.config/bash/functions.sh",
     "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash"
   },
   "includeCoAuthoredBy": true,
@@ -72,21 +72,40 @@
     "dependency-management@claude-code-workflows": false,
     "code-documentation@claude-code-workflows": false,
     "backend-development@claude-code-workflows": false,
-    "frontend-mobile-development@claude-code-workflows": true,
+    "frontend-mobile-development@claude-code-workflows": false,
     "unit-testing@claude-code-workflows": false,
     "security-compliance@claude-code-workflows": false,
     "incident-response@claude-code-workflows": false,
     "team-collaboration@claude-code-workflows": false,
     "code-critic@smartwatermelon-marketplace": true,
-    "react-native-3d@smartwatermelon-marketplace": true,
+    "react-native-3d@smartwatermelon-marketplace": false,
     "frontend-design@claude-code-plugins": true,
-    "ci-workflows@smartwatermelon-marketplace": true
+    "ci-workflows@smartwatermelon-marketplace": true,
+    "apple-notes@apple-notes-mcp": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
       "source": {
         "source": "github",
         "repo": "anthropics/claude-plugins-official"
+      }
+    },
+    "apple-notes-mcp": {
+      "source": {
+        "source": "github",
+        "repo": "sweetrb/apple-notes-mcp"
+      }
+    },
+    "claude-code-workflows": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/wshobson/agents.git"
+      }
+    },
+    "smartwatermelon-marketplace": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/smartwatermelon/smartwatermelon-marketplace.git"
       }
     }
   },
@@ -98,11 +117,11 @@
     ]
   },
   "alwaysThinkingEnabled": true,
+  "effortLevel": "medium",
   "skipDangerousModePermissionPrompt": true,
   "verbose": true,
   "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
   "useAutoModeDuringPlan": false,
-  "gitAttribution": true,
-  "effortLevel": "medium"
+  "gitAttribution": true
 }
