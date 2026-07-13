@@ -114,6 +114,15 @@ if [[ -n "${REVIEW_MODEL}" ]]; then
   MODEL_ARGS=(--model "${REVIEW_MODEL}")
 fi
 
+# --- Reviewer agent selection ---
+# Pinned to a fully-qualified plugin:agent name (git config review.codeReviewerAgent
+# to override). The bare name "code-reviewer" broke once a second installed plugin
+# also shipped an agent literally named "code-reviewer" — Claude CLI refuses
+# ambiguous bare names, so every commit's code-reviewer pass silently errored
+# (non-blocking, but useless). adversarial-reviewer stays a bare name since it is
+# still unique (lives only in the local code-critic marketplace, see CUSTOM_AGENTS.md).
+CODE_REVIEWER_AGENT=$(git config --get review.codeReviewerAgent 2>/dev/null || echo "comprehensive-review:comprehensive-review-code-reviewer")
+
 # --- Colors ---
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
@@ -484,7 +493,7 @@ ${file_diff}
     # output on agent error is normalized here so the aggregate loop can
     # treat it uniformly.
     (
-      _fout=$(invoke_agent "code-reviewer" "${file_prompt}" "${file_cache}") || true
+      _fout=$(invoke_agent "${CODE_REVIEWER_AGENT}" "${file_prompt}" "${file_cache}") || true
       [[ -n "${_fout}" ]] || _fout="VERDICT: FAIL (agent error: invoke_agent produced no output)"
       {
         printf '%s\n' "${file}"
@@ -1075,7 +1084,7 @@ if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
   # error/timeout)"). `|| true` on the wait calls suppresses propagation of
   # the subshell's exit status; the same empty-output guard below handles
   # any silent failure.
-  (invoke_agent "code-reviewer" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}" >"${_cr_out}") &
+  (invoke_agent "${CODE_REVIEWER_AGENT}" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}" >"${_cr_out}") &
   _cr_pid=$!
   (invoke_agent "adversarial-reviewer" "${AGENT_PROMPT}" "${ADVERSARIAL_CACHE}" >"${_ar_out}") &
   _ar_pid=$!
@@ -1087,7 +1096,7 @@ if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
   unset _cr_out _ar_out _cr_pid _ar_pid
 else
   # Serial path (no adversarial): only code-reviewer runs.
-  CODE_REVIEWER_OUTPUT=$(invoke_agent "code-reviewer" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}") || true
+  CODE_REVIEWER_OUTPUT=$(invoke_agent "${CODE_REVIEWER_AGENT}" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}") || true
 fi
 
 # Guard: invoke_agent may exit 0 but produce no output (silent agent failure).
