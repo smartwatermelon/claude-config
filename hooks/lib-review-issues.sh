@@ -49,8 +49,12 @@ is_corporate_repo() {
   [[ "${REPO_OWNER:-}" == "beacon-biosignals" ]]
 }
 
-# Memoized authenticated gh login. Returns 1 (and leaves the cache empty)
-# on failure so a later successful call isn't blocked by an earlier one.
+# Memoized authenticated gh login, cached for the lifetime of this shell
+# process. A failed lookup leaves the cache empty so a later successful call
+# isn't blocked by an earlier one — but a successful lookup is never
+# invalidated, so switching gh accounts mid-process (e.g. `gh auth switch`)
+# won't be picked up. Not a concern in a hook process, which only lives for
+# one commit/merge.
 _GH_LOGIN_CACHE=""
 _cached_gh_login() {
   if [[ -z "${_GH_LOGIN_CACHE:-}" ]]; then
@@ -204,6 +208,10 @@ _escape_for_applescript() {
 # Create a private note in the Notes.app "Tech Debt" folder via osascript.
 # Returns 1 (without touching Notes.app) when osascript is unavailable,
 # e.g. on Linux, so the caller can fall back.
+# CONSTRAINT: the test helper `_load_fn` extracts this function by scanning
+# for a line matching /^}$/ (see tests/test_pre_merge_nonblocking.bats). Keep
+# every AppleScript "end ..." line indented — an unindented bare `}` inside
+# the heredoc would truncate the extraction in tests.
 create_apple_note_issue() {
   local title="$1"
   local body="$2"
