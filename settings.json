@@ -3,7 +3,11 @@
     "BASH_ENV": "~/.config/bash/functions.sh",
     "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash"
   },
-  "includeCoAuthoredBy": true,
+  "includeCoAuthoredBy": false,
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
   "permissions": {},
   "model": "sonnet",
   "hooks": {
@@ -124,5 +128,6 @@
   "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
   "useAutoModeDuringPlan": false,
-  "gitAttribution": true
+  "gitAttribution": true,
+  "remoteControlAtStartup": true
 }
