@@ -173,13 +173,15 @@ _parse_issue_fields() {
 }
 
 # Write an issue body to the local pending-issues fallback dir.
-# Prints the path of the file it wrote.
+# Prints the path of the file it wrote. Returns 1 (printing nothing) if the
+# directory or file couldn't be written, so callers can fail loudly instead
+# of logging a "Saved to: " message with an empty path.
 _write_pending_issue_file() {
   local title="$1"
   local body="$2"
   local pending_dir="$3"
 
-  mkdir -p "${pending_dir}"
+  mkdir -p "${pending_dir}" || return 1
   local slug
   slug=$(echo "${title}" | { tr '[:upper:]' '[:lower:]' || true; } | { tr -cs 'a-z0-9' '-' || true; } | { sed 's/-*$//' || true; } | cut -c1-40)
   # Use PR_NUMBER in filename when available, otherwise use date-based prefix
@@ -190,7 +192,7 @@ _write_pending_issue_file() {
     slug_index=$((slug_index + 1))
     fallback_file="${pending_dir}/${file_prefix}-${slug}-${slug_index}.md"
   done
-  printf "%s\n" "${body}" >"${fallback_file}"
+  printf "%s\n" "${body}" >"${fallback_file}" || return 1
   echo "${fallback_file}"
 }
 
@@ -219,7 +221,10 @@ create_apple_note_issue() {
   command -v osascript >/dev/null 2>&1 || return 1
 
   local escaped_title escaped_body body_html
+  # AppleScript string literals can't span lines, so the title (unlike the
+  # body, which converts newlines to <br>) must not contain any.
   escaped_title=$(_escape_for_applescript "${title}")
+  escaped_title="${escaped_title//$'\n'/ }"
   escaped_body=$(_escape_for_applescript "${body}")
   body_html="${escaped_body//$'\n'/<br>}"
 
@@ -261,11 +266,14 @@ _process_issue_block_apple_note() {
     log_success "Filed private tech-debt note: ${title}"
     log_success "  -> Notes.app / Tech Debt folder (${hashtags})"
   else
-    local fallback_file
-    fallback_file=$(_write_pending_issue_file "${title}" "${body}" "${pending_dir}")
     log_warn "Could not create Apple Note automatically (osascript unavailable or failed)."
-    log_warn "  Saved to: ${fallback_file}"
-    log_warn "  File this privately (e.g. paste into Notes.app 'Tech Debt' folder) — do not create a public GitHub issue for this."
+    local fallback_file
+    if fallback_file=$(_write_pending_issue_file "${title}" "${body}" "${pending_dir}"); then
+      log_warn "  Saved to: ${fallback_file}"
+      log_warn "  File this privately (e.g. paste into Notes.app 'Tech Debt' folder) — do not create a public GitHub issue for this."
+    else
+      log_warn "  Could not write fallback file either (${pending_dir}) — this finding is lost: ${title}"
+    fi
   fi
 }
 
@@ -285,18 +293,22 @@ _format_issue_bullet() {
   printf -- "- **%s** (%s, \`%s\`): %s\n" "${title}" "${source}" "${location}" "${details}"
 }
 
-# Post all parsed issue blocks as a single aggregated PR comment.
-# Used for beacon-biosignals PRs that aren't Andrew's own work — visible to
-# that PR's participants only, not announced org-wide.
+# Post all parsed issue blocks as a single aggregated PR comment. Used for
+# beacon-biosignals PRs that aren't the reviewer's own work — visible to that
+# PR's participants only, not announced org-wide, and not attributed to a
+# public GitHub issue. Falls back to per-issue pending files (same as the
+# other two filing paths) if the comment can't be posted, so a `gh` failure
+# never silently drops a finding.
 post_nonblocking_as_pr_comment() {
   local parsed="$1"
+  local pending_dir="$2"
 
   if [[ -z "${PR_NUMBER:-}" ]]; then
     log_warn "Skipping PR-comment filing: no PR_NUMBER in context"
     return 0
   fi
 
-  local comment_body="### Non-blocking review notes"$'\n\n'"Filed as a comment, not a tracking issue, because this isn't Andrew's PR."$'\n'
+  local comment_body="### Non-blocking review notes"$'\n\n'"Filed as a comment rather than a tracking issue, since this is a peer PR review."$'\n'
   local current_block="" bullet
   while IFS= read -r line; do
     if [[ "${line}" == "---ISSUE---" ]]; then
@@ -312,8 +324,16 @@ post_nonblocking_as_pr_comment() {
 
   if command gh pr comment "${PR_NUMBER}" --repo "${REPO_OWNER}/${REPO_NAME}" --body "${comment_body}" >/dev/null 2>&1; then
     log_success "Posted non-blocking review notes as a PR comment on #${PR_NUMBER}"
+    return 0
+  fi
+
+  log_warn "Could not post non-blocking review notes as a PR comment on #${PR_NUMBER}"
+  local fallback_file
+  if fallback_file=$(_write_pending_issue_file "pr-${PR_NUMBER}-nonblocking-notes" "${comment_body}" "${pending_dir}"); then
+    log_warn "  Saved to: ${fallback_file}"
+    log_warn "  Paste this into a comment on PR #${PR_NUMBER} manually."
   else
-    log_warn "Could not post non-blocking review notes as a PR comment on #${PR_NUMBER}"
+    log_warn "  Could not write fallback file either (${pending_dir}) — these findings are lost for PR #${PR_NUMBER}"
   fi
 }
 
@@ -336,7 +356,7 @@ create_nonblocking_issues() {
   [[ -n "${parsed}" ]] || return 0
 
   if is_corporate_repo && ! is_self_authored; then
-    post_nonblocking_as_pr_comment "${parsed}"
+    post_nonblocking_as_pr_comment "${parsed}" "${pending_dir}"
     return 0
   fi
 
@@ -408,10 +428,13 @@ _process_issue_block() {
     rm -f "${gh_stderr_file}"
     [[ -n "${gh_err}" ]] && log_warn "  gh error: ${gh_err}"
     # Fallback: write to file
-    local fallback_file
-    fallback_file=$(_write_pending_issue_file "${title}" "${body}" "${pending_dir}")
     log_warn "Could not create GitHub issue automatically."
-    log_warn "  Saved to: ${fallback_file}"
-    log_warn "  Run: gh issue create --repo ${REPO_OWNER}/${REPO_NAME} --title \"${title}\" --body-file ${fallback_file} --label \"${labels}\""
+    local fallback_file
+    if fallback_file=$(_write_pending_issue_file "${title}" "${body}" "${pending_dir}"); then
+      log_warn "  Saved to: ${fallback_file}"
+      log_warn "  Run: gh issue create --repo ${REPO_OWNER}/${REPO_NAME} --title \"${title}\" --body-file ${fallback_file} --label \"${labels}\""
+    else
+      log_warn "  Could not write fallback file either (${pending_dir}) — this finding is lost: ${title}"
+    fi
   fi
 }

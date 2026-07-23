@@ -181,6 +181,8 @@ DETAILS: Tests failing."
   _load_fn is_security_critical
   _load_fn needs_security_label
   _load_fn is_corporate_repo
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
   _load_fn parse_nonblocking_issues
   _load_fn build_issue_body
   _load_fn _parse_issue_fields
@@ -220,6 +222,8 @@ END_ISSUE"
   _load_fn is_security_critical
   _load_fn needs_security_label
   _load_fn is_corporate_repo
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
   _load_fn parse_nonblocking_issues
   _load_fn build_issue_body
   _load_fn _parse_issue_fields
@@ -296,6 +300,8 @@ All review comments appear resolved."
   _load_fn is_security_critical
   _load_fn needs_security_label
   _load_fn is_corporate_repo
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
   _load_fn parse_nonblocking_issues
   _load_fn build_issue_body
   _load_fn _parse_issue_fields
@@ -463,6 +469,67 @@ END_ISSUE"
   [[ ! -f "${GH_CALLS_FILE}" ]] || ! grep -q "issue create" "${GH_CALLS_FILE}"
 }
 
+@test "create_nonblocking_issues: corporate + self-authored (PR context) files an Apple Note via a real is_self_authored lookup" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  _load_fn is_corporate_repo
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
+  _load_fn parse_nonblocking_issues
+  _load_fn build_issue_body
+  _load_fn _parse_issue_fields
+  _load_fn _write_pending_issue_file
+  _load_fn _escape_for_applescript
+  _load_fn create_apple_note_issue
+  _load_fn _process_issue_block_apple_note
+  _load_fn create_nonblocking_issues
+
+  # Unlike the PR_NUMBER="" case above, this exercises the actual
+  # `gh pr view` / `gh api user` comparison inside is_self_authored.
+  PR_NUMBER="10"
+  PR_TITLE="My own PR"
+  REPO_OWNER="beacon-biosignals"
+  REPO_NAME="repo"
+
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  OSASCRIPT_CALLS_FILE="${MOCK_DIR}/osascript_calls"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+case "$*" in
+  *"pr view"*) echo "andrew" ;;
+  *"api user"*) echo "andrew" ;;
+esac
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  cat >"${MOCK_DIR}/osascript" <<'EOF'
+#!/usr/bin/env bash
+echo "called" >> "${OSASCRIPT_CALLS_FILE}"
+cat >/dev/null
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/osascript"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Fix the thing
+SOURCE: Seer
+LOCATION: src/api/handler.ts:10
+DETAILS: Something to fix later.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  [[ -f "${OSASCRIPT_CALLS_FILE}" ]]
+  grep -q "pr view" "${GH_CALLS_FILE}"
+  run ! grep -q "issue create" "${GH_CALLS_FILE}"
+  run ! grep -q "pr comment" "${GH_CALLS_FILE}"
+}
+
 @test "create_nonblocking_issues: corporate + not-self posts a PR comment, not a gh issue" {
   _load_fn is_security_critical
   _load_fn needs_security_label
@@ -472,6 +539,7 @@ END_ISSUE"
   _load_fn parse_nonblocking_issues
   _load_fn build_issue_body
   _load_fn _parse_issue_fields
+  _load_fn _write_pending_issue_file
   _load_fn _format_issue_bullet
   _load_fn post_nonblocking_as_pr_comment
   _load_fn create_nonblocking_issues
@@ -506,7 +574,61 @@ END_ISSUE"
   create_nonblocking_issues "${analysis}"
 
   grep -q "pr comment" "${GH_CALLS_FILE}"
-  ! grep -q "issue create" "${GH_CALLS_FILE}"
+  run ! grep -q "issue create" "${GH_CALLS_FILE}"
+}
+
+@test "create_nonblocking_issues: corporate + not-self falls back to a pending file when gh pr comment fails" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  _load_fn is_corporate_repo
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
+  _load_fn parse_nonblocking_issues
+  _load_fn build_issue_body
+  _load_fn _parse_issue_fields
+  _load_fn _write_pending_issue_file
+  _load_fn _format_issue_bullet
+  _load_fn post_nonblocking_as_pr_comment
+  _load_fn create_nonblocking_issues
+
+  PR_NUMBER="42"
+  PR_TITLE="Teammate PR"
+  REPO_OWNER="beacon-biosignals"
+  REPO_NAME="repo"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending-issues"
+
+  # Mock gh: author lookup succeeds (not-self), but `pr comment` itself fails
+  # (e.g. auth expired, rate limit) — the finding must not be silently lost.
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"pr view"*) echo "teammate"; exit 0 ;;
+  *"api user"*) echo "andrew"; exit 0 ;;
+  *"pr comment"*) exit 1 ;;
+esac
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Fix the thing
+SOURCE: Seer
+LOCATION: src/api/handler.ts:10
+DETAILS: Something to fix later.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  # Assert on content, not just the filename shape, so this doesn't depend
+  # on how _write_pending_issue_file composes its prefix/slug.
+  local found=0
+  for f in "${PENDING_ISSUES_DIR}"/*; do
+    [[ -f "${f}" ]] || continue
+    grep -q "Fix the thing" "${f}" && found=1
+  done
+  [[ "${found}" -eq 1 ]]
 }
 
 @test "create_nonblocking_issues: personal repo files a gh issue regardless of authorship" {
