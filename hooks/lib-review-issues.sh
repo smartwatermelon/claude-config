@@ -264,7 +264,7 @@ _format_issue_bullet() {
   _parse_issue_fields "${block}" title source location details
   [[ -n "${title}" ]] || return 0
 
-  printf -- '- **%s** (%s, `%s`): %s\n' "${title}" "${source}" "${location}" "${details}"
+  printf -- "- **%s** (%s, \`%s\`): %s\n" "${title}" "${source}" "${location}" "${details}"
 }
 
 # Post all parsed issue blocks as a single aggregated PR comment.
