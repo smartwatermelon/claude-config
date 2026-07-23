@@ -1,11 +1,11 @@
 #!/usr/bin/env bats
-# Tests for non-blocking issue parsing and creation in pre-merge-review.sh
+# Tests for non-blocking issue parsing and creation in lib-review-issues.sh
 #
 # Run: bats ~/.claude/tests/test_pre_merge_nonblocking.bats
 
 bats_require_minimum_version 1.5.0
 
-SCRIPT="${HOME}/.claude/hooks/pre-merge-review.sh"
+SCRIPT="${HOME}/.claude/hooks/lib-review-issues.sh"
 
 # Suppress log output in tests (exported so eval'd functions can call them)
 log_info() { :; }
@@ -21,7 +21,7 @@ export -f log_error
 # static analysis sees their use, then reassigned per-test without re-exporting.
 export PR_NUMBER="" PR_TITLE="" REPO_OWNER="" REPO_NAME=""
 # Variables used by create_nonblocking_issues tests; same pattern.
-export GH_CALLS_FILE="" PENDING_ISSUES_DIR=""
+export GH_CALLS_FILE="" PENDING_ISSUES_DIR="" OSASCRIPT_CALLS_FILE=""
 
 setup() {
   MOCK_DIR="$(mktemp -d)"
@@ -180,8 +180,10 @@ DETAILS: Tests failing."
 @test "create_nonblocking_issues: calls gh issue create for each parsed issue" {
   _load_fn is_security_critical
   _load_fn needs_security_label
+  _load_fn is_corporate_repo
   _load_fn parse_nonblocking_issues
   _load_fn build_issue_body
+  _load_fn _parse_issue_fields
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
 
@@ -217,8 +219,11 @@ END_ISSUE"
 @test "create_nonblocking_issues: writes fallback file when gh fails" {
   _load_fn is_security_critical
   _load_fn needs_security_label
+  _load_fn is_corporate_repo
   _load_fn parse_nonblocking_issues
   _load_fn build_issue_body
+  _load_fn _parse_issue_fields
+  _load_fn _write_pending_issue_file
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
 
@@ -290,8 +295,10 @@ All review comments appear resolved."
 @test "create_nonblocking_issues: applies security label for auth path" {
   _load_fn is_security_critical
   _load_fn needs_security_label
+  _load_fn is_corporate_repo
   _load_fn parse_nonblocking_issues
   _load_fn build_issue_body
+  _load_fn _parse_issue_fields
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
 
@@ -321,4 +328,230 @@ END_ISSUE"
   create_nonblocking_issues "${analysis}"
 
   grep -q "security" "${GH_CALLS_FILE}"
+}
+
+# --- is_corporate_repo ---
+
+@test "is_corporate_repo: true for beacon-biosignals" {
+  _load_fn is_corporate_repo
+  REPO_OWNER="beacon-biosignals"
+  is_corporate_repo
+}
+
+@test "is_corporate_repo: false for a personal repo" {
+  _load_fn is_corporate_repo
+  REPO_OWNER="andrewrich"
+  run ! is_corporate_repo
+}
+
+# --- is_self_authored ---
+
+@test "is_self_authored: true when PR_NUMBER is unset (commit-level review)" {
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
+  PR_NUMBER=""
+  is_self_authored
+}
+
+@test "is_self_authored: true when PR author matches the authenticated gh login" {
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
+  PR_NUMBER="10"
+  REPO_OWNER="beacon-biosignals"
+  REPO_NAME="repo"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"pr view"*) echo "andrew" ;;
+  *"api user"*) echo "andrew" ;;
+esac
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  is_self_authored
+}
+
+@test "is_self_authored: false when PR author differs from the authenticated gh login" {
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
+  PR_NUMBER="10"
+  REPO_OWNER="beacon-biosignals"
+  REPO_NAME="repo"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"pr view"*) echo "teammate" ;;
+  *"api user"*) echo "andrew" ;;
+esac
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  run ! is_self_authored
+}
+
+@test "is_self_authored: false on gh lookup failure (fail toward PR-comment path)" {
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
+  PR_NUMBER="10"
+  REPO_OWNER="beacon-biosignals"
+  REPO_NAME="repo"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  run ! is_self_authored
+}
+
+# --- create_nonblocking_issues: corporate-repo dispatch ---
+
+@test "create_nonblocking_issues: corporate + self-authored files an Apple Note, not a gh issue" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  _load_fn is_corporate_repo
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
+  _load_fn parse_nonblocking_issues
+  _load_fn build_issue_body
+  _load_fn _parse_issue_fields
+  _load_fn _write_pending_issue_file
+  _load_fn _escape_for_applescript
+  _load_fn create_apple_note_issue
+  _load_fn _process_issue_block_apple_note
+  _load_fn create_nonblocking_issues
+
+  PR_NUMBER=""
+  REPO_OWNER="beacon-biosignals"
+  REPO_NAME="repo"
+
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  OSASCRIPT_CALLS_FILE="${MOCK_DIR}/osascript_calls"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  cat >"${MOCK_DIR}/osascript" <<'EOF'
+#!/usr/bin/env bash
+echo "called" >> "${OSASCRIPT_CALLS_FILE}"
+cat >/dev/null
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/osascript"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Fix the thing
+SOURCE: Seer
+LOCATION: src/api/handler.ts:10
+DETAILS: Something to fix later.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  [[ -f "${OSASCRIPT_CALLS_FILE}" ]]
+  [[ ! -f "${GH_CALLS_FILE}" ]] || ! grep -q "issue create" "${GH_CALLS_FILE}"
+}
+
+@test "create_nonblocking_issues: corporate + not-self posts a PR comment, not a gh issue" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  _load_fn is_corporate_repo
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
+  _load_fn parse_nonblocking_issues
+  _load_fn build_issue_body
+  _load_fn _parse_issue_fields
+  _load_fn _format_issue_bullet
+  _load_fn post_nonblocking_as_pr_comment
+  _load_fn create_nonblocking_issues
+
+  PR_NUMBER="42"
+  PR_TITLE="Teammate PR"
+  REPO_OWNER="beacon-biosignals"
+  REPO_NAME="repo"
+
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+case "$*" in
+  *"pr view"*) echo "teammate" ;;
+  *"api user"*) echo "andrew" ;;
+esac
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Fix the thing
+SOURCE: Seer
+LOCATION: src/api/handler.ts:10
+DETAILS: Something to fix later.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  grep -q "pr comment" "${GH_CALLS_FILE}"
+  ! grep -q "issue create" "${GH_CALLS_FILE}"
+}
+
+@test "create_nonblocking_issues: personal repo files a gh issue regardless of authorship" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  _load_fn is_corporate_repo
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
+  _load_fn parse_nonblocking_issues
+  _load_fn build_issue_body
+  _load_fn _parse_issue_fields
+  _load_fn _write_pending_issue_file
+  _load_fn create_nonblocking_issues
+  _load_fn _process_issue_block
+
+  PR_NUMBER="42"
+  PR_TITLE="Teammate PR"
+  REPO_OWNER="andrewrich"
+  REPO_NAME="repo"
+
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  # Mock gh: pr author differs from authenticated login, but personal repos
+  # never consult authorship — gh issue create should still fire.
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+case "$*" in
+  *"pr view"*) echo "teammate" ;;
+  *"api user"*) echo "andrew" ;;
+esac
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Fix the thing
+SOURCE: Seer
+LOCATION: src/api/handler.ts:10
+DETAILS: Something to fix later.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  grep -q "issue create" "${GH_CALLS_FILE}"
 }
