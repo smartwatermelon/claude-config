@@ -49,12 +49,16 @@ is_corporate_repo() {
   [[ "${REPO_OWNER:-}" == "beacon-biosignals" ]]
 }
 
-# Memoized authenticated gh login, cached for the lifetime of this shell
-# process. A failed lookup leaves the cache empty so a later successful call
-# isn't blocked by an earlier one — but a successful lookup is never
-# invalidated, so switching gh accounts mid-process (e.g. `gh auth switch`)
-# won't be picked up. Not a concern in a hook process, which only lives for
-# one commit/merge.
+# Intended to memoize the authenticated gh login for the lifetime of this
+# shell process — but only actually caches when called without a subshell
+# (i.e. bare `_cached_gh_login`, then read `_GH_LOGIN_CACHE` directly).
+# Calling it via command substitution, as `is_self_authored` does
+# (`my_login=$(_cached_gh_login)`), runs the assignment in a subshell that
+# never writes back to the parent's `_GH_LOGIN_CACHE`, so `gh api user` is
+# re-run on every call. Currently harmless: `is_self_authored` only calls
+# this once per `create_nonblocking_issues` invocation. If a second call
+# site is ever added, either restructure to avoid the subshell or accept the
+# repeated `gh api user` calls.
 _GH_LOGIN_CACHE=""
 _cached_gh_login() {
   if [[ -z "${_GH_LOGIN_CACHE:-}" ]]; then
