@@ -555,3 +555,40 @@ END_ISSUE"
 
   grep -q "issue create" "${GH_CALLS_FILE}"
 }
+
+# --- _escape_for_applescript ---
+
+@test "_escape_for_applescript: escapes backslash, quote, dollar, and backtick" {
+  _load_fn _escape_for_applescript
+  result=$(_escape_for_applescript "a\\b\"c\$d\`e")
+  [[ "${result}" == "a\\\\b\\\"c\\\$d\\\`e" ]]
+}
+
+# --- create_apple_note_issue: heredoc injection safety ---
+# Regression test for a real finding from pre-push whole-codebase review:
+# the unquoted `osascript <<EOF` heredoc lets bash expand $()/backticks in
+# review-agent-supplied TITLE/DETAILS before osascript ever sees them.
+
+@test "create_apple_note_issue: does not execute shell commands embedded in title/body" {
+  _load_fn _escape_for_applescript
+  _load_fn create_apple_note_issue
+
+  local marker="${MOCK_DIR}/should-not-exist"
+  local osascript_stdin="${MOCK_DIR}/osascript_stdin"
+
+  cat >"${MOCK_DIR}/osascript" <<EOF
+#!/usr/bin/env bash
+cat > "${osascript_stdin}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/osascript"
+
+  local malicious_title="Title \$(touch ${marker}) end"
+  local malicious_body="body \`touch ${marker}\` text"
+
+  create_apple_note_issue "${malicious_title}" "${malicious_body}"
+
+  [[ ! -f "${marker}" ]]
+  grep -q "\\\\\\\$(touch" "${osascript_stdin}"
+  grep -q "\\\\\`touch" "${osascript_stdin}"
+}

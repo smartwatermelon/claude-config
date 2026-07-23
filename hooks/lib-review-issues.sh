@@ -190,9 +190,15 @@ _write_pending_issue_file() {
   echo "${fallback_file}"
 }
 
-# Escape a string for embedding in an AppleScript double-quoted literal.
+# Escape a string for embedding in an AppleScript double-quoted literal that
+# is itself interpolated into an unquoted bash heredoc (create_apple_note_issue).
+# Two escaping layers are needed, in order:
+#   1. AppleScript string syntax: backslash and double-quote.
+#   2. Bash's unquoted-heredoc expansion: backslash-escape $ and ` too, so
+#      review-agent-supplied content (TITLE/DETAILS) can't trigger command
+#      substitution when bash reads the heredoc body before osascript sees it.
 _escape_for_applescript() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+  printf '%s' "$1" | sed "s/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g; s/\\\$/\\\\\$/g; s/\`/\\\\\`/g"
 }
 
 # Create a private note in the Notes.app "Tech Debt" folder via osascript.
@@ -263,6 +269,10 @@ _format_issue_bullet() {
   local title source location details
   _parse_issue_fields "${block}" title source location details
   [[ -n "${title}" ]] || return 0
+
+  # DETAILS may span multiple lines; collapse to one line so it stays a
+  # single markdown bullet instead of trailing lines reading as loose text.
+  details="${details//$'\n'/ }"
 
   printf -- "- **%s** (%s, \`%s\`): %s\n" "${title}" "${source}" "${location}" "${details}"
 }
