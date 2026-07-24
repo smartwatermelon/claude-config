@@ -26,6 +26,9 @@ setup() {
   export MOCK_DIR
   cat >"${MOCK_DIR}/claude" <<'EOF'
 #!/usr/bin/env bash
+# Short-circuit the --version preflight WITHOUT consuming stdin, so the piped
+# review diff survives for the actual review invocation.
+[[ "$1" == "--version" ]] && { echo "mock 0.0.0"; exit 0; }
 cat > /dev/null
 echo "VERDICT: PASS"
 echo "No blocking issues found."
