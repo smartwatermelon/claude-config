@@ -189,7 +189,10 @@ fi
 # CLIs in the test suite exit with configured codes; those must not trip
 # this preflight. See hooks/tests/run-review-test.sh.
 _preflight_rc=0
-timeout 5 "${CLAUDE_CLI}" --version >/dev/null 2>&1 || _preflight_rc=$?
+# Redirect stdin from /dev/null: the review diff arrives on this script's stdin
+# (DIFF=$(cat) below), and a CLI/wrapper that reads stdin on --version would
+# otherwise drain it, leaving DIFF empty ("No staged changes to review").
+timeout 5 "${CLAUDE_CLI}" --version </dev/null >/dev/null 2>&1 || _preflight_rc=$?
 if [[ ${_preflight_rc} -eq 124 ]]; then
   log_error "Claude CLI did not respond to --version within 5s: ${CLAUDE_CLI}"
   log_error "CLI may be hung. Diagnose:"
