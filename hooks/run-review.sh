@@ -136,6 +136,26 @@ log_success() { echo -e "${GREEN}[review]${NC} $*" >&2; }
 log_warn() { echo -e "${YELLOW}[review]${NC} $*" >&2; }
 log_error() { echo -e "${RED}[review]${NC} $*" >&2; }
 
+# Normalize an agent's VERDICT line into a bare token, tolerant of markdown
+# emphasis (**PASS**, `PASS`, _PASS_), case, and spacing that would defeat a
+# literal `grep "VERDICT: PASS"`. Echoes PASS | FAIL | REVISE | "" (unparseable).
+# Preserves the original "PASS anywhere wins" precedence. Transient markers such
+# as "VERDICT: FAIL (timeout)" still normalize to FAIL; callers that must
+# distinguish those re-inspect the raw output separately.
+parse_verdict() {
+  local _norm
+  _norm=$(printf '%s\n' "$1" | tr -d '*`_')
+  if printf '%s\n' "${_norm}" | grep -qiE 'VERDICT:[[:space:]]*PASS'; then
+    echo "PASS"
+  elif printf '%s\n' "${_norm}" | grep -qiE 'VERDICT:[[:space:]]*FAIL'; then
+    echo "FAIL"
+  elif printf '%s\n' "${_norm}" | grep -qiE 'VERDICT:[[:space:]]*REVISE'; then
+    echo "REVISE"
+  else
+    echo ""
+  fi
+}
+
 # --- Shared issue library (for --mode=codebase non-blocking issues) ---
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib-review-issues.sh
@@ -243,7 +263,9 @@ invoke_agent() {
   echo "${agent_output}"
 
   # Cache verdict if PASS
-  if echo "${agent_output}" | grep -q "VERDICT: PASS"; then
+  local _cache_verdict
+  _cache_verdict=$(parse_verdict "${agent_output}")
+  if [[ "${_cache_verdict}" == "PASS" ]]; then
     echo "PASS" >"${cache_file}"
     date -u +%Y-%m-%dT%H:%M:%SZ >>"${cache_file}"
   fi
@@ -532,7 +554,8 @@ ${file_diff}
       continue
     fi
 
-    if echo "${_rout}" | grep -qE "VERDICT: (FAIL|Revise)"; then
+    _chunk_verdict=$(parse_verdict "${_rout}")
+    if [[ "${_chunk_verdict}" == "FAIL" || "${_chunk_verdict}" == "REVISE" ]]; then
       if echo "${_rout}" | grep -q "SEVERITY: BLOCKING"; then
         ((blocking_count += 1))
         overall_verdict="FAIL"
@@ -839,11 +862,12 @@ ${DIFF}
 
   { printf '=== FULL-DIFF REVIEW ===\n%s\n' "${FULL_DIFF_OUTPUT}"; } >>"${REVIEW_LOG}" || true
 
-  if echo "${FULL_DIFF_OUTPUT}" | grep -q "VERDICT: PASS"; then
+  FULL_DIFF_VERDICT=$(parse_verdict "${FULL_DIFF_OUTPUT}")
+  if [[ "${FULL_DIFF_VERDICT}" == "PASS" ]]; then
     printf 'full-diff: PASS\n' >>"${REVIEW_LOG}" || true
     log_success "Full-diff review passed"
     exit 0
-  elif echo "${FULL_DIFF_OUTPUT}" | grep -qE "VERDICT: (FAIL|Revise)"; then
+  elif [[ "${FULL_DIFF_VERDICT}" == "FAIL" || "${FULL_DIFF_VERDICT}" == "REVISE" ]]; then
     if echo "${FULL_DIFF_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
       printf 'full-diff: FAIL (blocking)\n' >>"${REVIEW_LOG}" || true
       log_error "Full-diff review found blocking cross-file issues"
@@ -971,7 +995,8 @@ END_ISSUE"
   echo "${CODEBASE_OUTPUT}" >&2
 
   # Parse verdict and handle results
-  if echo "${CODEBASE_OUTPUT}" | grep -q "VERDICT: PASS"; then
+  CODEBASE_VERDICT=$(parse_verdict "${CODEBASE_OUTPUT}")
+  if [[ "${CODEBASE_VERDICT}" == "PASS" ]]; then
     echo "PASS" >"${CODEBASE_CACHE}"
     printf 'codebase: PASS\n' >>"${REVIEW_LOG}" || true
     log_success "Codebase review passed"
@@ -983,7 +1008,7 @@ END_ISSUE"
     fi
 
     exit 0
-  elif echo "${CODEBASE_OUTPUT}" | grep -qE "VERDICT: (FAIL|Revise)"; then
+  elif [[ "${CODEBASE_VERDICT}" == "FAIL" || "${CODEBASE_VERDICT}" == "REVISE" ]]; then
     if echo "${CODEBASE_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
       printf 'codebase: FAIL (blocking)\n' >>"${REVIEW_LOG}" || true
       log_error "Codebase review found blocking issues"
@@ -1123,10 +1148,11 @@ if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
 fi
 
 # Parse verdict from code-reviewer output
-if echo "${CODE_REVIEWER_OUTPUT}" | grep -q "VERDICT: PASS"; then
-  CODE_REVIEWER_VERDICT="PASS"
-elif echo "${CODE_REVIEWER_OUTPUT}" | grep -qE "VERDICT: (FAIL|Revise)"; then
-  CODE_REVIEWER_VERDICT="FAIL"
+CODE_REVIEWER_VERDICT=$(parse_verdict "${CODE_REVIEWER_OUTPUT}")
+if [[ "${CODE_REVIEWER_VERDICT}" == "PASS" ]]; then
+  : # already PASS
+elif [[ "${CODE_REVIEWER_VERDICT}" == "FAIL" || "${CODE_REVIEWER_VERDICT}" == "REVISE" ]]; then
+  CODE_REVIEWER_VERDICT="FAIL" # normalize REVISE -> FAIL for downstream contract
 else
   log_error "Could not parse code-reviewer verdict"
   log_error "BLOCKING: Cannot verify review result"
@@ -1138,10 +1164,11 @@ fi
 
 # Parse verdict from adversarial-reviewer output (when available)
 if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
-  if echo "${ADVERSARIAL_OUTPUT}" | grep -q "VERDICT: PASS"; then
-    ADVERSARIAL_VERDICT="PASS"
-  elif echo "${ADVERSARIAL_OUTPUT}" | grep -qE "VERDICT: (FAIL|Revise)"; then
-    ADVERSARIAL_VERDICT="FAIL"
+  ADVERSARIAL_VERDICT=$(parse_verdict "${ADVERSARIAL_OUTPUT}")
+  if [[ "${ADVERSARIAL_VERDICT}" == "PASS" ]]; then
+    : # already PASS
+  elif [[ "${ADVERSARIAL_VERDICT}" == "FAIL" || "${ADVERSARIAL_VERDICT}" == "REVISE" ]]; then
+    ADVERSARIAL_VERDICT="FAIL" # normalize REVISE -> FAIL for downstream contract
   else
     log_error "Could not parse adversarial-reviewer verdict"
     log_error "BLOCKING: Cannot verify adversarial review result"
