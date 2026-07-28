@@ -3,13 +3,12 @@
     "BASH_ENV": "~/.config/bash/functions.sh",
     "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash"
   },
-  "includeCoAuthoredBy": false,
   "attribution": {
     "commit": "",
     "pr": ""
   },
+  "includeCoAuthoredBy": false,
   "permissions": {},
-  "model": "sonnet",
   "hooks": {
     "PreToolUse": [
       {
@@ -61,6 +60,7 @@
       }
     ]
   },
+  "workflowKeywordTriggerEnabled": false,
   "statusLine": {
     "type": "command",
     "command": "~/.claude/scripts/status-line.sh"
@@ -69,8 +69,8 @@
     "superpowers@superpowers-marketplace": true,
     "comprehensive-review@claude-code-workflows": true,
     "git-pr-workflows@claude-code-workflows": false,
-    "tdd-workflows@claude-code-workflows": true,
-    "debugging-toolkit@claude-code-workflows": true,
+    "tdd-workflows@claude-code-workflows": false,
+    "debugging-toolkit@claude-code-workflows": false,
     "error-debugging@claude-code-workflows": false,
     "code-refactoring@claude-code-workflows": false,
     "dependency-management@claude-code-workflows": false,
@@ -83,9 +83,9 @@
     "team-collaboration@claude-code-workflows": false,
     "code-critic@smartwatermelon-marketplace": true,
     "react-native-3d@smartwatermelon-marketplace": false,
-    "frontend-design@claude-code-plugins": true,
+    "frontend-design@claude-code-plugins": false,
     "ci-workflows@smartwatermelon-marketplace": true,
-    "apple-notes@apple-notes-mcp": true
+    "apple-notes@apple-notes-mcp": false
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -125,10 +125,11 @@
   "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
   "theme": "dark",
+  "editorMode": "normal",
   "verbose": true,
+  "remoteControlAtStartup": true,
   "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
   "useAutoModeDuringPlan": false,
-  "gitAttribution": true,
-  "remoteControlAtStartup": true
+  "gitAttribution": true
 }
