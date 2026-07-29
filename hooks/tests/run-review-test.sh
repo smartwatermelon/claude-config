@@ -5,12 +5,20 @@
 # Tests cover:
 #   1. set -e propagation: transient Claude CLI failure must produce log output beyond bare exit_code
 #   2. Chunked review log: reviewer output must appear in REVIEW_LOG when chunked path runs
-#   3. Dead agent_exit check: agent errors in chunked mode must be skipped gracefully (not fatal)
+#   3. Chunked review with 0/N files reviewed is fail-closed (issue #200); 3b: partial skip still passes
 #   4. Stderr hint: chunked review failure (blocking verdict) must emit workaround hint
 #   5. review.timeout git config is honoured
 #   6. make_mock_claude must handle double-quotes in output without script syntax errors
 #   7. REVIEW_LOG env var must override the hardcoded production log path in run-review.sh
 #   8. Empty reviewer output (exit 0, no stdout) must not block the commit
+#   9. Chunked-mode timeout verdicts are skips, not warnings; all-timeout batch is fail-closed (#200)
+#   10. sync/* branches skip review regardless of diff size
+#   11. "VERDICT: Revise" is treated as a synonym for FAIL
+#   12/13. adversarial-reviewer only blocks on SEVERITY: BLOCKING, matching code-reviewer (issue #199)
+#   14. Empty/template-only commit message does not abort the script under pipefail (issue #148)
+#   15. Codebase mode: stderr noise must not corrupt VERDICT parsing (issue #89)
+#   16. EXIT trap cleanup includes DIFF_TMPFILE (issue #90) — static guard
+#   17. Permission-only diff is still skipped after the SIGPIPE-safe rewrite (issues #166, #171)
 
 set -euo pipefail
 
@@ -213,21 +221,24 @@ assert_contains \
   "${log_content}"
 
 # =========================================================
-# TEST 3: Dead agent_exit check — agent error in chunked mode is gracefully skipped
+# TEST 3: Agent error on EVERY file in chunked mode blocks the commit (fail-closed)
 #
-# When Claude CLI fails for a file chunk, the file should be SKIPPED (logged as
-# skipped due to agent error) rather than counting as a blocking issue.
-# Currently: agent_exit -eq 2 is dead code (invoke_agent returns 0 or 1, not 2),
-# so errors fall through to verdict parsing as FAIL, not skipped.
+# When Claude CLI fails for a file chunk, that file is SKIPPED (logged as
+# skipped due to agent error) rather than counting as a blocking issue in
+# its own right. But if EVERY file in the batch is skipped this way,
+# reviewed_files ends up at 0 with file_count > 0 — a review that reviewed
+# nothing provides no safety signal and must not be reported as a pass.
+# Issue #200: previously this fell through to "Chunked review passed (0
+# files reviewed)" and returned 0 (fail-open). Now it returns 1.
 # =========================================================
 echo ""
-echo "=== Test 3: Agent error in chunked mode is skipped, not fatal ==="
+echo "=== Test 3: Agent error on every file in chunked mode blocks (fail-closed, exit 1) ==="
 
 setup_repo
 stage_large_change
 
 MOCK3_DIR="${TMPDIR_TEST}/mock3"
-make_mock_claude "${MOCK3_DIR}" 1 "" # Claude exits non-zero (transient failure)
+make_mock_claude "${MOCK3_DIR}" 1 "" # Claude exits non-zero (transient failure) on every file
 
 TEST3_LOG="${TMPDIR_TEST}/test3-review.log"
 rm -f "${TEST3_LOG}"
@@ -242,14 +253,77 @@ cd - >/dev/null
 log_content="$(cat "${TEST3_LOG}" 2>/dev/null || echo "")"
 
 assert_eq \
-  "chunked review with transient agent errors does not block commit (exit 0)" \
-  "0" \
+  "chunked review with 0/N files reviewed blocks commit (exit 1) - issue #200" \
+  "1" \
   "${exit_code_t3}"
 
 assert_contains \
   "log notes files were skipped due to agent error" \
   "skipped" \
   "${log_content}"
+
+assert_contains \
+  "log shows 0 files were reviewed" \
+  "Reviewed: 0/" \
+  "${log_content}"
+
+# =========================================================
+# TEST 3b: Partial skip (some files reviewed) is still non-fatal
+#
+# Regression guard for #200: the fail-closed behavior above must trigger
+# ONLY when reviewed_files is exactly 0. If at least one file was actually
+# reviewed (and passed), a mix of skipped + reviewed files must still allow
+# the commit through — the fix should not regress the original "one bad
+# file doesn't kill the whole batch" behavior.
+# =========================================================
+echo ""
+echo "=== Test 3b: Partial skip (some files reviewed) does not block commit ==="
+
+setup_repo
+stage_large_change
+
+MOCK3B_DIR="${TMPDIR_TEST}/mock3b"
+mkdir -p "${MOCK3B_DIR}"
+# Mock inspects stdin (the per-file review prompt, which embeds the diff)
+# to distinguish file1.sh (reviewed, PASS) from all other files (agent error).
+cat >"${MOCK3B_DIR}/claude" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+stdin_content="$(cat)"
+if [[ "${stdin_content}" == *"file1.sh"* ]]; then
+  echo "VERDICT: PASS"
+  echo ""
+  echo "No blocking issues found."
+  exit 0
+fi
+exit 1
+MOCKEOF
+chmod +x "${MOCK3B_DIR}/claude"
+
+TEST3B_LOG="${TMPDIR_TEST}/test3b-review.log"
+rm -f "${TEST3B_LOG}"
+
+exit_code_t3b=0
+cd "${REPO_DIR}"
+git config review.maxLines 10
+REVIEW_LOG="${TEST3B_LOG}" CLAUDE_CLI="${MOCK3B_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_code_t3b=$?
+git config --unset review.maxLines 2>/dev/null || true
+cd - >/dev/null
+
+log_content_t3b="$(cat "${TEST3B_LOG}" 2>/dev/null || echo "")"
+
+assert_eq \
+  "partial skip (1 reviewed, 4 skipped) still passes (exit 0)" \
+  "0" \
+  "${exit_code_t3b}"
+
+assert_contains \
+  "log shows at least 1 file was reviewed" \
+  "Reviewed: 1/" \
+  "${log_content_t3b}"
 
 # =========================================================
 # TEST 4: Stderr hint on chunked review with genuine blocking failure
@@ -432,16 +506,20 @@ assert_eq \
   "${exit_t8}"
 
 # =========================================================
-# TEST 9: Chunked-mode timeout verdicts are counted as skips, not warnings
+# TEST 9: Chunked-mode timeout verdicts are counted as skips, not warnings —
+# and an all-timeout batch is fail-closed (issue #200)
 #
 # invoke_agent emits two distinct synthetic verdicts on transient failure:
 #   - "VERDICT: FAIL (timeout)"       — exit 124 from `timeout` command
 #   - "VERDICT: FAIL (agent error: N)" — any other non-zero exit
 # The parallel aggregate loop greps for "VERDICT: FAIL (" so both are
-# classified as skips (non-fatal, don't count toward blocking_count).
-# Regression test: previously the grep was "VERDICT: FAIL (agent error",
-# which missed the timeout case and miscounted timeouts as warnings.
-# Caught by Seer on PR #128; see issue #129.
+# classified as skips (non-fatal per-file — they don't count toward
+# blocking_count). Regression test: previously the grep was "VERDICT: FAIL
+# (agent error", which missed the timeout case and miscounted timeouts as
+# warnings. Caught by Seer on PR #128; see issue #129.
+#
+# Since every file in this batch times out, reviewed_files ends up at 0 —
+# per issue #200 this must now block the commit (exit 1), not pass silently.
 # =========================================================
 echo ""
 echo "=== Test 9: chunked-mode timeout verdicts classified as skips ==="
@@ -467,8 +545,8 @@ cd - >/dev/null
 log_content9="$(cat "${TEST9_LOG}" 2>/dev/null || echo "")"
 
 assert_eq \
-  "chunked timeout does not block commit (exit 0)" \
-  "0" \
+  "chunked all-timeout (0/N reviewed) blocks commit (exit 1) - issue #200" \
+  "1" \
   "${exit_t9}"
 
 assert_contains \
@@ -563,12 +641,294 @@ assert_contains \
   "FAIL" \
   "${log_content11}"
 
+# Mock that returns different output depending on which agent is invoked.
+# The single-pass path calls: --agent "<agent_name>" ... so $2 is the agent
+# name. Used to test the code-reviewer / adversarial-reviewer asymmetry
+# fixed in issue #199.
+make_mock_claude_by_agent() {
+  local mock_dir="$1" cr_output="$2" ar_output="$3"
+  mkdir -p "${mock_dir}"
+  printf '%s\n' "${cr_output}" >"${mock_dir}/cr_output.txt"
+  printf '%s\n' "${ar_output}" >"${mock_dir}/ar_output.txt"
+  cat >"${mock_dir}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+if [[ "\$2" == *adversarial* ]]; then
+  cat "${mock_dir}/ar_output.txt"
+else
+  cat "${mock_dir}/cr_output.txt"
+fi
+exit 0
+EOF
+  chmod +x "${mock_dir}/claude"
+}
+
+# =========================================================
+# TEST 12: adversarial-reviewer WARNING-only FAIL is non-blocking (issue #199)
+#
+# Before the fix, adversarial-reviewer blocked on ANY non-transient FAIL
+# verdict regardless of severity, while code-reviewer only blocked on
+# SEVERITY: BLOCKING. This asymmetry meant a warnings-only adversarial FAIL
+# rejected commits that code-reviewer's own rule would have allowed through.
+# Fix: gate adversarial the same way — only SEVERITY: BLOCKING blocks.
+# =========================================================
+echo ""
+echo "=== Test 12: adversarial-reviewer WARNING-only FAIL is non-blocking ==="
+
+setup_repo
+stage_small_change
+
+MOCK12_DIR="${TMPDIR_TEST}/mock12"
+make_mock_claude_by_agent "${MOCK12_DIR}" \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  "VERDICT: FAIL
+
+ISSUE: Unpin needs rationale
+SEVERITY: WARNING
+LOCATION: settings.json:1
+DETAILS: Document why the pin was removed."
+
+TEST12_LOG="${TMPDIR_TEST}/test12-review.log"
+rm -f "${TEST12_LOG}"
+
+exit_t12=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST12_LOG}" CLAUDE_CLI="${MOCK12_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t12=$?
+cd - >/dev/null
+
+assert_eq \
+  "adversarial WARNING-only FAIL does not block commit (exit 0) - issue #199" \
+  "0" \
+  "${exit_t12}"
+
+# =========================================================
+# TEST 13: adversarial-reviewer BLOCKING FAIL still blocks (issue #199)
+#
+# The symmetry fix must not make adversarial-reviewer toothless — a genuine
+# SEVERITY: BLOCKING verdict from adversarial-reviewer must still reject
+# the commit, exactly like code-reviewer's own BLOCKING gate.
+# =========================================================
+echo ""
+echo "=== Test 13: adversarial-reviewer BLOCKING FAIL still blocks commit ==="
+
+setup_repo
+stage_small_change
+
+MOCK13_DIR="${TMPDIR_TEST}/mock13"
+make_mock_claude_by_agent "${MOCK13_DIR}" \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  "VERDICT: FAIL
+
+ISSUE: Hardcoded credential
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Remove the hardcoded credential."
+
+TEST13_LOG="${TMPDIR_TEST}/test13-review.log"
+rm -f "${TEST13_LOG}"
+
+exit_t13=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST13_LOG}" CLAUDE_CLI="${MOCK13_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t13=$?
+cd - >/dev/null
+
+assert_eq \
+  "adversarial BLOCKING FAIL still blocks commit (exit 1) - issue #199" \
+  "1" \
+  "${exit_t13}"
+
+# =========================================================
+# TEST 14: Empty/template-only commit message does not crash the script
+# (issue #148)
+#
+# _read_commit_message's `grep -v '^#' ... | awk ...` pipeline exits 1 (no
+# output) when the source file contains only comment lines. Under
+# `set -euo pipefail`, without a `|| true` guard on the assignment, this
+# would abort the whole script. Exercised via --message-file (the highest-
+# priority source, checked unconditionally regardless of REVIEW_MODE).
+# =========================================================
+echo ""
+echo "=== Test 14: template-only commit message does not crash the script ==="
+
+setup_repo
+stage_small_change
+
+TEMPLATE_MSG_FILE="${TMPDIR_TEST}/template-only-msg.txt"
+printf '# Please enter the commit message\n# Lines starting with # are ignored\n' >"${TEMPLATE_MSG_FILE}"
+
+MOCK14_DIR="${TMPDIR_TEST}/mock14"
+make_mock_claude "${MOCK14_DIR}" 0 "VERDICT: PASS
+
+No blocking issues found."
+
+TEST14_LOG="${TMPDIR_TEST}/test14-review.log"
+rm -f "${TEST14_LOG}"
+
+exit_t14=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST14_LOG}" CLAUDE_CLI="${MOCK14_DIR}/claude" \
+  bash "${SUBJECT}" "--message-file=${TEMPLATE_MSG_FILE}" < <(git diff --cached || true) 2>/dev/null || exit_t14=$?
+cd - >/dev/null
+
+log_content14="$(cat "${TEST14_LOG}" 2>/dev/null || echo "")"
+
+assert_eq \
+  "template-only commit message does not abort the script (exit 0)" \
+  "0" \
+  "${exit_t14}"
+
+assert_contains \
+  "script ran to completion (exit_code recorded in log)" \
+  "exit_code:" \
+  "${log_content14}"
+
+# =========================================================
+# TEST 15: Codebase mode - stderr noise does not corrupt VERDICT parsing
+# (issue #89)
+#
+# CODEBASE_OUTPUT previously captured stdout+stderr together via 2>&1, so
+# any stderr noise (CLI upgrade notices, deprecation warnings) could land
+# in the text that `grep -q "VERDICT:"` parses. Fix: stderr is now routed
+# to its own temp file, separate from CODEBASE_OUTPUT. Regression test:
+# a mock that emits noise on stderr AND a clean PASS verdict on stdout
+# must still parse as PASS (exit 0), not be corrupted by the noise.
+# =========================================================
+echo ""
+echo "=== Test 15: codebase mode - stderr noise does not corrupt VERDICT parsing ==="
+
+setup_repo
+stage_small_change
+cd "${REPO_DIR}"
+git add foo.sh
+git commit -q -m "stage a change" --no-verify
+cd - >/dev/null
+
+MOCK15_DIR="${TMPDIR_TEST}/mock15"
+mkdir -p "${MOCK15_DIR}"
+cat >"${MOCK15_DIR}/claude" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+# Simulate CLI noise (upgrade notice, deprecation warning) on stderr,
+# interleaved with a clean VERDICT on stdout.
+echo "warning: a new version of the CLI is available" >&2
+echo "VERDICT: PASS"
+echo ""
+echo "No blocking issues found."
+echo "deprecation notice: some flag will be removed" >&2
+MOCKEOF
+chmod +x "${MOCK15_DIR}/claude"
+
+TEST15_LOG="${TMPDIR_TEST}/test15-review.log"
+rm -f "${TEST15_LOG}"
+
+exit_t15=0
+cd "${REPO_DIR}"
+git diff main~1 main | REVIEW_LOG="${TEST15_LOG}" CLAUDE_CLI="${MOCK15_DIR}/claude" \
+  bash "${SUBJECT}" --mode=codebase 2>/dev/null || exit_t15=$?
+cd - >/dev/null
+
+log_content15="$(cat "${TEST15_LOG}" 2>/dev/null || echo "")"
+
+assert_eq \
+  "codebase mode PASS verdict is not corrupted by stderr noise (exit 0)" \
+  "0" \
+  "${exit_t15}"
+
+assert_contains \
+  "log records codebase PASS verdict" \
+  "codebase:" \
+  "${log_content15}"
+
+# =========================================================
+# TEST 16: EXIT trap cleans up DIFF_TMPFILE and _codebase_err (issue #90)
+# — static guard
+#
+# Codebase mode writes the diff to a mktemp'd DIFF_TMPFILE so the agent can
+# re-Read it, and (per #89) captures stderr in a separate mktemp'd
+# _codebase_err. If the script is killed before their explicit `rm -f`
+# cleanup lines run, both leak in $TMPDIR. This is only observable via
+# SIGTERM/SIGKILL timing, which isn't practical to assert deterministically
+# in this harness — instead this is a static regression guard: both must be
+# listed in the EXIT trap's cleanup alongside the other known temp
+# artifacts. (Caught by adversarial-reviewer during local review: the first
+# pass of the #89 fix added _codebase_err's mktemp/rm but missed the trap.)
+# =========================================================
+echo ""
+echo "=== Test 16: EXIT trap includes DIFF_TMPFILE and _codebase_err cleanup ==="
+
+trap_line="$(grep -m1 "^trap '_ec=\$?;" "${SUBJECT}")"
+
+assert_contains \
+  "EXIT trap cleanup references DIFF_TMPFILE" \
+  "DIFF_TMPFILE" \
+  "${trap_line}"
+
+assert_contains \
+  "EXIT trap cleanup references _codebase_err" \
+  "_codebase_err" \
+  "${trap_line}"
+
+# =========================================================
+# TEST 17: Permission-only diff is still correctly skipped (issues #166, #171)
+#
+# The empty-diff / no-code-changes check was rewritten from
+# `echo "${DIFF}" | grep -qE ...` to a here-string form to eliminate a
+# SIGPIPE race on large diffs (grep exiting before echo finishes writing
+# could make the pipeline's exit status echo's 141 instead of grep's real
+# result under pipefail). Regression test: the intended behavior — skipping
+# review when the diff contains no `+`/`-` code-content lines (e.g. a pure
+# mode/permission change) — must still work after the rewrite.
+# =========================================================
+echo ""
+echo "=== Test 17: permission-only diff is skipped (no code changes) ==="
+
+setup_repo
+cd "${REPO_DIR}"
+chmod +x foo.sh
+git add foo.sh
+cd - >/dev/null
+
+MOCK17_DIR="${TMPDIR_TEST}/mock17"
+# Mock should never be invoked — if run-review.sh calls it, the empty-diff
+# skip broke and the exit-code / log assertions below will also fail.
+make_mock_claude "${MOCK17_DIR}" 1 "MOCK SHOULD NOT RUN"
+
+TEST17_LOG="${TMPDIR_TEST}/test17-review.log"
+rm -f "${TEST17_LOG}"
+
+exit_t17=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST17_LOG}" CLAUDE_CLI="${MOCK17_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t17=$?
+cd - >/dev/null
+
+assert_eq \
+  "permission-only diff exits 0 (review skipped, agent never invoked)" \
+  "0" \
+  "${exit_t17}"
+
+log_content17="$(cat "${TEST17_LOG}" 2>/dev/null || echo "")"
+
+assert_contains \
+  "log notes permission/metadata-only skip reason" \
+  "skipped: permission/metadata only" \
+  "${log_content17}"
+
 # =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 17 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 30 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
