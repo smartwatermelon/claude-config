@@ -1133,11 +1133,61 @@ assert_contains \
   "${invocation_args}"
 
 # =========================================================
+# TEST 22: CODE_REVIEWER_AGENT default resolves to the actually-installed
+# fully-qualified agent name (issue #209)
+#
+# The hardcoded default (used when review.codeReviewerAgent git config is
+# unset) previously doubled the plugin name — "comprehensive-review:
+# comprehensive-review-code-reviewer" — which does not match any installed
+# agent, so run-review.sh's code-reviewer pass silently errored on every
+# commit. Assert the --agent value that actually reaches the CLI invocation
+# matches the real installed agent ID: "comprehensive-review:code-reviewer".
+# =========================================================
+echo ""
+echo "=== Test 22: CODE_REVIEWER_AGENT default matches installed agent ID (issue #209) ==="
+
+setup_repo
+stage_small_change
+
+MOCK22_DIR="${TMPDIR_TEST}/mock22"
+mkdir -p "${MOCK22_DIR}"
+MOCK22_ARGS_FILE="${MOCK22_DIR}/invocation-args.txt"
+rm -f "${MOCK22_ARGS_FILE}"
+cat >"${MOCK22_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+printf '%s\n' "\$*" >>"${MOCK22_ARGS_FILE}"
+echo "VERDICT: PASS"
+echo ""
+echo "No blocking issues found."
+exit 0
+EOF
+chmod +x "${MOCK22_DIR}/claude"
+
+TEST22_LOG="${TMPDIR_TEST}/test22-review.log"
+rm -f "${TEST22_LOG}"
+
+cd "${REPO_DIR}"
+git config --unset review.codeReviewerAgent 2>/dev/null || true
+REVIEW_LOG="${TEST22_LOG}" CLAUDE_CLI="${MOCK22_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+invocation_args22="$(cat "${MOCK22_ARGS_FILE}" 2>/dev/null || echo "")"
+
+assert_contains \
+  "default CODE_REVIEWER_AGENT resolves to installed agent ID (issue #209)" \
+  "--agent comprehensive-review:code-reviewer " \
+  "${invocation_args22}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 39 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 40 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
