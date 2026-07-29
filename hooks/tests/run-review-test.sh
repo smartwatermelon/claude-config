@@ -850,24 +850,32 @@ assert_contains \
   "${log_content15}"
 
 # =========================================================
-# TEST 16: EXIT trap cleans up DIFF_TMPFILE (issue #90) — static guard
+# TEST 16: EXIT trap cleans up DIFF_TMPFILE and _codebase_err (issue #90)
+# — static guard
 #
 # Codebase mode writes the diff to a mktemp'd DIFF_TMPFILE so the agent can
-# re-Read it. If the script is killed before the explicit `rm -f
-# "${DIFF_TMPFILE}"` cleanup line runs, the file leaks in $TMPDIR. This is
-# only observable via SIGTERM/SIGKILL timing, which isn't practical to
-# assert deterministically in this harness — instead this is a static
-# regression guard: DIFF_TMPFILE must be listed in the EXIT trap's cleanup
-# alongside the other known temp artifacts.
+# re-Read it, and (per #89) captures stderr in a separate mktemp'd
+# _codebase_err. If the script is killed before their explicit `rm -f`
+# cleanup lines run, both leak in $TMPDIR. This is only observable via
+# SIGTERM/SIGKILL timing, which isn't practical to assert deterministically
+# in this harness — instead this is a static regression guard: both must be
+# listed in the EXIT trap's cleanup alongside the other known temp
+# artifacts. (Caught by adversarial-reviewer during local review: the first
+# pass of the #89 fix added _codebase_err's mktemp/rm but missed the trap.)
 # =========================================================
 echo ""
-echo "=== Test 16: EXIT trap includes DIFF_TMPFILE cleanup ==="
+echo "=== Test 16: EXIT trap includes DIFF_TMPFILE and _codebase_err cleanup ==="
 
 trap_line="$(grep -m1 "^trap '_ec=\$?;" "${SUBJECT}")"
 
 assert_contains \
   "EXIT trap cleanup references DIFF_TMPFILE" \
   "DIFF_TMPFILE" \
+  "${trap_line}"
+
+assert_contains \
+  "EXIT trap cleanup references _codebase_err" \
+  "_codebase_err" \
   "${trap_line}"
 
 # =========================================================
@@ -920,7 +928,7 @@ assert_contains \
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 29 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 30 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then

@@ -672,7 +672,7 @@ _global_log="${HOME}/.claude/last-review-result.log"
 } >"${_global_log}" || true
 
 _ec=0 # captured by EXIT trap; declared here so shellcheck sees the assignment
-trap '_ec=$?; rm -rf "${_chunk_results:-}" 2>/dev/null; rm -f "${_cr_out:-}" "${_ar_out:-}" 2>/dev/null; [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >> "${REVIEW_LOG}" || true' EXIT
+trap '_ec=$?; rm -rf "${_chunk_results:-}" 2>/dev/null; rm -f "${_cr_out:-}" "${_ar_out:-}" "${DIFF_TMPFILE:-}" "${_codebase_err:-}" 2>/dev/null; [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >> "${REVIEW_LOG}" || true' EXIT
 
 if [[ -z "${DIFF}" ]]; then
   log_warn "No staged changes to review"
@@ -995,7 +995,18 @@ END_ISSUE"
   codebase_exit=0
   # Invoke WITHOUT --tools "" so agent gets default tool access (Read, Grep, Glob).
   # --allowedTools restricts to safe read-only tools only.
-  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "adversarial-reviewer" -p "${MODEL_ARGS[@]}" --allowedTools "Read,Grep,Glob" --no-session-persistence 2>&1) || codebase_exit=$?
+  # stderr is routed to its own temp file rather than merged via 2>&1: CLI
+  # upgrade notices / deprecation warnings on stderr would otherwise land in
+  # CODEBASE_OUTPUT and could corrupt the `grep -q "VERDICT:"` parsing below.
+  # Matches the pattern used for the parallel code-reviewer/adversarial
+  # invocations (_cr_out/_ar_out). Issue #89.
+  _codebase_err=$(mktemp)
+  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "adversarial-reviewer" -p "${MODEL_ARGS[@]}" --allowedTools "Read,Grep,Glob" --no-session-persistence 2>"${_codebase_err}") || codebase_exit=$?
+  if [[ -s "${_codebase_err}" ]]; then
+    cat "${_codebase_err}" >&2
+  fi
+  rm -f "${_codebase_err}"
+  unset _codebase_err
 
   codebase_end=$(date +%s)
   codebase_elapsed=$(( codebase_end - codebase_start ))
