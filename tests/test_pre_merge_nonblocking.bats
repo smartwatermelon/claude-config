@@ -186,6 +186,7 @@ DETAILS: Tests failing."
   _load_fn parse_nonblocking_issues
   _load_fn build_issue_body
   _load_fn _parse_issue_fields
+  _load_fn _repo_has_issues_enabled
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
 
@@ -228,6 +229,7 @@ END_ISSUE"
   _load_fn build_issue_body
   _load_fn _parse_issue_fields
   _load_fn _write_pending_issue_file
+  _load_fn _repo_has_issues_enabled
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
 
@@ -269,6 +271,7 @@ END_ISSUE"
   _load_fn needs_security_label
   _load_fn parse_nonblocking_issues
   _load_fn build_issue_body
+  _load_fn _repo_has_issues_enabled
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
 
@@ -305,6 +308,7 @@ All review comments appear resolved."
   _load_fn parse_nonblocking_issues
   _load_fn build_issue_body
   _load_fn _parse_issue_fields
+  _load_fn _repo_has_issues_enabled
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
 
@@ -641,6 +645,7 @@ END_ISSUE"
   _load_fn build_issue_body
   _load_fn _parse_issue_fields
   _load_fn _write_pending_issue_file
+  _load_fn _repo_has_issues_enabled
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
 
@@ -713,4 +718,143 @@ EOF
   [[ ! -f "${marker}" ]]
   grep -q "\\\\\\\$(touch" "${osascript_stdin}"
   grep -q "\\\\\`touch" "${osascript_stdin}"
+}
+
+# --- _repo_has_issues_enabled / _process_issue_block gh-issue-create guard ---
+# Regression tests for #180: a repo with GitHub Issues disabled made every
+# non-blocking finding attempt (and fail) `gh issue create`, producing up
+# to 30 noisy stderr warnings per push. The guard checks
+# `gh api repos/{owner}/{repo} --jq '.has_issues'` once per run (cached)
+# and skips straight to the fallback-file path when it's explicitly false.
+
+@test "_process_issue_block: skips gh issue create when GitHub Issues are disabled" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  _load_fn is_corporate_repo
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
+  _load_fn parse_nonblocking_issues
+  _load_fn build_issue_body
+  _load_fn _parse_issue_fields
+  _load_fn _write_pending_issue_file
+  _load_fn _repo_has_issues_enabled
+  _load_fn create_nonblocking_issues
+  _load_fn _process_issue_block
+
+  PR_NUMBER="55"
+  PR_TITLE="Test PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending-issues"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  # Mock gh: the has_issues probe explicitly reports issues disabled;
+  # `gh issue create` would fail loudly if it were ever invoked.
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+case "$*" in
+  *"api repos/"*) echo "false"; exit 0 ;;
+  *"issue create"*) echo "gh error: repository has disabled issues" >&2; exit 1 ;;
+esac
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Fix the thing
+SOURCE: Seer
+LOCATION: src/api/handler.ts:10
+DETAILS: Something to fix later.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  # NOTE: intentionally not `! grep -q ...` (or `run ! grep -q ...`) as a
+  # standalone statement. `create_nonblocking_issues` calls functions that
+  # use `if` internally, which — due to a well-known bash quirk — leaves
+  # `errexit` semantics unreliable for the rest of this test body: an
+  # intermediate failing statement no longer aborts execution the way a
+  # fresh shell would. Bats only reliably observes the exit status of the
+  # test body's FINAL statement, so both conditions are folded into one.
+  local issue_create_called=0
+  grep -q "issue create" "${GH_CALLS_FILE}" && issue_create_called=1
+
+  local found=0
+  for f in "${PENDING_ISSUES_DIR}/55-"*; do [[ -f "${f}" ]] && found=1; done
+
+  [[ "${issue_create_called}" -eq 0 && "${found}" -eq 1 ]]
+}
+
+@test "_process_issue_block: caches the has_issues check across multiple findings in one run" {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  _load_fn is_corporate_repo
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
+  _load_fn parse_nonblocking_issues
+  _load_fn build_issue_body
+  _load_fn _parse_issue_fields
+  _load_fn _write_pending_issue_file
+  _load_fn _repo_has_issues_enabled
+  _load_fn create_nonblocking_issues
+  _load_fn _process_issue_block
+
+  PR_NUMBER="55"
+  PR_TITLE="Test PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending-issues"
+  API_CALLS_FILE="${MOCK_DIR}/api_calls"
+  export API_CALLS_FILE
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"api repos/"*) echo x >> "${API_CALLS_FILE}"; echo "false"; exit 0 ;;
+esac
+exit 1
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: First finding
+SOURCE: Seer
+LOCATION: src/api/handler.ts:10
+DETAILS: First.
+END_ISSUE
+
+NON_BLOCKING_ISSUE:
+TITLE: Second finding
+SOURCE: code-reviewer
+LOCATION: general
+DETAILS: Second.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  local api_call_count
+  api_call_count=$(wc -l <"${API_CALLS_FILE}")
+  [[ "${api_call_count}" -eq 1 ]]
+}
+
+@test "_repo_has_issues_enabled: fails open (treats as enabled) when the probe errors or is ambiguous" {
+  _load_fn _repo_has_issues_enabled
+
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+
+  # Mock gh: api call fails outright (network error, auth issue, etc.) —
+  # must NOT be mistaken for an explicit "issues disabled" response.
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  _repo_has_issues_enabled
 }
