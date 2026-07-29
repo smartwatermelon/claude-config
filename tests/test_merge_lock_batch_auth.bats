@@ -77,3 +77,17 @@ lock_file() {
   [ ! -f "$(lock_file 100)" ]
   [ ! -f "$(lock_file 553)" ]
 }
+
+@test "pr-0 is rejected as an invalid PR number" {
+  run bash "${SCRIPT}" auth 0 "ok"
+  [ "${status}" -ne 0 ]
+  [ ! -f "$(lock_file 0)" ]
+}
+
+@test "pr-0 in a batch rejects the entire batch" {
+  run bash "${SCRIPT}" auth "100,0,553" "ok"
+  [ "${status}" -ne 0 ]
+  [ ! -f "$(lock_file 100)" ]
+  [ ! -f "$(lock_file 0)" ]
+  [ ! -f "$(lock_file 553)" ]
+}

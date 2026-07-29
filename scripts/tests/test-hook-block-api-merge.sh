@@ -179,6 +179,32 @@ check "Not exempt: gh pr create && gh api merge chain" 2 "${inp}"
 inp="$(make_input 'gh pr create --body "$(gh api repos/o/r/pulls/1/merge)"')"
 check "Not exempt: gh pr create body with \$(gh api merge)" 2 "${inp}"
 
+# Regression (#137): a literal-newline-chained gh api .../merge call must
+# still be blocked even though it has no preceding shell-operator character
+# on its own line. Previously the negation regex only fired on
+# `[;&|(`]` immediately before gh, so `git diff\ngh api .../merge` slipped
+# through the git-verb exemption (line 1 matches the primary verb check,
+# line 2's unindented `gh api ...` has no operator prefix).
+multiline_cmd="$(printf 'git diff\ngh api repos/o/r/pulls/1/merge --method PUT\n')"
+inp="$(make_input "${multiline_cmd}")"
+check "Not exempt (#137): newline-chained git diff / gh api merge" 2 "${inp}"
+
+multiline_cmd2="$(printf 'git log --oneline -5\ngh api repos/o/r/pulls/1/merge\n')"
+inp="$(make_input "${multiline_cmd2}")"
+check "Not exempt (#137): newline-chained git log / gh api merge" 2 "${inp}"
+
+# Same bypass shape for the gh pr|issue create exemption block.
+multiline_cmd3="$(printf 'gh pr create --title t --body b\ngh api repos/o/r/pulls/1/merge\n')"
+inp="$(make_input "${multiline_cmd3}")"
+check "Not exempt (#137): newline-chained gh pr create / gh api merge" 2 "${inp}"
+
+# Indented heredoc-body line must remain exempt (no false positive introduced).
+# Reuses the pre-existing ${cmd_multiline} built above (line ~159, the
+# "git commit with indented gh api in heredoc body" case) — not a new or
+# undefined variable.
+inp="$(make_input "${cmd_multiline}")"
+check "Still exempt (#137 regression guard): indented heredoc gh api example" 0 "${inp}"
+
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]

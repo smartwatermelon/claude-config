@@ -391,6 +391,35 @@ create_nonblocking_issues() {
   fi
 }
 
+# Does REPO_OWNER/REPO_NAME have GitHub Issues enabled? Cached for the
+# lifetime of this shell process — a single review run can produce many
+# NON_BLOCKING_ISSUE findings, and re-probing the API for every one would be
+# wasteful. When Issues are disabled, `gh issue create` fails loudly on
+# every single finding (30 stderr warnings observed in one push in the
+# field); checking this once lets callers skip straight to the
+# fallback-file path instead of attempting (and failing) the API call.
+# See #180.
+#
+# Fails OPEN: only an explicit "false" from a successful API lookup is
+# treated as disabled. Any other outcome (network error, auth failure,
+# empty response, rate limit) is treated as enabled, so a transient lookup
+# failure never silently suppresses issue filing — it just falls through
+# to the existing `gh issue create` failure/fallback handling, same as
+# before this change.
+_HAS_ISSUES_CACHE=""
+_repo_has_issues_enabled() {
+  if [[ -z "${_HAS_ISSUES_CACHE:-}" ]]; then
+    local result
+    result=$(command gh api "repos/${REPO_OWNER}/${REPO_NAME}" --jq '.has_issues' 2>/dev/null) || true
+    if [[ "${result}" == "false" ]]; then
+      _HAS_ISSUES_CACHE="false"
+    else
+      _HAS_ISSUES_CACHE="true"
+    fi
+  fi
+  [[ "${_HAS_ISSUES_CACHE}" == "true" ]]
+}
+
 # Parse a single issue block and create the GH issue (or fallback file).
 _process_issue_block() {
   local block="$1"
@@ -413,23 +442,33 @@ _process_issue_block() {
   local body
   body=$(build_issue_body "${title}" "${source}" "${location}" "${details}")
 
-  # Attempt to create GitHub issue.
+  # Attempt to create GitHub issue — but only if the repo actually has
+  # Issues enabled (#180). Repos with Issues disabled make `gh issue create`
+  # fail loudly on every finding; skip straight to the fallback-file path
+  # instead so a review with many findings doesn't spam stderr.
   # Use a temp file for stderr so gh warnings/upgrade notices don't contaminate
   # issue_url (same pattern as _fetch_pr_json).
-  local issue_url gh_stderr_file
+  local issue_url gh_stderr_file gh_err="" created=false
   gh_stderr_file=$(mktemp)
-  if issue_url=$(command gh issue create \
-    --repo "${REPO_OWNER}/${REPO_NAME}" \
-    --title "${title}" \
-    --body "${body}" \
-    --label "${labels}" 2>"${gh_stderr_file}"); then
-    rm -f "${gh_stderr_file}"
+  if _repo_has_issues_enabled; then
+    if issue_url=$(command gh issue create \
+      --repo "${REPO_OWNER}/${REPO_NAME}" \
+      --title "${title}" \
+      --body "${body}" \
+      --label "${labels}" 2>"${gh_stderr_file}"); then
+      created=true
+    else
+      gh_err=$(cat "${gh_stderr_file}")
+    fi
+  else
+    gh_err="GitHub Issues are disabled for ${REPO_OWNER}/${REPO_NAME}"
+  fi
+  rm -f "${gh_stderr_file}"
+
+  if [[ "${created}" == true ]]; then
     log_success "Created tracking issue: ${title}"
     log_success "  -> ${issue_url}"
   else
-    local gh_err
-    gh_err=$(cat "${gh_stderr_file}")
-    rm -f "${gh_stderr_file}"
     [[ -n "${gh_err}" ]] && log_warn "  gh error: ${gh_err}"
     # Fallback: write to file
     log_warn "Could not create GitHub issue automatically."

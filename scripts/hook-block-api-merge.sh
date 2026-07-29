@@ -38,8 +38,18 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 #      `gh ...` substitution does (and must still be blocked).
 # Net: `git commit -m "... gh api ..."` is exempted, but
 # `git diff && gh api .../merge` is NOT (the gh after && is a real call).
+# `git diff` followed by a literal-newline-chained `gh api .../merge` (no
+# leading shell operator on its own line) is ALSO not exempted (#137): an
+# unindented line 2+ that starts with `gh` is a real statement, not quoted
+# argument text. Indented lines (e.g. inside a heredoc body) don't match,
+# so the exemption for quoted commit-message text is preserved. Line 1 is
+# excluded from this check (via `tail -n +2`) because for this exemption
+# block the primary verb is `git`, not `gh`, so line 1 never legitimately
+# starts with `gh` anyway — but excluding it keeps the check symmetric
+# with the gh-pr|issue-create exemption below.
 if printf '%s\n' "${cmd}" | grep -qE '^[[:space:]]*git[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*(commit|log|show|diff)([[:space:]]|$)' \
-  && ! printf '%s\n' "${cmd}" | grep -qE '[;&|(`][[:space:]]*gh[[:space:]]+'; then
+  && ! printf '%s\n' "${cmd}" | grep -qE '[;&|(`][[:space:]]*gh[[:space:]]+' \
+  && ! printf '%s\n' "${cmd}" | tail -n +2 | grep -qE '^gh[[:space:]]+'; then
   exit 0
 fi
 
@@ -55,8 +65,14 @@ fi
 #      so only chained follow-on gh calls match the negation regex.
 # Net: `gh pr create --body "... gh api graphql --input ..."` is exempted,
 # but `gh pr create --body "..." && gh api .../merge` is NOT.
+# `gh pr create ...` followed by a literal-newline-chained `gh api .../merge`
+# is ALSO not exempted (#137). Line 1 (the primary `gh pr|issue ...`
+# invocation itself, which legitimately starts with `gh`) is excluded from
+# the unindented-line check via `tail -n +2`, so only genuine follow-on
+# lines starting with `gh` at column 0 trip the negation.
 if printf '%s\n' "${cmd}" | grep -qE '^[[:space:]]*gh[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*(pr|issue)[[:space:]]+(create|edit|comment)([[:space:]]|$)' \
-  && ! printf '%s\n' "${cmd}" | grep -qE '[;&|(`][[:space:]]*gh[[:space:]]+'; then
+  && ! printf '%s\n' "${cmd}" | grep -qE '[;&|(`][[:space:]]*gh[[:space:]]+' \
+  && ! printf '%s\n' "${cmd}" | tail -n +2 | grep -qE '^gh[[:space:]]+'; then
   exit 0
 fi
 
