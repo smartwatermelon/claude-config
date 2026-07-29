@@ -293,8 +293,15 @@ invoke_agent() {
 #                              before obtaining the proposed commit log
 #                              message"). Use --message-file from the
 #                              commit-msg hook to inject the real one.
-#   full-diff / pre-push    -> git log -1 --format=%B HEAD
+#   pre-push / default      -> git log -1 --format=%B HEAD
 #   codebase                -> empty (no specific commit context)
+#
+# NOTE: the case statement below still has a `full-diff` label folded into
+# the `*` (default) branch, but in practice full-diff mode never reaches
+# this function — every path through the full-diff block (~line 828) exits
+# before the COMMIT_MSG=$(_read_commit_message) call site (~line 1097). The
+# `*` branch currently serves pre-push and any future post-commit mode that
+# doesn't early-exit.
 _read_commit_message() {
   local msg=""
 
@@ -345,7 +352,10 @@ _read_commit_message() {
         | awk 'BEGIN{n=0} {lines[n++]=$0} END{end=n-1; while(end>=0 && lines[end]~/^[[:space:]]*$/) end--; for(i=0;i<=end;i++) print lines[i]}') || true
       ;;
     *)
-      # full-diff, pre-push, and any future post-commit modes
+      # pre-push and any future post-commit mode that doesn't early-exit
+      # before reaching this function. (full-diff is nominally covered by
+      # this branch too, but its early-exit paths never call
+      # _read_commit_message in practice — see the note above.)
       msg=$(git log -1 --format=%B HEAD 2>/dev/null \
         | awk 'NF{found=1} found{print}' \
         | awk 'BEGIN{n=0} {lines[n++]=$0} END{end=n-1; while(end>=0 && lines[end]~/^[[:space:]]*$/) end--; for(i=0;i<=end;i++) print lines[i]}')

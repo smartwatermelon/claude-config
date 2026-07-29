@@ -1,5 +1,19 @@
 name: Claude Blocking Review
 
+# Two parallel jobs run the SAME reusable review workflow, same PR, same
+# BLOCK/PASS policy — the only difference is `model`. `claude-review` uses
+# the reusable workflow's default (Sonnet); `claude-review-haiku` overrides
+# to Haiku. Both are CONFIGURED identically and intended to gate equally,
+# but as of this writing only `claude-review / run-review` is wired into
+# main's branch protection as a required status check (verify with `gh api
+# repos/<owner>/<repo>/branches/main/protection --jq
+# '.required_status_checks.contexts'`). `claude-review-haiku` runs the
+# identical policy and can still fail its own job/exit 1 on VERDICT: BLOCK,
+# but that failure does not currently block the merge button — it's a
+# live A/B comparison of Haiku's verdicts against Sonnet's, run in
+# production but not (yet) enforced. Add it to required_status_checks once
+# the comparison shows its verdicts are trustworthy enough to gate on.
+
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
