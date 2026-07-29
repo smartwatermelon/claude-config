@@ -121,7 +121,7 @@ fi
 # ambiguous bare names, so every commit's code-reviewer pass silently errored
 # (non-blocking, but useless). adversarial-reviewer stays a bare name since it is
 # still unique (lives only in the local code-critic marketplace, see CUSTOM_AGENTS.md).
-CODE_REVIEWER_AGENT=$(git config --get review.codeReviewerAgent 2>/dev/null || echo "comprehensive-review:comprehensive-review-code-reviewer")
+CODE_REVIEWER_AGENT=$(git config --get review.codeReviewerAgent 2>/dev/null || echo "comprehensive-review:code-reviewer")
 
 # --- Colors ---
 RED='\033[0;31m'
