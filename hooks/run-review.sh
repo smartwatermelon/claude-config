@@ -312,9 +312,12 @@ _read_commit_message() {
   # the time we read it, COMMIT_EDITMSG would be PRE-rewrite and stale).
   if [[ -n "${MESSAGE_FILE:-}" ]]; then
     if [[ -r "${MESSAGE_FILE}" ]]; then
+      # || true guards set -e/pipefail: grep exits 1 on an empty/template-only
+      # (all-comment) message file, which pipefail would otherwise propagate
+      # into this assignment and abort the script. Issue #148.
       msg=$(grep -v '^#' "${MESSAGE_FILE}" 2>/dev/null \
         | awk 'NF{found=1} found{print}' \
-        | awk 'BEGIN{n=0} {lines[n++]=$0} END{end=n-1; while(end>=0 && lines[end]~/^[[:space:]]*$/) end--; for(i=0;i<=end;i++) print lines[i]}')
+        | awk 'BEGIN{n=0} {lines[n++]=$0} END{end=n-1; while(end>=0 && lines[end]~/^[[:space:]]*$/) end--; for(i=0;i<=end;i++) print lines[i]}') || true
       if [[ -n "${msg//[[:space:]]/}" ]]; then
         printf '%s\n' "${msg}"
       fi
@@ -334,9 +337,12 @@ _read_commit_message() {
       [[ -f "${editmsg}" ]] || return 0
       # Strip git-template comment lines (leading '#') and leading/trailing
       # blank lines. Use grep -v to drop comments; awk trims surrounding blanks.
+      # || true guards set -e/pipefail: grep exits 1 when COMMIT_EDITMSG is
+      # empty or template-only (e.g. --allow-empty-message), which pipefail
+      # would otherwise propagate into this assignment and abort. Issue #148.
       msg=$(grep -v '^#' "${editmsg}" 2>/dev/null \
         | awk 'NF{found=1} found{print}' \
-        | awk 'BEGIN{n=0} {lines[n++]=$0} END{end=n-1; while(end>=0 && lines[end]~/^[[:space:]]*$/) end--; for(i=0;i<=end;i++) print lines[i]}')
+        | awk 'BEGIN{n=0} {lines[n++]=$0} END{end=n-1; while(end>=0 && lines[end]~/^[[:space:]]*$/) end--; for(i=0;i<=end;i++) print lines[i]}') || true
       ;;
     *)
       # full-diff, pre-push, and any future post-commit modes
@@ -614,6 +620,18 @@ ${_rout}"
     echo "   git commit                        # retry" >&2
     echo "   git config --unset review.maxLines" >&2
     return 1
+  elif [[ ${reviewed_files} -eq 0 && ${file_count} -gt 0 ]]; then
+    # Fail-closed: 0 files reviewed out of a nonzero candidate set means the
+    # review provided no signal at all (every file was skipped due to agent
+    # error, timeout, or oversized chunk). Treating that as a pass makes a
+    # totally-broken review indistinguishable from a genuinely clean diff.
+    # Issue #200.
+    log_error "Chunked review reviewed 0/${file_count} files (all skipped) - cannot verify diff is safe"
+    echo "" >&2
+    echo "💡 All files were skipped (agent error, timeout, or oversized chunk)." >&2
+    echo "   Check the log above for per-file skip reasons, then retry or review manually:" >&2
+    echo "   git diff --cached | claude --agent code-reviewer -p --tools \"\"" >&2
+    return 1
   else
     log_success "Chunked review passed (${reviewed_files} files reviewed)"
     return 0
@@ -737,7 +755,15 @@ fi
 
 # --- Check for empty diff (permission/mode changes only) ---
 # Skip review if diff contains no actual code changes
-if ! echo "${DIFF}" 2>/dev/null | grep -qE '^[+-][^+-]'; then
+# Use a here-string rather than `echo ... | grep -q` — grep -q exits as soon
+# as it finds a match, and on a large DIFF that can happen before the pipe's
+# writer (echo) finishes, delivering SIGPIPE. Under pipefail the pipeline's
+# exit status then becomes echo's 141 instead of grep's real result, so
+# `! ...` wrongly evaluates true and the script skips review on a diff that
+# DOES have code changes. A here-string has no writer process to race.
+# Issues #166, #171 (the removed `2>/dev/null` on echo was a no-op — echo
+# cannot fail here since DIFF is always set via `DIFF=$(cat)` above).
+if ! grep -qE '^[+-][^+-]' <<<"${DIFF}"; then
   log_info "No code changes detected (permission/metadata only) - skipping review"
   printf 'skipped: permission/metadata only\n' >>"${REVIEW_LOG}" || true
   exit 0
@@ -1223,10 +1249,15 @@ if [[ "${ADVERSARIAL_VERDICT}" == "FAIL" ]]; then
   # consistent with how code-reviewer handles the same case.
   if echo "${ADVERSARIAL_OUTPUT}" | grep -qE "VERDICT: FAIL \((timeout|agent error)"; then
     log_warn "adversarial-reviewer timed out or errored — non-blocking (infrastructure failure)"
-  else
+  elif echo "${ADVERSARIAL_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
+    # Symmetric with the code-reviewer gate above: only a BLOCKING severity
+    # rejects the commit. A warnings-only FAIL is logged but non-blocking.
+    # Issue #199.
     log_error "adversarial-reviewer found issues - commit rejected"
     log_error "Note: code-reviewer passed but adversarial-reviewer caught additional concerns"
     exit 1
+  else
+    log_warn "adversarial-reviewer found warnings (non-blocking)"
   fi
 fi
 
