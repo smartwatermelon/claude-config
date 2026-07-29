@@ -828,6 +828,10 @@ fi
 if [[ "${REVIEW_MODE}" == "full-diff" ]]; then
   log_info "Full-diff review: analyzing complete feature branch diff"
   log_info "Diff size: ${DIFF_LINES} lines"
+  if [[ -n "${REVIEW_MODEL}" ]]; then
+    log_info "Model: ${REVIEW_MODEL}"
+    printf 'model: %s\n' "${REVIEW_MODEL}" >>"${REVIEW_LOG}" || true
+  fi
 
   FULL_DIFF_CACHE="${CACHE_DIR}/full-diff-${DIFF_HASH}"
 
@@ -919,6 +923,10 @@ fi
 if [[ "${REVIEW_MODE}" == "codebase" ]]; then
   log_info "Codebase review: analyzing diff with full codebase tool access"
   log_info "Diff size: ${DIFF_LINES} lines | Timeout: ${TIMEOUT_SECONDS}s"
+  if [[ -n "${REVIEW_MODEL}" ]]; then
+    log_info "Model: ${REVIEW_MODEL}"
+    printf 'model: %s\n' "${REVIEW_MODEL}" >>"${REVIEW_LOG}" || true
+  fi
 
   CODEBASE_CACHE="${CACHE_DIR}/codebase-${DIFF_HASH}"
 

@@ -384,26 +384,26 @@ if [[ "${_resolved_repo}" == "${_resolved_deploy}" ]]; then
   _warn "REPO_DIR and DEPLOY_DIR are the same path — skipping git metadata cleanup"
 else
 
-_GIT_META_FILES=(".git" ".gitignore" ".gitmodules")
+  _GIT_META_FILES=(".git" ".gitignore" ".gitmodules")
 
-for meta in "${_GIT_META_FILES[@]}"; do
-  meta_path="${DEPLOY_DIR}/${meta}"
-  # Skip if it's already a symlink (managed by us)
-  [[ -L "${meta_path}" ]] && continue
-  if [[ -e "${meta_path}" ]]; then
-    if [[ "${DRY_RUN}" == true ]]; then
-      _dry "Would remove deploy-dir git metadata: ${meta_path}"
-    else
-      if rm -rf "${meta_path}"; then
-        _ok "Removed deploy-dir git metadata: ${meta_path}"
-        installed+=("removed:${meta}")
+  for meta in "${_GIT_META_FILES[@]}"; do
+    meta_path="${DEPLOY_DIR}/${meta}"
+    # Skip if it's already a symlink (managed by us)
+    [[ -L "${meta_path}" ]] && continue
+    if [[ -e "${meta_path}" ]]; then
+      if [[ "${DRY_RUN}" == true ]]; then
+        _dry "Would remove deploy-dir git metadata: ${meta_path}"
       else
-        _err "Failed to remove: ${meta_path}"
-        failures+=("rm-failed:${meta}")
+        if rm -rf "${meta_path}"; then
+          _ok "Removed deploy-dir git metadata: ${meta_path}"
+          installed+=("removed:${meta}")
+        else
+          _err "Failed to remove: ${meta_path}"
+          failures+=("rm-failed:${meta}")
+        fi
       fi
     fi
-  fi
-done
+  done
 
 fi  # end REPO_DIR != DEPLOY_DIR guard
 
