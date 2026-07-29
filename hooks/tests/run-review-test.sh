@@ -19,6 +19,11 @@
 #   15. Codebase mode: stderr noise must not corrupt VERDICT parsing (issue #89)
 #   16. EXIT trap cleanup includes DIFF_TMPFILE (issue #90) — static guard
 #   17. Permission-only diff is still skipped after the SIGPIPE-safe rewrite (issues #166, #171)
+#   18. "VERDICT: Revise" is treated as blocking FAIL in chunked mode (issue #173)
+#   19. "VERDICT: Revise" is treated as blocking FAIL in full-diff mode (issue #173)
+#   20. "VERDICT: Revise" is treated as blocking FAIL in codebase mode (issue #173); also
+#       covers issue #159 (model logging in full-diff/codebase modes)
+#   21. review.model git config overrides the default model passed to the CLI (issue #160)
 
 set -euo pipefail
 
@@ -42,7 +47,7 @@ FAIL=0
 # --- Test helpers ---
 assert_contains() {
   local desc="$1" needle="$2" haystack="$3"
-  if echo "${haystack}" | grep -qF "${needle}"; then
+  if echo "${haystack}" | grep -qF -- "${needle}"; then
     echo "  PASS: ${desc}"
     ((PASS += 1))
   else
@@ -924,11 +929,215 @@ assert_contains \
   "${log_content17}"
 
 # =========================================================
+# TEST 18: "VERDICT: Revise" is treated as blocking FAIL in chunked mode
+# (issue #173)
+#
+# Test 11 covers the single-pass (small diff, no --mode) path. This mirrors
+# Test 3/Test 4's chunked-mode setup (stage_large_change + review.maxLines=10
+# to force chunking) with a mock that returns VERDICT: Revise + SEVERITY:
+# BLOCKING for every file. The chunked aggregate loop must normalize Revise
+# to FAIL and block the commit (exit 1), matching the single-pass behavior.
+# =========================================================
+echo ""
+echo "=== Test 18: VERDICT: Revise treated as blocking FAIL (chunked mode) ==="
+
+setup_repo
+stage_large_change
+
+MOCK18_DIR="${TMPDIR_TEST}/mock18"
+make_mock_claude "${MOCK18_DIR}" 0 "VERDICT: Revise
+
+ISSUE: Hardcoded secret
+SEVERITY: BLOCKING
+LOCATION: file1.sh:3
+DETAILS: Remove the hardcoded credential."
+
+TEST18_LOG="${TMPDIR_TEST}/test18-review.log"
+rm -f "${TEST18_LOG}"
+
+exit_t18=0
+cd "${REPO_DIR}"
+git config review.maxLines 10
+REVIEW_LOG="${TEST18_LOG}" CLAUDE_CLI="${MOCK18_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t18=$?
+git config --unset review.maxLines 2>/dev/null || true
+cd - >/dev/null
+
+assert_eq \
+  "chunked-mode VERDICT: Revise with BLOCKING severity blocks commit (exit 1)" \
+  "1" \
+  "${exit_t18}"
+
+log_content18="$(cat "${TEST18_LOG}" 2>/dev/null || echo "")"
+
+assert_contains \
+  "chunked-mode log records blocking issue count (Revise normalized to FAIL/blocking)" \
+  "Blocking: 5" \
+  "${log_content18}"
+
+# =========================================================
+# TEST 19: "VERDICT: Revise" is treated as blocking FAIL in full-diff mode
+# (issue #173); also exercises model logging (issue #159)
+#
+# Mirrors Test 15's invocation pattern (commit a change, then pipe
+# `git diff main~1 main` in with --mode=full-diff) with a mock that returns
+# VERDICT: Revise + SEVERITY: BLOCKING. The full-diff path must normalize
+# Revise to FAIL and block (exit 1). Also asserts the "model:" log line
+# introduced for issue #159 appears, since full-diff mode exits internally
+# before the previously-dead model logging at the end of the script.
+# =========================================================
+echo ""
+echo "=== Test 19: VERDICT: Revise treated as blocking FAIL (full-diff mode) ==="
+
+setup_repo
+stage_small_change
+cd "${REPO_DIR}"
+git add foo.sh
+git commit -q -m "stage a change" --no-verify
+cd - >/dev/null
+
+MOCK19_DIR="${TMPDIR_TEST}/mock19"
+make_mock_claude "${MOCK19_DIR}" 0 "VERDICT: Revise
+
+ISSUE: Cross-file inconsistency
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Fix the cross-file mismatch."
+
+TEST19_LOG="${TMPDIR_TEST}/test19-review.log"
+rm -f "${TEST19_LOG}"
+
+exit_t19=0
+cd "${REPO_DIR}"
+git diff main~1 main | REVIEW_LOG="${TEST19_LOG}" CLAUDE_CLI="${MOCK19_DIR}/claude" \
+  bash "${SUBJECT}" --mode=full-diff 2>/dev/null || exit_t19=$?
+cd - >/dev/null
+
+assert_eq \
+  "full-diff-mode VERDICT: Revise with BLOCKING severity blocks commit (exit 1)" \
+  "1" \
+  "${exit_t19}"
+
+log_content19="$(cat "${TEST19_LOG}" 2>/dev/null || echo "")"
+
+assert_contains \
+  "full-diff-mode log records FAIL (blocking) verdict (Revise normalized to FAIL)" \
+  "full-diff: FAIL (blocking)" \
+  "${log_content19}"
+
+assert_contains \
+  "full-diff-mode log records resolved model (issue #159)" \
+  "model:" \
+  "${log_content19}"
+
+# =========================================================
+# TEST 20: "VERDICT: Revise" is treated as blocking FAIL in codebase mode
+# (issue #173); also exercises model logging (issue #159)
+#
+# Mirrors Test 15's invocation pattern with --mode=codebase and a mock that
+# returns VERDICT: Revise + SEVERITY: BLOCKING. The codebase path must
+# normalize Revise to FAIL and block (exit 1), and the "model:" log line
+# (issue #159) must appear since codebase mode also exits internally.
+# =========================================================
+echo ""
+echo "=== Test 20: VERDICT: Revise treated as blocking FAIL (codebase mode) ==="
+
+setup_repo
+stage_small_change
+cd "${REPO_DIR}"
+git add foo.sh
+git commit -q -m "stage a change" --no-verify
+cd - >/dev/null
+
+MOCK20_DIR="${TMPDIR_TEST}/mock20"
+make_mock_claude "${MOCK20_DIR}" 0 "VERDICT: Revise
+
+ISSUE: Field contract violation
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Fix the renamed field reference."
+
+TEST20_LOG="${TMPDIR_TEST}/test20-review.log"
+rm -f "${TEST20_LOG}"
+
+exit_t20=0
+cd "${REPO_DIR}"
+git diff main~1 main | REVIEW_LOG="${TEST20_LOG}" CLAUDE_CLI="${MOCK20_DIR}/claude" \
+  bash "${SUBJECT}" --mode=codebase 2>/dev/null || exit_t20=$?
+cd - >/dev/null
+
+assert_eq \
+  "codebase-mode VERDICT: Revise with BLOCKING severity blocks commit (exit 1)" \
+  "1" \
+  "${exit_t20}"
+
+log_content20="$(cat "${TEST20_LOG}" 2>/dev/null || echo "")"
+
+assert_contains \
+  "codebase-mode log records FAIL (blocking) verdict (Revise normalized to FAIL)" \
+  "codebase: FAIL (blocking)" \
+  "${log_content20}"
+
+assert_contains \
+  "codebase-mode log records resolved model (issue #159)" \
+  "model:" \
+  "${log_content20}"
+
+# =========================================================
+# TEST 21: review.model git config overrides the default model (issue #160)
+#
+# run-review.sh reads review.model via git config and passes it through
+# MODEL_ARGS=(--model "${REVIEW_MODEL}") to the CLI invocation. There was
+# previously no test exercising this override path. This mock records its
+# full invocation argv (mirroring how make_mock_claude_by_agent inspects
+# $2 for the agent name) so the test can assert that --model plus the
+# configured value actually reached the CLI's argv.
+# =========================================================
+echo ""
+echo "=== Test 21: review.model git config overrides default model ==="
+
+setup_repo
+stage_small_change
+
+MOCK21_DIR="${TMPDIR_TEST}/mock21"
+mkdir -p "${MOCK21_DIR}"
+MOCK21_ARGS_FILE="${MOCK21_DIR}/invocation-args.txt"
+rm -f "${MOCK21_ARGS_FILE}"
+cat >"${MOCK21_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+printf '%s\n' "\$*" >>"${MOCK21_ARGS_FILE}"
+echo "VERDICT: PASS"
+echo ""
+echo "No blocking issues found."
+exit 0
+EOF
+chmod +x "${MOCK21_DIR}/claude"
+
+TEST21_LOG="${TMPDIR_TEST}/test21-review.log"
+rm -f "${TEST21_LOG}"
+
+cd "${REPO_DIR}"
+git config review.model "some-custom-model-id"
+REVIEW_LOG="${TEST21_LOG}" CLAUDE_CLI="${MOCK21_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+git config --unset review.model 2>/dev/null || true
+cd - >/dev/null
+
+invocation_args="$(cat "${MOCK21_ARGS_FILE}" 2>/dev/null || echo "")"
+
+assert_contains \
+  "custom review.model value is passed through to the CLI invocation (issue #160)" \
+  "--model some-custom-model-id" \
+  "${invocation_args}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 30 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 39 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
