@@ -105,6 +105,39 @@ list_locks() {
   fi
 }
 
+authorize_batch() {
+  local pr_arg="$1"
+  local reason="$2"
+
+  # Parse comma-separated list into validated PR numbers.
+  local _pr_raw
+  IFS=',' read -r -a _pr_raw <<<"${pr_arg}"
+  local _pr_list=()
+  local _entry
+  for _entry in "${_pr_raw[@]}"; do
+    # Trim leading/trailing whitespace.
+    _entry="${_entry#"${_entry%%[![:space:]]*}"}"
+    _entry="${_entry%"${_entry##*[![:space:]]}"}"
+    if [[ -z "${_entry}" ]]; then
+      echo "Error: empty PR number in list" >&2
+      exit 1
+    fi
+    if [[ ! "${_entry}" =~ ^[0-9]+$ ]] || [[ "${_entry}" -le 0 ]]; then
+      echo "Error: invalid PR number: ${_entry}" >&2
+      exit 1
+    fi
+    _pr_list+=("${_entry}")
+  done
+
+  # Shared timestamp so all TTLs align.
+  local _ts
+  _ts=$(date +%s)
+  local _pr
+  for _pr in "${_pr_list[@]}"; do
+    create_merge_lock "${_pr}" "${reason}" "${_ts}"
+  done
+}
+
 case "${1:-help}" in
   authorize | auth)
     if [[ -z "${2:-}" ]]; then
@@ -117,29 +150,7 @@ case "${1:-help}" in
       exit 1
     fi
 
-    # Parse comma-separated list into validated PR numbers.
-    IFS=',' read -r -a _pr_raw <<<"$2"
-    _pr_list=()
-    for _entry in "${_pr_raw[@]}"; do
-      # Trim leading/trailing whitespace.
-      _entry="${_entry#"${_entry%%[![:space:]]*}"}"
-      _entry="${_entry%"${_entry##*[![:space:]]}"}"
-      if [[ -z "${_entry}" ]]; then
-        echo "Error: empty PR number in list" >&2
-        exit 1
-      fi
-      if [[ ! "${_entry}" =~ ^[0-9]+$ ]] || [[ "${_entry}" -le 0 ]]; then
-        echo "Error: invalid PR number: ${_entry}" >&2
-        exit 1
-      fi
-      _pr_list+=("${_entry}")
-    done
-
-    # Shared timestamp so all TTLs align.
-    _ts=$(date +%s)
-    for _pr in "${_pr_list[@]}"; do
-      create_merge_lock "${_pr}" "$3" "${_ts}"
-    done
+    authorize_batch "$2" "$3"
     ;;
   check)
     if [[ -z "${2:-}" ]]; then
