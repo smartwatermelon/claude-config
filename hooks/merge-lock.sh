@@ -128,7 +128,7 @@ case "${1:-help}" in
         echo "Error: empty PR number in list" >&2
         exit 1
       fi
-      if [[ ! "${_entry}" =~ ^[0-9]+$ ]]; then
+      if [[ ! "${_entry}" =~ ^[0-9]+$ ]] || [[ "${_entry}" -le 0 ]]; then
         echo "Error: invalid PR number: ${_entry}" >&2
         exit 1
       fi
