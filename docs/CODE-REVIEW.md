@@ -37,7 +37,7 @@
 - [ ] No dead code (remove, don't comment out)
 - [ ] DRY — no unnecessary duplication
 - [ ] Appropriate level of abstraction
-- [ ] **Diagnostic granularity**: distinct failure modes produce distinct error messages (missing dependency ≠ missing file ≠ parse error ≠ value mismatch). Don't let `|| true` or empty-default fallbacks collapse several failure modes into one misleading message. See §Recurring CI Findings for the example-driven rule.
+- [ ] **Diagnostic granularity**: distinct failure modes produce distinct error messages (missing dependency ≠ missing file ≠ parse error ≠ value mismatch). Don't let `|| true` or empty-default fallbacks collapse several failure modes into one misleading message. See §Recurring CI Findings → "Logged patterns" for the example-driven rule.
 
 ---
 

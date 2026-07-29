@@ -20,9 +20,9 @@ name: Dependabot Auto-Merge
 # require review. `--auto` means the merge only happens after all
 # status checks pass; failing CI leaves the PR open indefinitely.
 #
-# Provisioned 2026-04-18 (v2.0.1 / Phase 5). Hardened 2026-04-28 with
-# the trusted-namespace allowlist + version-comparison defense. See
-# docs/plans/2026-04-28-dependabot-auto-merge-c2.md.
+# Provisioned 2026-04-18 (v2.0.1 / Phase 5). Hardened 2026-04-28 (#144)
+# with the trusted-namespace allowlist + version-comparison defense
+# described above.
 
 on:
   pull_request_target:

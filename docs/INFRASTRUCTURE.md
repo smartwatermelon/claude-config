@@ -27,7 +27,7 @@ Many protocols are enforced by git hooks and scripts:
 
 **Key Point**: If hooks block an operation, it means a protocol was violated. `--no-verify` is BLOCKED by Claude Code hooks. Emergency bypass (human only): Human must run commit manually.
 
-**When a hook blocks your commit**: Go back and rework the code — do not ask the human to override. See CODE-REVIEW.md § "When Reviews Find Issues" for the full escalation ladder. Only after 3+ genuine rework attempts with no viable path forward should you present the findings and ask if the human wants to bypass.
+**When a hook blocks your commit**: Go back and rework the code — do not ask the human to override. See CODE-REVIEW.md § "When Reviews Find Issues — Rework, Don't Override" for the full escalation ladder. Only after 3+ genuine rework attempts with no viable path forward should you present the findings and ask if the human wants to bypass.
 
 ---
 
@@ -97,6 +97,22 @@ If review times out:
 - Retry the commit (transient failures happen)
 - Increase timeout: `git config review.timeout 300`
 - Split into smaller commits
+
+---
+
+## Settings Rationale
+
+### `useAutoModeDuringPlan: false` (`settings.json:133`)
+
+Disables Claude Code's auto-mode permission classifier while in Plan Mode. Auto mode
+normally lets a heuristic classifier silently approve Bash commands it judges
+read-only, skipping the permission prompt. Plan Mode's whole point is that nothing
+executes until the human reviews and approves the plan — auto-mode's classifier
+running underneath it has previously caused the classifier to override Plan Mode with
+conflicting "execute immediately" behavior (see upstream Claude Code changelog).
+Keeping this `false` means every action during planning stays gated on an explicit
+human decision, consistent with this config's broader preference for explicit
+checkpoints (Protocol 6's two-step PR authorization, etc.) over auto-approval.
 
 ---
 
