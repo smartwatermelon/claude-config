@@ -117,6 +117,7 @@ from the tracked default.
 ├── skills/
 │   └── humanizer                         # Git submodule → blader/humanizer
 ├── settings.json                         # enabledPlugins and hook configuration
+│                                          # (notable keys documented in docs/INFRASTRUCTURE.md § Settings Rationale)
 ├── plugins/installed_plugins.json        # Runtime state (not tracked)
 └── plugins/known_marketplaces.json       # Runtime state (not tracked)
 ```
