@@ -154,7 +154,7 @@ _is_excluded() {
 
 _is_submodule_path() {
   local file="$1"
-  for sm_path in "${_SUBMODULE_ROOTS[@]}"; do
+  for sm_path in "${_SUBMODULE_ROOTS[@]+"${_SUBMODULE_ROOTS[@]}"}"; do
     case "${file}" in
       "${sm_path}"/*) return 0 ;;
       *) ;;
