@@ -73,7 +73,7 @@ done
 # Files and directories that Claude Code manages at runtime
 _KNOWN_RUNTIME=(
   # Directories
-  "agents-local" "backups" "cache" "channels" "debug" "daemon"
+  "agents-local" "backups" "cache" "channels" "chrome" "debug" "daemon"
   "file-history" "jobs" "logs" "memory" "merge-locks" "paste-cache"
   "pending-issues" "plans" "projects" "review-cache" "sessions" "session-env"
   "shell-snapshots" "statsig" "tasks" "telemetry" "todos"
