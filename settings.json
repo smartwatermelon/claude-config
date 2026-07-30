@@ -1,7 +1,8 @@
 {
   "env": {
     "BASH_ENV": "~/.config/bash/functions.sh",
-    "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash"
+    "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash",
+    "BASH_DEFAULT_TIMEOUT_MS": "300000"
   },
   "attribution": {
     "commit": "",
