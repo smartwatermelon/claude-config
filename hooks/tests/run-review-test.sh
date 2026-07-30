@@ -1134,14 +1134,16 @@ assert_contains \
 
 # =========================================================
 # TEST 22: CODE_REVIEWER_AGENT default resolves to the actually-installed
-# fully-qualified agent name (issue #209)
+# fully-qualified agent name (issue #209, and its regression in #212)
 #
-# The hardcoded default (used when review.codeReviewerAgent git config is
-# unset) previously doubled the plugin name — "comprehensive-review:
-# comprehensive-review-code-reviewer" — which does not match any installed
-# agent, so run-review.sh's code-reviewer pass silently errored on every
-# commit. Assert the --agent value that actually reaches the CLI invocation
-# matches the real installed agent ID: "comprehensive-review:code-reviewer".
+# The real installed agent ID doubles the plugin name — "comprehensive-review:
+# comprehensive-review-code-reviewer" — per the comprehensive-review plugin's
+# agents/code-reviewer.md frontmatter. #212 mistakenly "fixed" the default to
+# the bare-looking "comprehensive-review:code-reviewer", which does not match
+# any installed agent, so run-review.sh's code-reviewer pass silently errored
+# on every commit again. Assert the --agent value that actually reaches the
+# CLI invocation matches the real installed agent ID (verify with
+# `claude --agent bogus -p`, which lists installed agents in its error).
 # =========================================================
 echo ""
 echo "=== Test 22: CODE_REVIEWER_AGENT default matches installed agent ID (issue #209) ==="
@@ -1179,7 +1181,7 @@ invocation_args22="$(cat "${MOCK22_ARGS_FILE}" 2>/dev/null || echo "")"
 
 assert_contains \
   "default CODE_REVIEWER_AGENT resolves to installed agent ID (issue #209)" \
-  "--agent comprehensive-review:code-reviewer " \
+  "--agent comprehensive-review:comprehensive-review-code-reviewer " \
   "${invocation_args22}"
 
 # =========================================================

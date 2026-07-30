@@ -119,9 +119,13 @@ fi
 # to override). The bare name "code-reviewer" broke once a second installed plugin
 # also shipped an agent literally named "code-reviewer" — Claude CLI refuses
 # ambiguous bare names, so every commit's code-reviewer pass silently errored
-# (non-blocking, but useless). adversarial-reviewer stays a bare name since it is
-# still unique (lives only in the local code-critic marketplace, see CUSTOM_AGENTS.md).
-CODE_REVIEWER_AGENT=$(git config --get review.codeReviewerAgent 2>/dev/null || echo "comprehensive-review:code-reviewer")
+# (non-blocking, but useless). The installed agent ID doubles the plugin name —
+# comprehensive-review:comprehensive-review-code-reviewer — per the
+# comprehensive-review plugin's agents/code-reviewer.md frontmatter; verify with
+# `claude --agent bogus -p` (its "Available agents" error lists the real IDs).
+# adversarial-reviewer stays a bare name since it is still unique (lives only in
+# the local code-critic marketplace, see CUSTOM_AGENTS.md).
+CODE_REVIEWER_AGENT=$(git config --get review.codeReviewerAgent 2>/dev/null || echo "comprehensive-review:comprehensive-review-code-reviewer")
 
 # --- Colors ---
 RED='\033[0;31m'

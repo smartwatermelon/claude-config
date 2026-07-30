@@ -48,3 +48,7 @@ settings.local.json
 policy-limits.json
 daemon.log
 .last-update-result.json
+downloads
+image-cache
+remote-settings.json
+.claude.json.backup
