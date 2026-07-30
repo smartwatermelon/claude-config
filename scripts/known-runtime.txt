@@ -1,0 +1,50 @@
+# Files and directories that Claude Code (or other Anthropic tooling) manages
+# at runtime under ~/.claude/. Entries here are silenced in the update-tools.sh
+# audit instead of being flagged as unknown.
+#
+# One entry per line, exact basename match (no globs, no paths).
+# Blank lines and lines starting with # are ignored.
+#
+# To accept new entries flagged as "unknown" by the audit, run:
+#   scripts/update-tools.sh --learn
+
+# Directories
+agents-local
+backups
+cache
+channels
+chrome
+debug
+daemon
+file-history
+jobs
+logs
+memory
+merge-locks
+paste-cache
+pending-issues
+plans
+projects
+review-cache
+sessions
+session-env
+shell-snapshots
+statsig
+tasks
+telemetry
+todos
+
+# Files
+.claude.json
+.DS_Store
+mcp.json
+mcp-needs-auth-cache.json
+stats-cache.json
+blocked-commands.log
+last-review-result.log
+settings.local.json
+.credentials.json
+.last-cleanup
+policy-limits.json
+daemon.log
+.last-update-result.json

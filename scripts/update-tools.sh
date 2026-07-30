@@ -13,9 +13,19 @@ fi
 
 trap 'exit 0' ERR
 
+# ── Args ────────────────────────────────────────────────
+_LEARN=false
+for arg in "$@"; do
+  case "${arg}" in
+    --learn) _LEARN=true ;;
+    *) ;;
+  esac
+done
+
 # ── Constants ───────────────────────────────────────────
 REPO_DIR="${HOME}/Developer/claude-config"
 DEPLOY_DIR="${HOME}/.claude"
+KNOWN_RUNTIME_FILE="${REPO_DIR}/scripts/known-runtime.txt"
 
 # ── Formatting helpers ──────────────────────────────────
 _info() { printf '\033[1;34m[INFO]\033[0m  %s\n' "$*"; }
@@ -70,19 +80,21 @@ for file in "${_tracked_files[@]}"; do
   "${local_found}" || _REPO_MANAGED_DIRS+=("${dir}")
 done
 
-# Files and directories that Claude Code manages at runtime
-_KNOWN_RUNTIME=(
-  # Directories
-  "agents-local" "backups" "cache" "channels" "chrome" "debug" "daemon"
-  "file-history" "jobs" "logs" "memory" "merge-locks" "paste-cache"
-  "pending-issues" "plans" "projects" "review-cache" "sessions" "session-env"
-  "shell-snapshots" "statsig" "tasks" "telemetry" "todos"
-  # Files
-  ".claude.json" ".DS_Store" "mcp.json" "mcp-needs-auth-cache.json"
-  "stats-cache.json" "blocked-commands.log" "last-review-result.log"
-  "settings.local.json" ".credentials.json" ".last-cleanup" "policy-limits.json"
-  "daemon.log" ".last-update-result.json"
-)
+# Files and directories that Claude Code manages at runtime.
+# Loaded from a data file (not hardcoded) so new entries can be accepted
+# with `update-tools.sh --learn` instead of a code edit. See known-runtime.txt.
+_KNOWN_RUNTIME=()
+if [[ -f "${KNOWN_RUNTIME_FILE}" ]]; then
+  while IFS= read -r _line; do
+    # Strip comments and blank lines
+    _line="${_line%%#*}"
+    _line="${_line#"${_line%%[![:space:]]*}"}"
+    _line="${_line%"${_line##*[![:space:]]}"}"
+    [[ -n "${_line}" ]] && _KNOWN_RUNTIME+=("${_line}")
+  done < "${KNOWN_RUNTIME_FILE}"
+else
+  _warn "known-runtime.txt not found at ${KNOWN_RUNTIME_FILE}"
+fi
 
 _is_known_runtime() {
   local name="$1"
@@ -155,8 +167,33 @@ if [[ "${unknown_count}" -gt 0 ]]; then
     _warn "  ${item}"
   done
   echo ""
-  _info "Consider adding unknown items to the _KNOWN_RUNTIME list"
-  _info "in scripts/update-tools.sh, or bring them into the repo."
+  if "${_LEARN}"; then
+    _new_entries=()
+    for item in "${unknown_items[@]}"; do
+      _b="$(basename "${item}")"
+      _dup=false
+      for existing in "${_KNOWN_RUNTIME[@]+"${_KNOWN_RUNTIME[@]}"}"; do
+        if [[ "${_b}" == "${existing}" ]]; then
+          _dup=true
+          break
+        fi
+      done
+      "${_dup}" || _new_entries+=("${_b}")
+    done
+
+    if [[ "${#_new_entries[@]}" -eq 0 ]]; then
+      _ok "No new entries to learn (already recorded)"
+    elif printf '%s\n' "${_new_entries[@]}" >> "${KNOWN_RUNTIME_FILE}"; then
+      _ok "Added ${#_new_entries[@]} entries to $(basename "${KNOWN_RUNTIME_FILE}")"
+      _info "Review and commit: git -C ${REPO_DIR} diff scripts/known-runtime.txt"
+    else
+      _warn "Failed to write to ${KNOWN_RUNTIME_FILE}"
+    fi
+  else
+    _info "Evaluate the items above, then run:"
+    _info "  ${0} --learn"
+    _info "to accept them as known runtime, or bring them into the repo instead."
+  fi
 else
   _ok "Unknown entries: 0"
 fi
