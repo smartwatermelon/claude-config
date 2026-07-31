@@ -57,7 +57,7 @@ command (via `_claude_update()`). It:
 
 ### Submodules
 
-- **plugins/marketplaces/superpowers-marketplace** — obra/superpowers-marketplace
+- **plugins/marketplaces/superpowers-marketplace** — smartwatermelon/superpowers-marketplace (fork of obra/superpowers-marketplace, forced SessionStart hook removed)
 
 ## Installed Plugins
 
@@ -116,7 +116,7 @@ from the tracked default.
 │       ├── claude-code-plugins           # Plugin marketplace
 │       ├── claude-plugins-official       # Plugin marketplace
 │       ├── smartwatermelon-marketplace   # Personal marketplace (git submodule source)
-│       └── superpowers-marketplace       # Git submodule → obra/superpowers-marketplace
+│       └── superpowers-marketplace       # Git submodule → smartwatermelon/superpowers-marketplace
 ├── settings.json                         # enabledPlugins and hook configuration
 │                                          # (notable keys documented in docs/INFRASTRUCTURE.md § Settings Rationale)
 ├── plugins/installed_plugins.json        # Runtime state (not tracked)
@@ -151,5 +151,5 @@ See `CLAUDE.md` for protocol documentation.
 ## Reference
 
 - Main config: [CLAUDE.md](./CLAUDE.md)
-- Superpowers marketplace: <https://github.com/obra/superpowers-marketplace>
+- Superpowers marketplace: <https://github.com/smartwatermelon/superpowers-marketplace> (fork of obra/superpowers-marketplace)
 - claude-code-workflows: <https://github.com/wshobson/agents>
