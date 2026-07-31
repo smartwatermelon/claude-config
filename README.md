@@ -117,7 +117,7 @@ from the tracked default.
 │       ├── claude-plugins-official       # Plugin marketplace
 │       ├── smartwatermelon-marketplace   # Personal marketplace (git submodule source)
 │       ├── superpowers-marketplace       # Git submodule → obra/superpowers-marketplace
-│       └── personify                     # Plugin marketplace → smartwatermelon/personify
+│       └── personify                     # Plugin marketplace (runtime-installed, not a submodule)
 ├── settings.json                         # enabledPlugins and hook configuration
 │                                          # (notable keys documented in docs/INFRASTRUCTURE.md § Settings Rationale)
 ├── plugins/installed_plugins.json        # Runtime state (not tracked)
