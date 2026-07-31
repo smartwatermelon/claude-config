@@ -787,6 +787,21 @@ ${INLINE_COMMENTS_FORMATTED}
 ${PR_DIFF}
 \`\`\`"
 
+# --- Model selection ---
+# Intentionally inherits the calling session's active model by default (no
+# --model flag) rather than pinning to Haiku like run-review.sh's commit-time
+# review. This gate runs once per merge attempt (low frequency) and is the last
+# line of defense before code lands, so it should get the strongest model the
+# human is already paying for in that session, not the cheapest one. Override
+# via git config review.mergeModel if a fixed model is ever preferred over
+# inheritance (e.g. to decouple this gate from whatever the interactive
+# session happens to be running).
+MERGE_REVIEW_MODEL=$(git config --get review.mergeModel 2>/dev/null || echo "")
+MERGE_MODEL_ARGS=()
+if [[ -n "${MERGE_REVIEW_MODEL}" ]]; then
+  MERGE_MODEL_ARGS=(--model "${MERGE_REVIEW_MODEL}")
+fi
+
 # --- Call Claude CLI ---
 PROMPT_SIZE=${#FULL_PROMPT}
 PROMPT_LINES=$(echo "${FULL_PROMPT}" | wc -l)
@@ -796,7 +811,7 @@ log_info "Analyzing review comments..."
 # Unset CLAUDECODE so this can be invoked from within a Claude Code session.
 # Claude CLI 2.1.50+ refuses to start if CLAUDECODE is set (anti-nesting check).
 # Safe here because --no-session-persistence + piped input = non-interactive child process.
-ANALYSIS_TEXT=$(echo "${FULL_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" -p --tools "" --no-session-persistence 2>&1) || {
+ANALYSIS_TEXT=$(echo "${FULL_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" -p "${MERGE_MODEL_ARGS[@]}" --tools "" --no-session-persistence 2>&1) || {
   EXIT_CODE=$?
   if [[ ${EXIT_CODE} -eq 124 ]]; then
     log_error "Analysis timed out after ${TIMEOUT_SECONDS}s"
