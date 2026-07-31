@@ -135,7 +135,7 @@
       "Use the /copy command to copy Claude's output with no hard line-breaks or injected characters"
     ]
   },
-  "alwaysThinkingEnabled": true,
+  "alwaysThinkingEnabled": false,
   "effortLevel": "medium",
   "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
