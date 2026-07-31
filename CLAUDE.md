@@ -204,7 +204,7 @@ Before declaring work done, output the full Completion Verification template fro
 
 - **Never `git add .`** — Add files individually
 - **Never `--no-verify`** — Blocked by hooks; human must commit manually in emergencies
-- **Always PRIVATE repos** — Never create public repos without explicit permission
+- **Repo visibility defaults by org, not a blanket rule**: `smartwatermelon` hierarchy defaults to **public** unless there's an actual privacy or security reason to keep something private (GitHub imposes real collaborator/Actions-minute limits on private repos that make defaulting private counterproductive there). `nightowlstudiollc` is commercial software and defaults to **private**, except website/client work, which is public by standard practice. If genuinely unsure which default applies to a specific repo (e.g., it touches credentials or unreleased commercial work), ask rather than assume either default.
 - Prefer `git mv` / `git rm` over bare `mv` / `rm`
 - Never commit code that doesn't compile
 - Remote origin uses SSH (`git@github.com:...`) — HTTPS will fail with auth errors
