@@ -61,7 +61,7 @@ command (via `_claude_update()`). It:
 
 ## Installed Plugins
 
-Plugins are sourced from five marketplaces. Enabled state is tracked in `settings.json`.
+Plugins are sourced from six marketplaces. Enabled state is tracked in `settings.json`.
 
 ### From superpowers-marketplace
 
@@ -87,6 +87,10 @@ Plugins are sourced from five marketplaces. Enabled state is tracked in `setting
 ### From personify
 
 - **personify** ✓ — strips AI-writing tells from prose before it's sent, published, or shipped; replaces the retired blader/humanizer submodule
+
+### From pr-review
+
+- **pr-review** ✓ — deep-dive review of a teammate's GitHub pull request, staged as a pending review for explicit approval before anything is posted
 
 ## Per-Machine Notes
 
@@ -117,7 +121,8 @@ from the tracked default.
 │       ├── claude-plugins-official       # Plugin marketplace
 │       ├── smartwatermelon-marketplace   # Personal marketplace (git submodule source)
 │       ├── superpowers-marketplace       # Git submodule → obra/superpowers-marketplace
-│       └── personify                     # Plugin marketplace (runtime-installed, not a submodule)
+│       ├── personify                     # Plugin marketplace (runtime-installed, not a submodule)
+│       └── pr-review                     # Plugin marketplace (runtime-installed, not a submodule)
 ├── settings.json                         # enabledPlugins and hook configuration
 │                                          # (notable keys documented in docs/INFRASTRUCTURE.md § Settings Rationale)
 ├── plugins/installed_plugins.json        # Runtime state (not tracked)
@@ -154,3 +159,5 @@ See `CLAUDE.md` for protocol documentation.
 - Main config: [CLAUDE.md](./CLAUDE.md)
 - Superpowers marketplace: <https://github.com/obra/superpowers-marketplace>
 - claude-code-workflows: <https://github.com/wshobson/agents>
+- Personify skill: <https://github.com/smartwatermelon/personify>
+- pr-review skill: <https://github.com/smartwatermelon/pr-review>

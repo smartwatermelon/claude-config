@@ -87,7 +87,8 @@
     "frontend-design@claude-code-plugins": false,
     "ci-workflows@smartwatermelon-marketplace": true,
     "apple-notes@apple-notes-mcp": false,
-    "personify@personify": true
+    "personify@personify": true,
+    "pr-review@pr-review": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -118,6 +119,12 @@
       "source": {
         "source": "github",
         "repo": "smartwatermelon/personify"
+      }
+    },
+    "pr-review": {
+      "source": {
+        "source": "github",
+        "repo": "smartwatermelon/pr-review"
       }
     }
   },
