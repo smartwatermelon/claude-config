@@ -51,6 +51,7 @@ fi
 _info "Updating submodules..."
 
 if git -C "${REPO_DIR}" submodule status --quiet 2>/dev/null; then
+  git -C "${REPO_DIR}" submodule sync
   git -C "${REPO_DIR}" submodule update --remote --merge
   _ok "Submodules updated"
 else
