@@ -58,11 +58,10 @@ command (via `_claude_update()`). It:
 ### Submodules
 
 - **plugins/marketplaces/superpowers-marketplace** — obra/superpowers-marketplace
-- **skills/humanizer** — blader/humanizer
 
 ## Installed Plugins
 
-Plugins are sourced from four marketplaces. Enabled state is tracked in `settings.json`.
+Plugins are sourced from five marketplaces. Enabled state is tracked in `settings.json`.
 
 ### From superpowers-marketplace
 
@@ -84,6 +83,10 @@ Plugins are sourced from four marketplaces. Enabled state is tracked in `setting
 ### From claude-code-plugins
 
 - **frontend-design** ✓ — production-grade frontend UI generation
+
+### From personify
+
+- **personify** ✓ — strips AI-writing tells from prose before it's sent, published, or shipped
 
 ## Per-Machine Notes
 
@@ -113,9 +116,8 @@ from the tracked default.
 │       ├── claude-code-plugins           # Plugin marketplace
 │       ├── claude-plugins-official       # Plugin marketplace
 │       ├── smartwatermelon-marketplace   # Personal marketplace (git submodule source)
-│       └── superpowers-marketplace       # Git submodule → obra/superpowers-marketplace
-├── skills/
-│   └── humanizer                         # Git submodule → blader/humanizer
+│       ├── superpowers-marketplace       # Git submodule → obra/superpowers-marketplace
+│       └── personify                     # Plugin marketplace → smartwatermelon/personify
 ├── settings.json                         # enabledPlugins and hook configuration
 │                                          # (notable keys documented in docs/INFRASTRUCTURE.md § Settings Rationale)
 ├── plugins/installed_plugins.json        # Runtime state (not tracked)
@@ -152,4 +154,4 @@ See `CLAUDE.md` for protocol documentation.
 - Main config: [CLAUDE.md](./CLAUDE.md)
 - Superpowers marketplace: <https://github.com/obra/superpowers-marketplace>
 - claude-code-workflows: <https://github.com/wshobson/agents>
-- Humanizer skill: <https://github.com/blader/humanizer>
+- Personify skill: <https://github.com/smartwatermelon/personify>
