@@ -58,7 +58,6 @@ command (via `_claude_update()`). It:
 ### Submodules
 
 - **plugins/marketplaces/superpowers-marketplace** — obra/superpowers-marketplace
-- **skills/humanizer** — blader/humanizer
 
 ## Installed Plugins
 
@@ -114,8 +113,6 @@ from the tracked default.
 │       ├── claude-plugins-official       # Plugin marketplace
 │       ├── smartwatermelon-marketplace   # Personal marketplace (git submodule source)
 │       └── superpowers-marketplace       # Git submodule → obra/superpowers-marketplace
-├── skills/
-│   └── humanizer                         # Git submodule → blader/humanizer
 ├── settings.json                         # enabledPlugins and hook configuration
 │                                          # (notable keys documented in docs/INFRASTRUCTURE.md § Settings Rationale)
 ├── plugins/installed_plugins.json        # Runtime state (not tracked)
@@ -152,4 +149,3 @@ See `CLAUDE.md` for protocol documentation.
 - Main config: [CLAUDE.md](./CLAUDE.md)
 - Superpowers marketplace: <https://github.com/obra/superpowers-marketplace>
 - claude-code-workflows: <https://github.com/wshobson/agents>
-- Humanizer skill: <https://github.com/blader/humanizer>
