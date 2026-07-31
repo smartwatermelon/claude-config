@@ -67,7 +67,6 @@
     "command": "~/.claude/scripts/status-line.sh"
   },
   "enabledPlugins": {
-    "superpowers@superpowers-marketplace": true,
     "comprehensive-review@claude-code-workflows": true,
     "git-pr-workflows@claude-code-workflows": false,
     "tdd-workflows@claude-code-workflows": false,
@@ -88,7 +87,8 @@
     "ci-workflows@smartwatermelon-marketplace": true,
     "apple-notes@apple-notes-mcp": false,
     "personify@personify": true,
-    "pr-review@pr-review": true
+    "pr-review@pr-review": true,
+    "superpowers@superpowers-marketplace": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
