@@ -105,7 +105,7 @@
     "claude-code-workflows": {
       "source": {
         "source": "git",
-        "url": "https://github.com/wshobson/agents.git"
+        "url": "https://github.com/smartwatermelon/claude-code-workflows-agents.git"
       }
     },
     "smartwatermelon-marketplace": {
