@@ -86,7 +86,8 @@
     "react-native-3d@smartwatermelon-marketplace": false,
     "frontend-design@claude-code-plugins": false,
     "ci-workflows@smartwatermelon-marketplace": true,
-    "apple-notes@apple-notes-mcp": false
+    "apple-notes@apple-notes-mcp": false,
+    "personify@personify": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -111,6 +112,12 @@
       "source": {
         "source": "git",
         "url": "https://github.com/smartwatermelon/smartwatermelon-marketplace.git"
+      }
+    },
+    "personify": {
+      "source": {
+        "source": "github",
+        "repo": "smartwatermelon/personify"
       }
     }
   },

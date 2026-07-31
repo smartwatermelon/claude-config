@@ -61,7 +61,7 @@ command (via `_claude_update()`). It:
 
 ## Installed Plugins
 
-Plugins are sourced from four marketplaces. Enabled state is tracked in `settings.json`.
+Plugins are sourced from five marketplaces. Enabled state is tracked in `settings.json`.
 
 ### From superpowers-marketplace
 
@@ -83,6 +83,10 @@ Plugins are sourced from four marketplaces. Enabled state is tracked in `setting
 ### From claude-code-plugins
 
 - **frontend-design** ✓ — production-grade frontend UI generation
+
+### From personify
+
+- **personify** ✓ — strips AI-writing tells from prose before it's sent, published, or shipped; replaces the retired blader/humanizer submodule
 
 ## Per-Machine Notes
 
