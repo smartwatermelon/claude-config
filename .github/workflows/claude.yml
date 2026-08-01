@@ -29,7 +29,7 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@3553f84341b92da26052e28acf1aa898f9511f32 # v1
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1
         with:
           # claude-code-action rejects non-User actors unless explicitly allowed.
           # The `if:` guard above still filters on @claude mention content; this
