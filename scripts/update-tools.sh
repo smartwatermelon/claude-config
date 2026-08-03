@@ -166,10 +166,12 @@ _append_known_runtime_entry() {
   else
     # Section header missing (shouldn't happen with the shipped file) —
     # append a fresh section at the end rather than dropping the entry.
+    # Propagate a write failure (e.g. disk full) instead of returning 0
+    # implicitly, so the caller's success count stays accurate.
     {
       printf '\n%s\n' "${header}"
       printf '%s\n' "${name}"
-    } >> "${KNOWN_RUNTIME_FILE}"
+    } >> "${KNOWN_RUNTIME_FILE}" || return 1
   fi
 }
 
