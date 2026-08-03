@@ -83,7 +83,7 @@
     "team-collaboration@claude-code-workflows": false,
     "code-critic@smartwatermelon-marketplace": true,
     "react-native-3d@smartwatermelon-marketplace": false,
-    "frontend-design@claude-code-plugins": false,
+    "frontend-design@claude-plugins-official": false,
     "ci-workflows@smartwatermelon-marketplace": true,
     "apple-notes@apple-notes-mcp": false,
     "personify@personify": true,
@@ -119,13 +119,15 @@
       "source": {
         "source": "github",
         "repo": "smartwatermelon/personify"
-      }
+      },
+      "autoUpdate": true
     },
     "pr-review": {
       "source": {
         "source": "github",
         "repo": "smartwatermelon/pr-review"
-      }
+      },
+      "autoUpdate": true
     }
   },
   "spinnerTipsOverride": {

@@ -61,7 +61,7 @@ command (via `_claude_update()`). It:
 
 ## Installed Plugins
 
-Plugins are sourced from six marketplaces. Enabled state is tracked in `settings.json`.
+Plugins are sourced from seven marketplaces (six `extraKnownMarketplaces` entries plus the `superpowers-marketplace` submodule). Enabled state is tracked in `settings.json`.
 
 ### From superpowers-marketplace
 
@@ -80,7 +80,7 @@ Plugins are sourced from six marketplaces. Enabled state is tracked in `settings
 - **code-critic** ✓ — adversarial code review agent
 - **react-native-3d** — 3D rendering with React Three Fiber, expo-gl, Three.js (disabled on some machines — see [Per-Machine Notes](#per-machine-notes))
 
-### From claude-code-plugins
+### From claude-plugins-official
 
 - **frontend-design** ✓ — production-grade frontend UI generation
 
@@ -117,7 +117,6 @@ from the tracked default.
 ├── plugins/
 │   └── marketplaces/
 │       ├── claude-code-workflows         # Plugin marketplace
-│       ├── claude-code-plugins           # Plugin marketplace
 │       ├── claude-plugins-official       # Plugin marketplace
 │       ├── smartwatermelon-marketplace   # Personal marketplace (git submodule source)
 │       ├── superpowers-marketplace       # Git submodule → smartwatermelon/superpowers-marketplace

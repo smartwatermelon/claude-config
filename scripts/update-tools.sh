@@ -97,6 +97,84 @@ else
   _warn "known-runtime.txt not found at ${KNOWN_RUNTIME_FILE}"
 fi
 
+# Classify a basename as directory-like or file-like for --learn section
+# placement. No extension (and doesn't start with '.') => directory-like;
+# has an extension or starts with '.' => file-like. This is a heuristic
+# (matches the existing known-runtime.txt convention: dotfiles and
+# extensioned names live under "# Files", bare names under "# Directories"),
+# not a filesystem stat. The current caller always passes an already-
+# basenamed value, so the internal basename call below is a forward-
+# compatibility guard (not required for today's correctness) against a
+# future caller passing a full path.
+_entry_section() {
+  local name
+  name="$(basename "$1")"
+  case "${name}" in
+    .*) echo "Files" ;;
+    *.*) echo "Files" ;;
+    *) echo "Directories" ;;
+  esac
+}
+
+# Insert a new entry under its section header (# Directories or # Files) in
+# KNOWN_RUNTIME_FILE, preserving existing structure. The entry is placed at
+# the END of its section (immediately before the next blank line, next
+# section header, or EOF) rather than right after the header line, so
+# repeated --learn runs append in natural order instead of reversing it.
+# Appends a fresh section (with a preceding blank line) if the target
+# header can't be found, so --learn never loses an entry even in a
+# malformed file. Returns non-zero (and leaves the original file untouched)
+# if the awk/mv rewrite fails, cleaning up its temp file either way.
+# Not designed for concurrent invocation (single-user local maintenance
+# tool, invoked interactively) — no file locking around the grep-then-awk
+# read/rewrite. `awk -v var="${val}"` passes ${val} as a single argv
+# element; it is not re-parsed as awk source, so entry/header values
+# containing quotes or other shell metacharacters are safe as-is.
+_append_known_runtime_entry() {
+  local name="$1"
+  [[ -n "${name}" ]] || return 1
+  local section
+  section="$(_entry_section "${name}")"
+  local header="# ${section}"
+
+  if grep -qxF "${header}" "${KNOWN_RUNTIME_FILE}"; then
+    # in_section tracks whether we're inside the target section. On the
+    # first line that ends the section (blank line, another '#' header, or
+    # EOF via END{}) while still in_section, emit the new entry BEFORE that
+    # boundary line — this lands it at the end of the target section's
+    # existing entries, not before them.
+    if awk -v header="${header}" -v entry="${name}" '
+        function flush_if_needed() {
+          if (in_section && !done) { print entry; done = 1 }
+        }
+        {
+          if ($0 == header) { in_section = 1 }
+          else if (in_section && (($0 ~ /^#/) || ($0 ~ /^[[:space:]]*$/))) {
+            flush_if_needed()
+            in_section = 0
+          }
+          print
+        }
+        END { flush_if_needed() }
+      ' "${KNOWN_RUNTIME_FILE}" > "${KNOWN_RUNTIME_FILE}.tmp" \
+      && mv "${KNOWN_RUNTIME_FILE}.tmp" "${KNOWN_RUNTIME_FILE}"; then
+      return 0
+    else
+      rm -f "${KNOWN_RUNTIME_FILE}.tmp"
+      return 1
+    fi
+  else
+    # Section header missing (shouldn't happen with the shipped file) —
+    # append a fresh section at the end rather than dropping the entry.
+    # Propagate a write failure (e.g. disk full) instead of returning 0
+    # implicitly, so the caller's success count stays accurate.
+    {
+      printf '\n%s\n' "${header}"
+      printf '%s\n' "${name}"
+    } >> "${KNOWN_RUNTIME_FILE}" || return 1
+  fi
+}
+
 _is_known_runtime() {
   local name="$1"
 
@@ -184,11 +262,31 @@ if [[ "${unknown_count}" -gt 0 ]]; then
 
     if [[ "${#_new_entries[@]}" -eq 0 ]]; then
       _ok "No new entries to learn (already recorded)"
-    elif printf '%s\n' "${_new_entries[@]}" >> "${KNOWN_RUNTIME_FILE}"; then
-      _ok "Added ${#_new_entries[@]} entries to $(basename "${KNOWN_RUNTIME_FILE}")"
-      _info "Review and commit: git -C ${REPO_DIR} diff scripts/known-runtime.txt"
     else
-      _warn "Failed to write to ${KNOWN_RUNTIME_FILE}"
+      # Stop at the first write failure rather than continuing through the
+      # rest of _new_entries: this is a local, single-user maintenance tool
+      # (no concurrent writers to race against), so a failure here almost
+      # always means a real problem with KNOWN_RUNTIME_FILE (permissions,
+      # disk full) that will just repeat for every remaining entry. Halting
+      # early keeps the failure mode simple: either all attempted entries up
+      # to the failure landed, or none did if the very first write fails.
+      _learn_added_count=0
+      _learn_failed_entry=""
+      for _new in "${_new_entries[@]}"; do
+        if _append_known_runtime_entry "${_new}"; then
+          _learn_added_count=$((_learn_added_count + 1))
+        else
+          _learn_failed_entry="${_new}"
+          break
+        fi
+      done
+      if [[ -n "${_learn_failed_entry}" ]]; then
+        _warn "Failed to write entry '${_learn_failed_entry}' to ${KNOWN_RUNTIME_FILE} — stopped (${_learn_added_count} entries were added before the failure)"
+      fi
+      if [[ "${_learn_added_count}" -gt 0 ]]; then
+        _ok "Added ${_learn_added_count} entries to $(basename "${KNOWN_RUNTIME_FILE}") (categorized by type)"
+        _info "Review and commit: git -C ${REPO_DIR} diff scripts/known-runtime.txt"
+      fi
     fi
   else
     _info "Evaluate the items above, then run:"

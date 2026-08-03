@@ -41,7 +41,6 @@ Submodule directories are symlinked as **directory-level symlinks**, not per-fil
 
 Current submodules:
 - `plugins/marketplaces/superpowers-marketplace`
-- `skills/humanizer`
 
 ### Pre-flight: Reconcile local modifications
 

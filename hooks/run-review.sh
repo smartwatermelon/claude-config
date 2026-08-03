@@ -33,7 +33,8 @@ set -euo pipefail
 #   review.maxLines        - Max lines for full review (default: 1000)
 #   review.skipThreshold   - Skip AI review beyond this (default: 2500)
 #   review.chunkSize       - Max lines per file in chunked mode (default: 800)
-#   review.model           - Claude model ID (default: haiku for commits, sonnet for full-diff/codebase)
+#   review.model           - Claude model ID for code-reviewer (default: haiku for commits, sonnet for full-diff/codebase)
+#   review.adversarialModel - Claude model ID for adversarial-reviewer (default: claude-sonnet-4-6, always, regardless of mode)
 #
 # EXAMPLES:
 #   git config --global review.maxLines 2000
@@ -100,6 +101,10 @@ fi
 # --- Model selection ---
 # Priority: git config review.model > mode-based default > CLI default
 # Haiku for commit-level (small diffs, fast feedback); Sonnet for branch/codebase analysis.
+# This REVIEW_MODEL / CODE_REVIEWER_MODEL_ARGS pair governs code-reviewer (and,
+# in full-diff/codebase mode, the single reviewer invocation issued there —
+# see ADVERSARIAL_MODEL_ARGS below for why those specific call sites use the
+# adversarial model instead).
 REVIEW_MODEL=$(git config --get review.model 2>/dev/null || echo "")
 if [[ -z "${REVIEW_MODEL}" ]]; then
   case "${REVIEW_MODE}" in
@@ -109,10 +114,19 @@ if [[ -z "${REVIEW_MODEL}" ]]; then
     *)        REVIEW_MODEL="" ;;
   esac
 fi
-MODEL_ARGS=()
+CODE_REVIEWER_MODEL_ARGS=()
 if [[ -n "${REVIEW_MODEL}" ]]; then
-  MODEL_ARGS=(--model "${REVIEW_MODEL}")
+  CODE_REVIEWER_MODEL_ARGS=(--model "${REVIEW_MODEL}")
 fi
+
+# adversarial-reviewer gets its own model, independent of REVIEW_MODE.
+# code-reviewer's mechanical issue-spotting is a legitimate Haiku task, but
+# adversarial-reviewer's assume-wrong-until-proven reasoning benefits from a
+# bigger model even on the highest-frequency path (commit mode) — see issue
+# #235. Override via `git config review.adversarialModel <model-id>`.
+ADVERSARIAL_MODEL=$(git config --get review.adversarialModel 2>/dev/null || echo "")
+[[ -n "${ADVERSARIAL_MODEL}" ]] || ADVERSARIAL_MODEL="claude-sonnet-4-6"
+ADVERSARIAL_MODEL_ARGS=(--model "${ADVERSARIAL_MODEL}")
 
 # --- Reviewer agent selection ---
 # Pinned to a fully-qualified plugin:agent name (git config review.codeReviewerAgent
@@ -206,10 +220,16 @@ fi
 unset _preflight_rc
 
 # --- Agent invocation function ---
+# $1 = agent name, $2 = prompt, $3 = cache file, $4... = model args array
+# (e.g. "${CODE_REVIEWER_MODEL_ARGS[@]}" or "${ADVERSARIAL_MODEL_ARGS[@]}",
+# possibly empty). Per-call model args replace the old shared global
+# MODEL_ARGS so each reviewer can be pinned to its own model (issue #235).
 invoke_agent() {
   local agent_name="$1"
   local prompt="$2"
   local cache_file="$3"
+  shift 3
+  local -a model_args=("$@")
 
   # Check cache first
   if [[ -f "${cache_file}" ]]; then
@@ -237,7 +257,7 @@ invoke_agent() {
   local exit_code=0
   # Use || to prevent set -e from propagating if the CLI exits non-zero.
   # exit_code is then set to the actual failure code for the handler below.
-  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p "${MODEL_ARGS[@]}" --tools "" --no-session-persistence 2>&1) || exit_code=$?
+  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p "${model_args[@]}" --tools "" --no-session-persistence 2>&1) || exit_code=$?
 
   # Handle timeout - BLOCK commit (strict mode)
   if [[ ${exit_code} -eq 124 ]]; then
@@ -538,7 +558,7 @@ ${file_diff}
     # output on agent error is normalized here so the aggregate loop can
     # treat it uniformly.
     (
-      _fout=$(invoke_agent "${CODE_REVIEWER_AGENT}" "${file_prompt}" "${file_cache}") || true
+      _fout=$(invoke_agent "${CODE_REVIEWER_AGENT}" "${file_prompt}" "${file_cache}" "${CODE_REVIEWER_MODEL_ARGS[@]}") || true
       [[ -n "${_fout}" ]] || _fout="VERDICT: FAIL (agent error: invoke_agent produced no output)"
       {
         printf '%s\n' "${file}"
@@ -842,10 +862,8 @@ fi
 if [[ "${REVIEW_MODE}" == "full-diff" ]]; then
   log_info "Full-diff review: analyzing complete feature branch diff"
   log_info "Diff size: ${DIFF_LINES} lines"
-  if [[ -n "${REVIEW_MODEL}" ]]; then
-    log_info "Model: ${REVIEW_MODEL}"
-    printf 'model: %s\n' "${REVIEW_MODEL}" >>"${REVIEW_LOG}" || true
-  fi
+  log_info "Model: ${ADVERSARIAL_MODEL}"
+  printf 'model: %s\n' "${ADVERSARIAL_MODEL}" >>"${REVIEW_LOG}" || true
 
   FULL_DIFF_CACHE="${CACHE_DIR}/full-diff-${DIFF_HASH}"
 
@@ -899,7 +917,7 @@ Review diff:
 ${DIFF}
 \`\`\`"
 
-  FULL_DIFF_OUTPUT=$(invoke_agent "adversarial-reviewer" "${FULL_DIFF_PROMPT}" "${FULL_DIFF_CACHE}") || true
+  FULL_DIFF_OUTPUT=$(invoke_agent "adversarial-reviewer" "${FULL_DIFF_PROMPT}" "${FULL_DIFF_CACHE}" "${ADVERSARIAL_MODEL_ARGS[@]}") || true
 
   [[ -n "${FULL_DIFF_OUTPUT}" ]] || FULL_DIFF_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
 
@@ -937,10 +955,8 @@ fi
 if [[ "${REVIEW_MODE}" == "codebase" ]]; then
   log_info "Codebase review: analyzing diff with full codebase tool access"
   log_info "Diff size: ${DIFF_LINES} lines | Timeout: ${TIMEOUT_SECONDS}s"
-  if [[ -n "${REVIEW_MODEL}" ]]; then
-    log_info "Model: ${REVIEW_MODEL}"
-    printf 'model: %s\n' "${REVIEW_MODEL}" >>"${REVIEW_LOG}" || true
-  fi
+  log_info "Model: ${ADVERSARIAL_MODEL}"
+  printf 'model: %s\n' "${ADVERSARIAL_MODEL}" >>"${REVIEW_LOG}" || true
 
   CODEBASE_CACHE="${CACHE_DIR}/codebase-${DIFF_HASH}"
 
@@ -1023,7 +1039,7 @@ END_ISSUE"
   # Matches the pattern used for the parallel code-reviewer/adversarial
   # invocations (_cr_out/_ar_out). Issue #89.
   _codebase_err=$(mktemp)
-  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "adversarial-reviewer" -p "${MODEL_ARGS[@]}" --allowedTools "Read,Grep,Glob" --no-session-persistence 2>"${_codebase_err}") || codebase_exit=$?
+  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "adversarial-reviewer" -p "${ADVERSARIAL_MODEL_ARGS[@]}" --allowedTools "Read,Grep,Glob" --no-session-persistence 2>"${_codebase_err}") || codebase_exit=$?
   if [[ -s "${_codebase_err}" ]]; then
     cat "${_codebase_err}" >&2
   fi
@@ -1187,9 +1203,9 @@ if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
   # error/timeout)"). `|| true` on the wait calls suppresses propagation of
   # the subshell's exit status; the same empty-output guard below handles
   # any silent failure.
-  (invoke_agent "${CODE_REVIEWER_AGENT}" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}" >"${_cr_out}") &
+  (invoke_agent "${CODE_REVIEWER_AGENT}" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}" "${CODE_REVIEWER_MODEL_ARGS[@]}" >"${_cr_out}") &
   _cr_pid=$!
-  (invoke_agent "adversarial-reviewer" "${AGENT_PROMPT}" "${ADVERSARIAL_CACHE}" >"${_ar_out}") &
+  (invoke_agent "adversarial-reviewer" "${AGENT_PROMPT}" "${ADVERSARIAL_CACHE}" "${ADVERSARIAL_MODEL_ARGS[@]}" >"${_ar_out}") &
   _ar_pid=$!
   wait "${_cr_pid}" || true
   wait "${_ar_pid}" || true
@@ -1199,7 +1215,7 @@ if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
   unset _cr_out _ar_out _cr_pid _ar_pid
 else
   # Serial path (no adversarial): only code-reviewer runs.
-  CODE_REVIEWER_OUTPUT=$(invoke_agent "${CODE_REVIEWER_AGENT}" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}") || true
+  CODE_REVIEWER_OUTPUT=$(invoke_agent "${CODE_REVIEWER_AGENT}" "${AGENT_PROMPT}" "${CODE_REVIEWER_CACHE}" "${CODE_REVIEWER_MODEL_ARGS[@]}") || true
 fi
 
 # Guard: invoke_agent may exit 0 but produce no output (silent agent failure).
