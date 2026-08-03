@@ -24,6 +24,9 @@
 #   20. "VERDICT: Revise" is treated as blocking FAIL in codebase mode (issue #173); also
 #       covers issue #159 (model logging in full-diff/codebase modes)
 #   21. review.model git config overrides the default model passed to the CLI (issue #160)
+#   22. CODE_REVIEWER_AGENT default resolves to the installed agent ID (issue #209)
+#   23. review.adversarialModel overrides adversarial-reviewer's model independently
+#       of review.model / REVIEW_MODE (issue #235)
 
 set -euo pipefail
 
@@ -1185,11 +1188,70 @@ assert_contains \
   "${invocation_args22}"
 
 # =========================================================
+# TEST 23: review.adversarialModel git config overrides the adversarial-
+# reviewer model independently of review.model / REVIEW_MODE (issue #235)
+#
+# adversarial-reviewer previously rode the same REVIEW_MODEL as code-reviewer
+# via a shared MODEL_ARGS global (Haiku on commit-mode, the highest-frequency
+# path). run-review.sh now resolves a separate ADVERSARIAL_MODEL_ARGS,
+# defaulting to claude-sonnet-4-6 regardless of mode, overridable via
+# `git config review.adversarialModel`. invoke_agent() takes model args as a
+# per-call parameter instead of reading a shared global, so this test asserts
+# (a) code-reviewer still gets the mode-based default (Haiku, unaffected by
+# the adversarialModel override) and (b) adversarial-reviewer gets the
+# configured override, in the same commit-mode run.
+# =========================================================
+echo ""
+echo "=== Test 23: review.adversarialModel overrides adversarial-reviewer model independently (issue #235) ==="
+
+setup_repo
+stage_small_change
+
+MOCK23_DIR="${TMPDIR_TEST}/mock23"
+mkdir -p "${MOCK23_DIR}"
+MOCK23_ARGS_FILE="${MOCK23_DIR}/invocation-args.txt"
+rm -f "${MOCK23_ARGS_FILE}"
+cat >"${MOCK23_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+printf '%s\n' "\$*" >>"${MOCK23_ARGS_FILE}"
+echo "VERDICT: PASS"
+echo ""
+echo "No blocking issues found."
+exit 0
+EOF
+chmod +x "${MOCK23_DIR}/claude"
+
+TEST23_LOG="${TMPDIR_TEST}/test23-review.log"
+rm -f "${TEST23_LOG}"
+
+cd "${REPO_DIR}"
+git config review.adversarialModel "some-adversarial-model-id"
+REVIEW_LOG="${TEST23_LOG}" CLAUDE_CLI="${MOCK23_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+git config --unset review.adversarialModel 2>/dev/null || true
+cd - >/dev/null
+
+invocation_args23="$(cat "${MOCK23_ARGS_FILE}" 2>/dev/null || echo "")"
+
+assert_contains \
+  "configured review.adversarialModel reaches the adversarial-reviewer CLI invocation (issue #235)" \
+  "--agent adversarial-reviewer -p --model some-adversarial-model-id" \
+  "${invocation_args23}"
+
+assert_contains \
+  "code-reviewer still uses its own mode-based default model, unaffected by review.adversarialModel (issue #235)" \
+  "--agent comprehensive-review:comprehensive-review-code-reviewer -p --model claude-haiku-4-5-20251001" \
+  "${invocation_args23}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 40 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 42 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
