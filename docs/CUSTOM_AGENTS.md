@@ -6,7 +6,7 @@ This document explains how to manage custom agents that are not part of external
 
 ## Problem
 
-Custom agents stored in the wshobson/agents marketplace (`~/.claude/agents/plugins/`) get overwritten when the package updates, because they're treated as part of that package.
+Custom agents stored in the wshobson/agents marketplace (now forked as smartwatermelon/claude-code-workflows-agents) (`~/.claude/agents/plugins/`) get overwritten when the package updates, because they're treated as part of that package.
 
 ## Solution
 
