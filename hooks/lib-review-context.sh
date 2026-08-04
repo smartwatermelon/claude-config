@@ -58,10 +58,12 @@ extract_file_header_context() {
 # hashes change on every retry (the developer edits the code), so DIFF_HASH
 # can't key this — key on the more stable "which branch, which files are
 # in flight" identity instead. Args: $1 = CHANGED_FILES (newline-separated).
+# Captures the hash before falling back, since a pipeline's exit status is
+# the LAST command's (awk, which exits 0 even on empty stdin) — `|| echo`
+# on the pipeline itself would never fire on a shasum failure.
 round_history_key() {
   local changed_files="$1"
-  local branch
-  local hash
+  local branch hash
   branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
   hash=$(printf '%s\n%s\n' "${branch}" "$(printf '%s\n' "${changed_files}" | sort)" \
     | shasum -a 256 2>/dev/null | awk '{print $1}')
@@ -70,7 +72,14 @@ round_history_key() {
 
 # Append a FAIL round's raw output to the history file, capped at the last
 # 2 rounds (oldest dropped). Args: $1 = history file path, $2 = round output.
-# Uses null-byte separation for safety (round_output cannot contain \0).
+# NOTE: uses a plain "---ROUND---" line delimiter. CODE_REVIEWER_OUTPUT is
+# Claude CLI text output, not untrusted/adversarial input this codebase
+# defends against, so a literal-string collision is out of scope here.
+#
+# Rounds are collected into an explicitly INDEXED array (rounds[0] is the
+# oldest round found on disk, rounds[-1] is the newest) so "keep the last
+# N" is a plain array-slice operation, not something inferred from which
+# scratch variable held what after a loop exits.
 write_round_feedback() {
   local history_file="$1"
   local round_output="$2"
@@ -78,20 +87,37 @@ write_round_feedback() {
   local existing=""
   [[ -f "${history_file}" ]] && existing=$(cat "${history_file}")
 
-  {
-    if [[ -n "${existing}" ]]; then
-      # Keep only the LAST round from what's already there (so appending
-      # this one caps total retained rounds at 2). Use null-byte separator
-      # for safety: review output cannot contain \0, eliminating injection risk.
-      # Parse rounds via bash array expansion, not awk regex.
-      local -a rounds
-      IFS=$'\0' read -ra rounds <<<"${existing}"
-      # If we have multiple rounds, print only the last one (index [-1]).
-      if [[ ${#rounds[@]} -gt 1 ]]; then
-        printf '%s\0' "${rounds[-1]}"
+  local -a rounds=()
+  if [[ -n "${existing}" ]]; then
+    local current=""
+    while IFS= read -r line; do
+      if [[ "${line}" == "---ROUND---" ]]; then
+        rounds+=("${current}")
+        current=""
+      else
+        current+="${line}"$'\n'
       fi
-    fi
-    printf '%s\0' "${round_output}"
+    done <<<"${existing}"
+    # Trailing content after the last delimiter (or the whole file, if no
+    # delimiter was ever seen) is one more round — always non-empty here
+    # since write_round_feedback never writes a file ending in a bare
+    # delimiter with nothing after it.
+    rounds+=("${current}")
+  fi
+
+  # This round is about to be appended, so keep at most 1 prior round
+  # (rounds[-1], the newest already on disk) — combined with the new
+  # round below, that caps total retained rounds at 2. An empty element
+  # (a history file that was all delimiters, no content) is discarded
+  # rather than treated as a real round.
+  local keep=""
+  if [[ ${#rounds[@]} -ge 1 && -n "${rounds[-1]}" ]]; then
+    keep="${rounds[-1]}"
+  fi
+
+  {
+    [[ -n "${keep}" ]] && printf '%s---ROUND---\n' "${keep}"
+    printf '%s\n' "${round_output}"
   } >"${history_file}.tmp" && mv "${history_file}.tmp" "${history_file}"
 }
 
