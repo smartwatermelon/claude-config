@@ -1475,6 +1475,12 @@ DETAILS: [explanation and fix]"
 
       if [[ "${ARBITER_VERDICT}" == "PASS" ]]; then
         log_success "Arbiter sided with adversarial-reviewer — commit allowed"
+        # write_round_feedback already persisted code-reviewer's FAIL output
+        # before this block ran (it only sees CODE_REVIEWER_VERDICT, not the
+        # arbiter's later ruling). The arbiter just determined that FAIL was
+        # a false positive, so clear it -- otherwise it survives into the
+        # next commit's PRIOR ROUND FEEDBACK as an already-resolved finding.
+        [[ -n "${ROUND_HISTORY_FILE}" ]] && clear_round_feedback "${ROUND_HISTORY_FILE}"
       else
         log_error "Arbiter sided with code-reviewer - commit rejected"
         exit 1

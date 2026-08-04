@@ -1479,11 +1479,84 @@ assert_contains \
   "${test27_log_content}"
 
 # =========================================================
+# TEST 28: arbiter-resolved false positive does not survive into the next
+# commit's round history (dev-env#35 — write_round_feedback runs based on
+# CODE_REVIEWER_VERDICT alone, before the arbiter has a chance to overrule
+# it, so the PASS path must explicitly clear what was already written)
+# =========================================================
+echo ""
+echo "=== Test 28: arbiter PASS clears the round-history entry code-reviewer wrote before it ran ==="
+
+setup_repo
+stage_small_change
+
+MOCK28A_DIR="${TMPDIR_TEST}/mock28a"
+make_mock_claude_three_way "${MOCK28A_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Missing Linux platform guard
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Add a runtime OS check." \
+  "VERDICT: PASS
+
+No blocking issues found. Script header already states macOS-only scope." \
+  "VERDICT: PASS
+
+The adversarial-reviewer is correct: the script's header comment already
+documents macOS-only scope, so code-reviewer's finding does not apply."
+
+TEST28_LOG="${TMPDIR_TEST}/test28-review.log"
+rm -f "${TEST28_LOG}"
+
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST28_LOG}" CLAUDE_CLI="${MOCK28A_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+# Second commit on the same branch+file-set. If round-history wasn't
+# cleared, this retry's prompt would carry forward the already-resolved
+# "Missing Linux platform guard" finding as PRIOR ROUND FEEDBACK.
+MOCK28B_DIR="${TMPDIR_TEST}/mock28b"
+mkdir -p "${MOCK28B_DIR}"
+cat >"${MOCK28B_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+cat >> "${MOCK28B_DIR}/received_prompt.txt"
+echo "VERDICT: PASS
+
+No blocking issues found."
+exit 0
+EOF
+chmod +x "${MOCK28B_DIR}/claude"
+rm -f "${MOCK28B_DIR}/received_prompt.txt"
+
+cd "${REPO_DIR}"
+echo "echo round2edit" >>foo.sh
+git add foo.sh
+REVIEW_LOG="${TEST28_LOG}" CLAUDE_CLI="${MOCK28B_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+received28="$(cat "${MOCK28B_DIR}/received_prompt.txt" 2>/dev/null || echo "")"
+
+contains_stale_finding="false"
+if [[ "${received28}" == *"Missing Linux platform guard"* ]]; then
+  contains_stale_finding="true"
+fi
+
+assert_eq \
+  "arbiter-resolved false positive does not resurface in next commit's prompt (dev-env#35)" \
+  "false" \
+  "${contains_stale_finding}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 47 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 48 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
