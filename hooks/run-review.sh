@@ -179,6 +179,10 @@ _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib-review-issues.sh
 source "${_LIB_DIR}/lib-review-issues.sh"
 
+# --- Shared context-assembly library (file-header extraction, round memory) ---
+# shellcheck source=lib-review-context.sh
+source "${_LIB_DIR}/lib-review-context.sh"
+
 # Resolve repo metadata for issue creation (best-effort)
 if [[ -z "${REPO_OWNER:-}" ]]; then
   _remote_url=$(git remote get-url origin 2>/dev/null || echo "")
@@ -1121,6 +1125,29 @@ ADVERSARIAL_CACHE="${CACHE_DIR}/adversarial-${DIFF_HASH}"
 # Build structured prompt for agents
 # Use string concatenation - safe variable expansion without command execution
 #
+# File-header context: give the reviewer each changed file's stated scope
+# (e.g. "macOS-only, not intended for Linux/CI") even when that line isn't
+# part of the diff hunk itself. Diff-only prompts can't see this — dev-env#35.
+FILE_CONTEXT_SECTION=""
+if [[ -n "${CHANGED_FILES}" ]]; then
+  while IFS= read -r _cf; do
+    [[ -z "${_cf}" ]] && continue
+    _cf_header=$(extract_file_header_context "${_cf}")
+    [[ -n "${_cf_header}" ]] || continue
+    FILE_CONTEXT_SECTION="${FILE_CONTEXT_SECTION}--- ${_cf} ---
+${_cf_header}
+
+"
+  done <<<"${CHANGED_FILES}"
+  if [[ -n "${FILE_CONTEXT_SECTION}" ]]; then
+    FILE_CONTEXT_SECTION="FILE HEADER CONTEXT (stated scope/intent from each changed file's leading comments — weigh findings against this before flagging out-of-scope concerns):
+${FILE_CONTEXT_SECTION}---
+
+"
+  fi
+fi
+unset _cf _cf_header
+
 # Inject the developer's commit message (when available) so the reviewer sees
 # intent before code. Same pattern as the chunked path; section is omitted
 # entirely when no message is available.
@@ -1135,7 +1162,7 @@ else
   COMMIT_MSG_SECTION=""
 fi
 
-AGENT_PROMPT="${COMMIT_MSG_SECTION}You are performing a pre-commit code review. Analyze the diff below and identify issues BEFORE code is committed.
+AGENT_PROMPT="${FILE_CONTEXT_SECTION}${COMMIT_MSG_SECTION}You are performing a pre-commit code review. Analyze the diff below and identify issues BEFORE code is committed.
 
 IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
 Do NOT output Protocol 0 environment check or any preamble.

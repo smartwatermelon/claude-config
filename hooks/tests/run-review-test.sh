@@ -1247,11 +1247,64 @@ assert_contains \
   "${invocation_args23}"
 
 # =========================================================
+# TEST 24: extract_file_header_context surfaces stated scope
+# (dev-env#35 — code-reviewer flagged Linux portability on a script whose
+# header explicitly says "macOS-only, not intended for Linux/CI" because
+# the diff-only prompt never showed that line)
+# =========================================================
+echo ""
+echo "=== Test 24: file header context is extracted and injected into prompt ==="
+
+setup_repo
+cd "${REPO_DIR}"
+cat >scoped.sh <<'SCRIPT'
+#!/usr/bin/env bash
+# macOS-only: uses BSD sed (`sed -i ''`). Operator script for this user's
+# own machines, not intended for Linux/CI.
+echo "hello"
+SCRIPT
+git add scoped.sh
+cd - >/dev/null
+stage_small_change
+
+MOCK24_DIR="${TMPDIR_TEST}/mock24"
+# Mock records the prompt it received so the test can assert on prompt content.
+mkdir -p "${MOCK24_DIR}"
+cat >"${MOCK24_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+cat >> "${MOCK24_DIR}/received_prompt.txt"
+echo "VERDICT: PASS
+
+No blocking issues found."
+exit 0
+EOF
+chmod +x "${MOCK24_DIR}/claude"
+rm -f "${MOCK24_DIR}/received_prompt.txt"
+
+TEST24_LOG="${TMPDIR_TEST}/test24-review.log"
+rm -f "${TEST24_LOG}"
+
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST24_LOG}" CLAUDE_CLI="${MOCK24_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+received="$(cat "${MOCK24_DIR}/received_prompt.txt" 2>/dev/null || echo "")"
+
+assert_contains \
+  "prompt includes the file's stated macOS-only scope (dev-env#35)" \
+  "not intended for Linux/CI" \
+  "${received}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 42 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 43 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
