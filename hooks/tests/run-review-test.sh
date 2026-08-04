@@ -1247,11 +1247,402 @@ assert_contains \
   "${invocation_args23}"
 
 # =========================================================
+# TEST 24: extract_file_header_context surfaces stated scope
+# (dev-env#35 — code-reviewer flagged Linux portability on a script whose
+# header explicitly says "macOS-only, not intended for Linux/CI" because
+# the diff-only prompt never showed that line)
+# =========================================================
+echo ""
+echo "=== Test 24: file header context is extracted and injected into prompt ==="
+
+setup_repo
+cd "${REPO_DIR}"
+cat >scoped.sh <<'SCRIPT'
+#!/usr/bin/env bash
+# macOS-only: uses BSD sed (`sed -i ''`). Operator script for this user's
+# own machines, not intended for Linux/CI.
+echo "hello"
+SCRIPT
+git add scoped.sh
+cd - >/dev/null
+stage_small_change
+
+MOCK24_DIR="${TMPDIR_TEST}/mock24"
+# Mock records the prompt it received so the test can assert on prompt content.
+mkdir -p "${MOCK24_DIR}"
+cat >"${MOCK24_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+cat >> "${MOCK24_DIR}/received_prompt.txt"
+echo "VERDICT: PASS
+
+No blocking issues found."
+exit 0
+EOF
+chmod +x "${MOCK24_DIR}/claude"
+rm -f "${MOCK24_DIR}/received_prompt.txt"
+
+TEST24_LOG="${TMPDIR_TEST}/test24-review.log"
+rm -f "${TEST24_LOG}"
+
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST24_LOG}" CLAUDE_CLI="${MOCK24_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+received="$(cat "${MOCK24_DIR}/received_prompt.txt" 2>/dev/null || echo "")"
+
+assert_contains \
+  "prompt includes the file's stated macOS-only scope (dev-env#35)" \
+  "not intended for Linux/CI" \
+  "${received}"
+
+# =========================================================
+# TEST 25: round-over-round feedback is injected on a retry after a FAIL
+# (dev-env#35 — code-reviewer re-litigated already-addressed findings
+# with a different remedy each round because each --no-session-persistence
+# call started from zero)
+# =========================================================
+echo ""
+echo "=== Test 25: prior-round FAIL feedback is injected into the retry prompt ==="
+
+setup_repo
+stage_small_change
+
+MOCK25A_DIR="${TMPDIR_TEST}/mock25a"
+make_mock_claude "${MOCK25A_DIR}" 0 "VERDICT: FAIL
+
+ISSUE: Hardcoded path
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Use \$HOME instead of a literal path."
+
+TEST25_LOG="${TMPDIR_TEST}/test25-review.log"
+rm -f "${TEST25_LOG}"
+
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST25_LOG}" CLAUDE_CLI="${MOCK25A_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+# Second round: same branch, same changed file (foo.sh) — simulates a retry
+# after an edit that didn't fully address round 1's finding. Mock records
+# the prompt it receives.
+MOCK25B_DIR="${TMPDIR_TEST}/mock25b"
+mkdir -p "${MOCK25B_DIR}"
+cat >"${MOCK25B_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+cat >> "${MOCK25B_DIR}/received_prompt.txt"
+echo "VERDICT: PASS
+
+No blocking issues found."
+exit 0
+EOF
+chmod +x "${MOCK25B_DIR}/claude"
+rm -f "${MOCK25B_DIR}/received_prompt.txt"
+
+cd "${REPO_DIR}"
+echo "echo round2edit" >>foo.sh
+git add foo.sh
+REVIEW_LOG="${TEST25_LOG}" CLAUDE_CLI="${MOCK25B_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+received25="$(cat "${MOCK25B_DIR}/received_prompt.txt" 2>/dev/null || echo "")"
+
+assert_contains \
+  "retry prompt includes round 1's BLOCKING finding (dev-env#35)" \
+  "Hardcoded path" \
+  "${received25}"
+
+# Like make_mock_claude_by_agent, but differentiates three agent identities.
+# The real arbiter call reuses agent_name="adversarial-reviewer" (see
+# run-review.sh), so $2 alone cannot distinguish it from the real
+# adversarial-reviewer call — both would match "*adversarial*". Instead,
+# detect the arbiter call by its distinctive prompt content (piped on
+# stdin): the arbiter prompt contains "CODE-REVIEWER VERDICT" as a section
+# header, which never appears in the normal per-commit review prompt. Check
+# stdin content FIRST, before falling back to $2, so it takes precedence
+# over the "*adversarial*" branch.
+make_mock_claude_three_way() {
+  local mock_dir="$1" cr_output="$2" ar_output="$3" arbiter_output="$4"
+  mkdir -p "${mock_dir}"
+  printf '%s\n' "${cr_output}" >"${mock_dir}/cr_output.txt"
+  printf '%s\n' "${ar_output}" >"${mock_dir}/ar_output.txt"
+  printf '%s\n' "${arbiter_output}" >"${mock_dir}/arbiter_output.txt"
+  cat >"${mock_dir}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+_stdin_input="\$(cat)"
+if echo "\${_stdin_input}" | grep -q "CODE-REVIEWER VERDICT"; then
+  cat "${mock_dir}/arbiter_output.txt"
+elif [[ "\$2" == *adversarial* ]]; then
+  cat "${mock_dir}/ar_output.txt"
+else
+  cat "${mock_dir}/cr_output.txt"
+fi
+exit 0
+EOF
+  chmod +x "${mock_dir}/claude"
+}
+
+# =========================================================
+# TEST 26: arbiter overrides a code-reviewer BLOCKING FAIL when it sides
+# with adversarial-reviewer's PASS (dev-env#35)
+# =========================================================
+echo ""
+echo "=== Test 26: arbiter can override code-reviewer FAIL when adversarial-reviewer PASSes ==="
+
+setup_repo
+stage_small_change
+
+MOCK26_DIR="${TMPDIR_TEST}/mock26"
+make_mock_claude_three_way "${MOCK26_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Missing Linux platform guard
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Add a runtime OS check." \
+  "VERDICT: PASS
+
+No blocking issues found. Script header already states macOS-only scope." \
+  "VERDICT: PASS
+
+The adversarial-reviewer is correct: the script's header comment already
+documents macOS-only scope, so code-reviewer's finding does not apply."
+
+TEST26_LOG="${TMPDIR_TEST}/test26-review.log"
+rm -f "${TEST26_LOG}"
+
+exit_t26=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST26_LOG}" CLAUDE_CLI="${MOCK26_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t26=$?
+cd - >/dev/null
+
+assert_eq \
+  "arbiter PASS overrides code-reviewer BLOCKING FAIL (exit 0) - dev-env#35" \
+  "0" \
+  "${exit_t26}"
+
+# =========================================================
+# TEST 27: arbiter siding with code-reviewer still blocks the commit
+# =========================================================
+echo ""
+echo "=== Test 27: arbiter siding with code-reviewer still blocks commit ==="
+
+setup_repo
+stage_small_change
+
+MOCK27_DIR="${TMPDIR_TEST}/mock27"
+make_mock_claude_three_way "${MOCK27_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Hardcoded credential
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Remove the hardcoded credential." \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  "VERDICT: FAIL
+
+ISSUE: Hardcoded credential
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: code-reviewer is correct; adversarial-reviewer missed this."
+
+TEST27_LOG="${TMPDIR_TEST}/test27-review.log"
+rm -f "${TEST27_LOG}"
+
+exit_t27=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST27_LOG}" CLAUDE_CLI="${MOCK27_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t27=$?
+cd - >/dev/null
+
+assert_eq \
+  "arbiter siding with code-reviewer still blocks commit (exit 1)" \
+  "1" \
+  "${exit_t27}"
+
+test27_log_content="$(cat "${TEST27_LOG}")"
+assert_contains \
+  "arbiter ran for test 27 (not just coincidental pre-existing block)" \
+  "=== ARBITER" \
+  "${test27_log_content}"
+
+# =========================================================
+# TEST 28: arbiter-resolved false positive does not survive into the next
+# commit's round history (dev-env#35 — write_round_feedback runs based on
+# CODE_REVIEWER_VERDICT alone, before the arbiter has a chance to overrule
+# it, so the PASS path must explicitly clear what was already written)
+# =========================================================
+echo ""
+echo "=== Test 28: arbiter PASS clears the round-history entry code-reviewer wrote before it ran ==="
+
+setup_repo
+stage_small_change
+
+MOCK28A_DIR="${TMPDIR_TEST}/mock28a"
+make_mock_claude_three_way "${MOCK28A_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Missing Linux platform guard
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Add a runtime OS check." \
+  "VERDICT: PASS
+
+No blocking issues found. Script header already states macOS-only scope." \
+  "VERDICT: PASS
+
+The adversarial-reviewer is correct: the script's header comment already
+documents macOS-only scope, so code-reviewer's finding does not apply."
+
+TEST28_LOG="${TMPDIR_TEST}/test28-review.log"
+rm -f "${TEST28_LOG}"
+
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST28_LOG}" CLAUDE_CLI="${MOCK28A_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+# Second commit on the same branch+file-set. If round-history wasn't
+# cleared, this retry's prompt would carry forward the already-resolved
+# "Missing Linux platform guard" finding as PRIOR ROUND FEEDBACK.
+MOCK28B_DIR="${TMPDIR_TEST}/mock28b"
+mkdir -p "${MOCK28B_DIR}"
+cat >"${MOCK28B_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+cat >> "${MOCK28B_DIR}/received_prompt.txt"
+echo "VERDICT: PASS
+
+No blocking issues found."
+exit 0
+EOF
+chmod +x "${MOCK28B_DIR}/claude"
+rm -f "${MOCK28B_DIR}/received_prompt.txt"
+
+cd "${REPO_DIR}"
+echo "echo round2edit" >>foo.sh
+git add foo.sh
+REVIEW_LOG="${TEST28_LOG}" CLAUDE_CLI="${MOCK28B_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+received28="$(cat "${MOCK28B_DIR}/received_prompt.txt" 2>/dev/null || echo "")"
+
+contains_stale_finding="false"
+if [[ "${received28}" == *"Missing Linux platform guard"* ]]; then
+  contains_stale_finding="true"
+fi
+
+assert_eq \
+  "arbiter-resolved false positive does not resurface in next commit's prompt (dev-env#35)" \
+  "false" \
+  "${contains_stale_finding}"
+
+# =========================================================
+# TEST 29: adversarial-reviewer cache is bypassed during a retry-after-FAIL,
+# so the arbiter never gets handed a stale verdict (claude-config#246 —
+# a cached PASS from an earlier attempt was reused across retries and misled
+# the arbiter, which noticed the cache was stale but sided with a fabricated
+# code-reviewer claim anyway rather than forcing a live check)
+# =========================================================
+echo ""
+echo "=== Test 29: adversarial-reviewer cache is bypassed on a retry after a prior FAIL ==="
+
+setup_repo
+stage_small_change
+
+# Prime the round-history file as if a prior round on this branch/file-set
+# already FAILed (same mechanism Test 25/28 exercise) — this is the signal
+# that should force cache bypass.
+TEST29_BRANCH="$(git -C "${REPO_DIR}" symbolic-ref --short HEAD)"
+TEST29_ROUND_KEY="$(printf '%s\n%s\n' "${TEST29_BRANCH}" "foo.sh" | shasum -a 256 | awk '{print $1}')"
+TEST29_CACHE_DIR="${REPO_DIR}/.git/claude-review-cache"
+mkdir -p "${TEST29_CACHE_DIR}"
+cat >"${TEST29_CACHE_DIR}/round-history-${TEST29_ROUND_KEY}" <<'EOF'
+VERDICT: FAIL
+
+ISSUE: Some already-addressed finding from a prior round
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Placeholder prior-round content.
+EOF
+
+# Prime the adversarial-reviewer cache with a PASS, as if a live call had
+# already happened on this exact diff+script-version and passed. Without
+# the fix, invoke_agent would serve this cached PASS straight back with no
+# live call — the mock below would never run for the adversarial-reviewer
+# agent identity, and the marker file would never appear.
+TEST29_SCRIPT_SHA="$(shasum -a 256 "${SUBJECT}" | awk '{print $1}' | cut -c1-12)"
+TEST29_DIFF="$(cd "${REPO_DIR}" && git diff --cached)"
+TEST29_DIFF_HASH="$(printf '%s\n%s\n' "${TEST29_SCRIPT_SHA}" "${TEST29_DIFF}" | shasum -a 256 | awk '{print $1}')"
+{
+  echo "PASS"
+  date -u +%Y-%m-%dT%H:%M:%SZ
+} >"${TEST29_CACHE_DIR}/adversarial-${TEST29_DIFF_HASH}"
+
+MOCK29_DIR="${TMPDIR_TEST}/mock29"
+mkdir -p "${MOCK29_DIR}"
+cat >"${MOCK29_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+if [[ "\$2" == *adversarial* ]]; then
+  echo "VERDICT: PASS
+
+No blocking issues found (live call)."
+else
+  echo "VERDICT: FAIL
+
+ISSUE: Some already-addressed finding from a prior round
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Placeholder prior-round content."
+fi
+exit 0
+EOF
+chmod +x "${MOCK29_DIR}/claude"
+
+TEST29_LOG="${TMPDIR_TEST}/test29-review.log"
+rm -f "${TEST29_LOG}"
+
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST29_LOG}" CLAUDE_CLI="${MOCK29_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+# Note: we can't use a "did adversarial-reviewer's mock run live" marker here --
+# the arbiter step (triggered by this same disagreement) always makes its own
+# live adversarial-reviewer call via a separate cache (ARBITER_CACHE), so such
+# a marker would be touched regardless of whether the parallel-phase cache was
+# bypassed. The log line is the only signal that distinguishes the two paths.
+test29_log_content="$(cat "${TEST29_LOG}")"
+adversarial_not_cached="true"
+[[ "${test29_log_content}" == *"VERDICT: PASS (cached)"* ]] && adversarial_not_cached="false"
+
+assert_eq \
+  "review log does not report a cached-PASS shortcut for adversarial-reviewer (claude-config#246)" \
+  "true" \
+  "${adversarial_not_cached}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 42 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 49 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then

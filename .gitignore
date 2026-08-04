@@ -55,6 +55,9 @@ __pycache__/
 # Auto-memory (may contain sensitive session context)
 memory/
 
+# Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
+.superpowers/
+
 # Empty directories and misc
 bin/
 commands/

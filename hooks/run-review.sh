@@ -35,6 +35,10 @@ set -euo pipefail
 #   review.chunkSize       - Max lines per file in chunked mode (default: 800)
 #   review.model           - Claude model ID for code-reviewer (default: haiku for commits, sonnet for full-diff/codebase)
 #   review.adversarialModel - Claude model ID for adversarial-reviewer (default: claude-sonnet-4-6, always, regardless of mode)
+#   review.arbiterModel    - Claude model ID for the reconciliation arbiter
+#                             (default: claude-sonnet-4-6, only invoked when
+#                             code-reviewer BLOCKING FAIL disagrees with an
+#                             adversarial-reviewer PASS)
 #
 # EXAMPLES:
 #   git config --global review.maxLines 2000
@@ -60,6 +64,11 @@ set -euo pipefail
 # --- Configuration ---
 CLAUDE_CLI="${CLAUDE_CLI:-${HOME}/.local/bin/claude}"
 TIMEOUT_SECONDS=$(git config --get --type=int review.timeout 2>/dev/null || echo "120")
+
+# Test-only escape hatch: skip gh issue filing entirely. Production runs
+# never set this; hooks/tests/run-review-test.sh sets it so tests don't
+# require gh auth or hit the real GitHub API.
+GH_ISSUE_FILING_DISABLED="${GH_ISSUE_FILING_DISABLED:-}"
 
 # Progressive review configuration (with git config overrides)
 REVIEW_MAX_LINES=$(git config --get --type=int review.maxLines 2>/dev/null || echo "1000")
@@ -128,6 +137,14 @@ ADVERSARIAL_MODEL=$(git config --get review.adversarialModel 2>/dev/null || echo
 [[ -n "${ADVERSARIAL_MODEL}" ]] || ADVERSARIAL_MODEL="claude-sonnet-4-6"
 ADVERSARIAL_MODEL_ARGS=(--model "${ADVERSARIAL_MODEL}")
 
+# Arbiter model: used only when code-reviewer and adversarial-reviewer
+# disagree (BLOCKING FAIL vs PASS) in commit mode. Defaults to the same
+# model as adversarial-reviewer since both need the bigger-model reasoning
+# the disagreement itself signals is warranted.
+ARBITER_MODEL=$(git config --get review.arbiterModel 2>/dev/null || echo "")
+[[ -n "${ARBITER_MODEL}" ]] || ARBITER_MODEL="claude-sonnet-4-6"
+ARBITER_MODEL_ARGS=(--model "${ARBITER_MODEL}")
+
 # --- Reviewer agent selection ---
 # Pinned to a fully-qualified plugin:agent name (git config review.codeReviewerAgent
 # to override). The bare name "code-reviewer" broke once a second installed plugin
@@ -178,6 +195,10 @@ parse_verdict() {
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib-review-issues.sh
 source "${_LIB_DIR}/lib-review-issues.sh"
+
+# --- Shared context-assembly library (file-header extraction, round memory) ---
+# shellcheck source=lib-review-context.sh
+source "${_LIB_DIR}/lib-review-context.sh"
 
 # Resolve repo metadata for issue creation (best-effort)
 if [[ -z "${REPO_OWNER:-}" ]]; then
@@ -231,8 +252,12 @@ invoke_agent() {
   shift 3
   local -a model_args=("$@")
 
+  # An empty cache_file means "always run live, never cache" -- used by
+  # callers that need a guaranteed-fresh result (e.g. adversarial-reviewer
+  # during a retry-after-FAIL, where a cached PASS from an earlier attempt
+  # would feed stale evidence to the arbiter; see claude-config#246).
   # Check cache first
-  if [[ -f "${cache_file}" ]]; then
+  if [[ -n "${cache_file}" && -f "${cache_file}" ]]; then
     local cached_verdict
     cached_verdict=$(head -1 "${cache_file}")
     if [[ "${cached_verdict}" == "PASS" ]]; then
@@ -289,13 +314,66 @@ invoke_agent() {
   # Return the output for parsing
   echo "${agent_output}"
 
-  # Cache verdict if PASS
+  # Cache verdict if PASS (unless caching was disabled via an empty cache_file)
   local _cache_verdict
   _cache_verdict=$(parse_verdict "${agent_output}")
-  if [[ "${_cache_verdict}" == "PASS" ]]; then
+  if [[ -n "${cache_file}" && "${_cache_verdict}" == "PASS" ]]; then
     echo "PASS" >"${cache_file}"
     date -u +%Y-%m-%dT%H:%M:%SZ >>"${cache_file}"
   fi
+}
+
+# Files a GitHub issue in smartwatermelon/claude-config (the reviewer
+# infrastructure's OWN repo — hardcoded, never REPO_OWNER/REPO_NAME, which
+# is the repo under review) logging a code-reviewer/adversarial-reviewer
+# disagreement and how the arbiter resolved it. Best-effort: never blocks
+# the commit regardless of gh auth state or API errors. dev-env#35's own
+# investigation asked for this so recurring disagreement patterns are
+# visible for future prompt/model tuning instead of silently resolved
+# and forgotten each time.
+file_reviewer_disagreement_issue() {
+  local cr_output="$1" ar_output="$2" arbiter_output="$3" arbiter_verdict="$4"
+
+  [[ -z "${GH_ISSUE_FILING_DISABLED}" ]] || return 0
+  command -v gh >/dev/null 2>&1 || return 0
+
+  local title="Reviewer disagreement: code-reviewer BLOCKING FAIL vs adversarial-reviewer PASS (arbiter: ${arbiter_verdict})"
+  local body
+  body=$(cat <<EOF
+## Reviewer disagreement (auto-logged by run-review.sh)
+
+**Repo under review:** ${REPO_OWNER:-unknown}/${REPO_NAME:-unknown}
+**Branch:** ${_review_branch:-unknown}
+**Commit:** ${_review_commit:-unknown}
+**Arbiter model:** ${ARBITER_MODEL}
+**Arbiter verdict:** ${arbiter_verdict}
+
+### code-reviewer output
+\`\`\`
+${cr_output}
+\`\`\`
+
+### adversarial-reviewer output
+\`\`\`
+${ar_output}
+\`\`\`
+
+### Arbiter reasoning
+\`\`\`
+${arbiter_output}
+\`\`\`
+
+---
+Filed automatically to track disagreement frequency and patterns for
+future code-reviewer prompt/model tuning. See smartwatermelon/dev-env#35.
+EOF
+)
+
+  gh issue create --repo "smartwatermelon/claude-config" \
+    --title "${title}" \
+    --body "${body}" \
+    --label "tech-debt" \
+    >/dev/null 2>&1 || true
 }
 
 # --- Helper Functions for Progressive Review ---
@@ -1116,11 +1194,85 @@ fi
 
 # Build cache keys
 CODE_REVIEWER_CACHE="${CACHE_DIR}/code-reviewer-${DIFF_HASH}"
-ADVERSARIAL_CACHE="${CACHE_DIR}/adversarial-${DIFF_HASH}"
+ROUND_HISTORY_KEY=$(round_history_key "${CHANGED_FILES}")
+ROUND_HISTORY_FILE=""
+if [[ -n "${ROUND_HISTORY_KEY}" && "${ROUND_HISTORY_KEY}" != "noround" ]]; then
+  ROUND_HISTORY_FILE="${CACHE_DIR}/round-history-${ROUND_HISTORY_KEY}"
+else
+  log_warn "Could not compute round-history key; this run's review will not carry prior-round feedback"
+fi
+
+# adversarial-reviewer's cache is deliberately bypassed during a retry after a
+# prior FAIL on this branch/file-set (i.e. ROUND_HISTORY_FILE has content).
+# The arbiter (below) treats an adversarial PASS as evidence that
+# code-reviewer's current BLOCKING claim doesn't hold up -- but a cache hit
+# means adversarial-reviewer never actually looked at *this* code-reviewer
+# FAIL; it only proves some earlier attempt at this diff passed adversarial
+# review, possibly before code-reviewer's current objection even existed.
+# Live-only here forces a fresh, substantive check exactly when arbitration
+# is most likely to be invoked. dev-env#35 / claude-config#246: a stale
+# cached PASS was silently reused across retries and misled the arbiter,
+# which noticed the cache was stale but sided with a fabricated
+# code-reviewer claim anyway rather than treating "no fresh evidence" as a
+# reason to force a live check.
+_prior_round_feedback_present=""
+[[ -n "${ROUND_HISTORY_FILE}" ]] && _prior_round_feedback_present=$(read_round_feedback "${ROUND_HISTORY_FILE}")
+if [[ -n "${_prior_round_feedback_present}" ]]; then
+  log_info "Retry after a prior FAIL on this branch/file-set -- forcing a live adversarial-reviewer check (bypassing cache)"
+  ADVERSARIAL_CACHE="" # empty = invoke_agent always runs live, never caches
+else
+  ADVERSARIAL_CACHE="${CACHE_DIR}/adversarial-${DIFF_HASH}"
+fi
+unset _prior_round_feedback_present
 
 # Build structured prompt for agents
 # Use string concatenation - safe variable expansion without command execution
 #
+# File-header context: give the reviewer each changed file's stated scope
+# (e.g. "macOS-only, not intended for Linux/CI") even when that line isn't
+# part of the diff hunk itself. Diff-only prompts can't see this — dev-env#35.
+FILE_CONTEXT_SECTION=""
+if [[ -n "${CHANGED_FILES}" ]]; then
+  while IFS= read -r _cf; do
+    [[ -z "${_cf}" ]] && continue
+    _cf_header=$(extract_file_header_context "${_cf}")
+    [[ -n "${_cf_header}" ]] || continue
+    FILE_CONTEXT_SECTION="${FILE_CONTEXT_SECTION}--- ${_cf} ---
+${_cf_header}
+
+"
+  done <<<"${CHANGED_FILES}"
+  if [[ -n "${FILE_CONTEXT_SECTION}" ]]; then
+    FILE_CONTEXT_SECTION="FILE HEADER CONTEXT (stated scope/intent from each changed file's leading comments — weigh findings against this before flagging out-of-scope concerns):
+${FILE_CONTEXT_SECTION}---
+
+"
+  fi
+fi
+unset _cf _cf_header
+
+# Inject prior-round feedback from a failed review attempt on this branch/file-set.
+# Each --no-session-persistence invocation starts from zero, so a FAILed round's
+# findings were forgotten by the next retry. Track up to the last 2 rounds and
+# inject them so retries build on prior findings instead of re-litigating.
+PRIOR_ROUND_SECTION=""
+if [[ -n "${ROUND_HISTORY_FILE}" ]]; then
+  _prior_feedback=$(read_round_feedback "${ROUND_HISTORY_FILE}")
+  if [[ -n "${_prior_feedback}" ]]; then
+    if grep -qE "^VERDICT: (PASS|FAIL|REVISE)" <<<"${_prior_feedback}"; then
+      PRIOR_ROUND_SECTION="PRIOR ROUND FEEDBACK (from up to 2 previous FAILed review attempts on this branch/file-set — do NOT re-flag an issue below unless it is still genuinely present in the current diff; do not propose a different remedy for something already addressed):
+${_prior_feedback}
+---
+
+"
+    else
+      log_warn "Round-history file at ${ROUND_HISTORY_FILE} has no VERDICT line; discarding as invalid"
+      clear_round_feedback "${ROUND_HISTORY_FILE}"
+    fi
+  fi
+fi
+unset _prior_feedback
+
 # Inject the developer's commit message (when available) so the reviewer sees
 # intent before code. Same pattern as the chunked path; section is omitted
 # entirely when no message is available.
@@ -1135,7 +1287,7 @@ else
   COMMIT_MSG_SECTION=""
 fi
 
-AGENT_PROMPT="${COMMIT_MSG_SECTION}You are performing a pre-commit code review. Analyze the diff below and identify issues BEFORE code is committed.
+AGENT_PROMPT="${PRIOR_ROUND_SECTION}${FILE_CONTEXT_SECTION}${COMMIT_MSG_SECTION}You are performing a pre-commit code review. Analyze the diff below and identify issues BEFORE code is committed.
 
 IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
 Do NOT output Protocol 0 environment check or any preamble.
@@ -1257,6 +1409,14 @@ if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
   fi
 fi
 
+if [[ -n "${ROUND_HISTORY_FILE}" ]]; then
+  if [[ "${CODE_REVIEWER_VERDICT}" == "PASS" ]]; then
+    clear_round_feedback "${ROUND_HISTORY_FILE}"
+  else
+    write_round_feedback "${ROUND_HISTORY_FILE}" "${CODE_REVIEWER_OUTPUT}"
+  fi
+fi
+
 # --- Evaluate Combined Verdict ---
 echo "" >&2
 
@@ -1284,8 +1444,77 @@ fi
 if [[ "${CODE_REVIEWER_VERDICT}" == "FAIL" ]]; then
   # Check if BLOCKING severity exists
   if echo "${CODE_REVIEWER_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
-    log_error "code-reviewer found blocking issues - commit rejected"
-    exit 1
+    # Reconciliation: if adversarial-reviewer (already a bigger model,
+    # already reasoning about failure modes) independently reached PASS,
+    # don't take code-reviewer's BLOCKING FAIL as final — ask a third
+    # agent to arbitrate rather than silently trusting either side.
+    # dev-env#35: non-convergent Haiku findings that adversarial-reviewer
+    # explicitly called "solid design choices" on the same diff.
+    if [[ "${ADVERSARIAL_AVAILABLE}" == true && "${ADVERSARIAL_VERDICT}" == "PASS" ]]; then
+      log_warn "code-reviewer BLOCKING FAIL disagrees with adversarial-reviewer PASS — arbitrating"
+
+      ARBITER_PROMPT="Two reviewers disagree on whether this diff is safe to commit. Read both verdicts and the diff, then decide which reviewer is correct.
+
+IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
+Do NOT output Protocol 0 environment check or any preamble.
+Begin your response directly with the verdict in the specified format below.
+
+=== CODE-REVIEWER VERDICT (found a BLOCKING issue) ===
+${CODE_REVIEWER_OUTPUT}
+
+=== ADVERSARIAL-REVIEWER VERDICT (found no blocking issue) ===
+${ADVERSARIAL_OUTPUT}
+
+=== DIFF UNDER REVIEW ===
+\`\`\`diff
+${DIFF}
+\`\`\`
+
+Decide: is code-reviewer's BLOCKING finding a genuine, currently-present issue in this diff, or is adversarial-reviewer correct that it doesn't apply (e.g. out of stated scope, already mitigated, a false positive)?
+
+CRITICAL: Respond with this exact format:
+
+VERDICT: [PASS or FAIL]
+
+[Explain which reviewer is correct and why, in 2-4 sentences.]
+
+[If VERDICT: FAIL, restate the still-blocking issue:]
+ISSUE: [one-line description]
+SEVERITY: BLOCKING
+LOCATION: [file:line]
+DETAILS: [explanation and fix]"
+
+      ARBITER_CACHE="${CACHE_DIR}/arbiter-${DIFF_HASH}"
+      ARBITER_OUTPUT=$(invoke_agent "adversarial-reviewer" "${ARBITER_PROMPT}" "${ARBITER_CACHE}" "${ARBITER_MODEL_ARGS[@]}") || true
+      [[ -n "${ARBITER_OUTPUT}" ]] || ARBITER_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
+
+      echo "=== ARBITER (reconciling code-reviewer vs adversarial-reviewer) ===" >&2
+      echo "${ARBITER_OUTPUT}" >&2
+      echo "" >&2
+      { printf '=== ARBITER ===\n%s\n' "${ARBITER_OUTPUT}"; } >>"${REVIEW_LOG}" || true
+
+      ARBITER_VERDICT=$(parse_verdict "${ARBITER_OUTPUT}")
+      [[ -n "${ARBITER_VERDICT}" ]] || ARBITER_VERDICT="FAIL"
+      printf 'arbiter: %s\n' "${ARBITER_VERDICT}" >>"${REVIEW_LOG}" || true
+
+      file_reviewer_disagreement_issue "${CODE_REVIEWER_OUTPUT}" "${ADVERSARIAL_OUTPUT}" "${ARBITER_OUTPUT}" "${ARBITER_VERDICT}"
+
+      if [[ "${ARBITER_VERDICT}" == "PASS" ]]; then
+        log_success "Arbiter sided with adversarial-reviewer — commit allowed"
+        # write_round_feedback already persisted code-reviewer's FAIL output
+        # before this block ran (it only sees CODE_REVIEWER_VERDICT, not the
+        # arbiter's later ruling). The arbiter just determined that FAIL was
+        # a false positive, so clear it -- otherwise it survives into the
+        # next commit's PRIOR ROUND FEEDBACK as an already-resolved finding.
+        [[ -n "${ROUND_HISTORY_FILE}" ]] && clear_round_feedback "${ROUND_HISTORY_FILE}"
+      else
+        log_error "Arbiter sided with code-reviewer - commit rejected"
+        exit 1
+      fi
+    else
+      log_error "code-reviewer found blocking issues - commit rejected"
+      exit 1
+    fi
   else
     log_warn "code-reviewer found warnings (non-blocking)"
     # Continue to adversarial if security-critical
