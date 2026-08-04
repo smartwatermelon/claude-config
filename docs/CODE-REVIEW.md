@@ -114,6 +114,32 @@ If any of these are missing, flag as BLOCKING in local review — not as a non-b
 
 ---
 
+## Reviewer Convergence
+
+Three mechanisms keep local pre-commit review from looping without making
+progress (dev-env#35):
+
+1. **File-header context**: code-reviewer's prompt includes each changed
+   file's leading comment block, not just the diff hunk — so a stated
+   scope ("macOS-only, not intended for Linux/CI") is visible even when
+   that line isn't part of the diff.
+2. **Round memory**: up to the last 2 FAILed rounds on the same
+   branch+file-set are carried forward into the next retry's prompt as
+   PRIOR ROUND FEEDBACK, so code-reviewer doesn't re-flag an
+   already-addressed issue with a new remedy each time.
+3. **Arbitration**: when code-reviewer's BLOCKING FAIL disagrees with a
+   clean adversarial-reviewer PASS, a third arbiter call (Sonnet) decides
+   which is correct instead of code-reviewer's verdict winning by default.
+   Every arbitration is logged as a GitHub issue in claude-config
+   regardless of outcome, to surface disagreement patterns over time.
+
+If review still fails to converge after these mechanisms are in place,
+that is itself worth a fresh issue — check `smartwatermelon/claude-config`
+issues for "Reviewer disagreement:"-titled entries first, since the
+arbiter-logging in mechanism 3 may already have captured the pattern.
+
+---
+
 ## Return to Main Documentation
 
 → Return to `~/.claude/CLAUDE.md`
