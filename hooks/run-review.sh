@@ -35,6 +35,10 @@ set -euo pipefail
 #   review.chunkSize       - Max lines per file in chunked mode (default: 800)
 #   review.model           - Claude model ID for code-reviewer (default: haiku for commits, sonnet for full-diff/codebase)
 #   review.adversarialModel - Claude model ID for adversarial-reviewer (default: claude-sonnet-4-6, always, regardless of mode)
+#   review.arbiterModel    - Claude model ID for the reconciliation arbiter
+#                             (default: claude-sonnet-4-6, only invoked when
+#                             code-reviewer BLOCKING FAIL disagrees with an
+#                             adversarial-reviewer PASS)
 #
 # EXAMPLES:
 #   git config --global review.maxLines 2000
