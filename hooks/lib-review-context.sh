@@ -91,7 +91,7 @@ write_round_feedback() {
         printf '%s\0' "${rounds[-1]}"
       fi
     fi
-    printf '%s\n' "${round_output}"
+    printf '%s\0' "${round_output}"
   } >"${history_file}.tmp" && mv "${history_file}.tmp" "${history_file}"
 }
 
