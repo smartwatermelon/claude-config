@@ -252,8 +252,12 @@ invoke_agent() {
   shift 3
   local -a model_args=("$@")
 
+  # An empty cache_file means "always run live, never cache" -- used by
+  # callers that need a guaranteed-fresh result (e.g. adversarial-reviewer
+  # during a retry-after-FAIL, where a cached PASS from an earlier attempt
+  # would feed stale evidence to the arbiter; see claude-config#246).
   # Check cache first
-  if [[ -f "${cache_file}" ]]; then
+  if [[ -n "${cache_file}" && -f "${cache_file}" ]]; then
     local cached_verdict
     cached_verdict=$(head -1 "${cache_file}")
     if [[ "${cached_verdict}" == "PASS" ]]; then
@@ -310,10 +314,10 @@ invoke_agent() {
   # Return the output for parsing
   echo "${agent_output}"
 
-  # Cache verdict if PASS
+  # Cache verdict if PASS (unless caching was disabled via an empty cache_file)
   local _cache_verdict
   _cache_verdict=$(parse_verdict "${agent_output}")
-  if [[ "${_cache_verdict}" == "PASS" ]]; then
+  if [[ -n "${cache_file}" && "${_cache_verdict}" == "PASS" ]]; then
     echo "PASS" >"${cache_file}"
     date -u +%Y-%m-%dT%H:%M:%SZ >>"${cache_file}"
   fi
@@ -1190,7 +1194,6 @@ fi
 
 # Build cache keys
 CODE_REVIEWER_CACHE="${CACHE_DIR}/code-reviewer-${DIFF_HASH}"
-ADVERSARIAL_CACHE="${CACHE_DIR}/adversarial-${DIFF_HASH}"
 ROUND_HISTORY_KEY=$(round_history_key "${CHANGED_FILES}")
 ROUND_HISTORY_FILE=""
 if [[ -n "${ROUND_HISTORY_KEY}" && "${ROUND_HISTORY_KEY}" != "noround" ]]; then
@@ -1198,6 +1201,29 @@ if [[ -n "${ROUND_HISTORY_KEY}" && "${ROUND_HISTORY_KEY}" != "noround" ]]; then
 else
   log_warn "Could not compute round-history key; this run's review will not carry prior-round feedback"
 fi
+
+# adversarial-reviewer's cache is deliberately bypassed during a retry after a
+# prior FAIL on this branch/file-set (i.e. ROUND_HISTORY_FILE has content).
+# The arbiter (below) treats an adversarial PASS as evidence that
+# code-reviewer's current BLOCKING claim doesn't hold up -- but a cache hit
+# means adversarial-reviewer never actually looked at *this* code-reviewer
+# FAIL; it only proves some earlier attempt at this diff passed adversarial
+# review, possibly before code-reviewer's current objection even existed.
+# Live-only here forces a fresh, substantive check exactly when arbitration
+# is most likely to be invoked. dev-env#35 / claude-config#246: a stale
+# cached PASS was silently reused across retries and misled the arbiter,
+# which noticed the cache was stale but sided with a fabricated
+# code-reviewer claim anyway rather than treating "no fresh evidence" as a
+# reason to force a live check.
+_prior_round_feedback_present=""
+[[ -n "${ROUND_HISTORY_FILE}" ]] && _prior_round_feedback_present=$(read_round_feedback "${ROUND_HISTORY_FILE}")
+if [[ -n "${_prior_round_feedback_present}" ]]; then
+  log_info "Retry after a prior FAIL on this branch/file-set -- forcing a live adversarial-reviewer check (bypassing cache)"
+  ADVERSARIAL_CACHE="" # empty = invoke_agent always runs live, never caches
+else
+  ADVERSARIAL_CACHE="${CACHE_DIR}/adversarial-${DIFF_HASH}"
+fi
+unset _prior_round_feedback_present
 
 # Build structured prompt for agents
 # Use string concatenation - safe variable expansion without command execution
