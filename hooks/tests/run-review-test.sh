@@ -1552,11 +1552,97 @@ assert_eq \
   "${contains_stale_finding}"
 
 # =========================================================
+# TEST 29: adversarial-reviewer cache is bypassed during a retry-after-FAIL,
+# so the arbiter never gets handed a stale verdict (claude-config#246 —
+# a cached PASS from an earlier attempt was reused across retries and misled
+# the arbiter, which noticed the cache was stale but sided with a fabricated
+# code-reviewer claim anyway rather than forcing a live check)
+# =========================================================
+echo ""
+echo "=== Test 29: adversarial-reviewer cache is bypassed on a retry after a prior FAIL ==="
+
+setup_repo
+stage_small_change
+
+# Prime the round-history file as if a prior round on this branch/file-set
+# already FAILed (same mechanism Test 25/28 exercise) — this is the signal
+# that should force cache bypass.
+TEST29_BRANCH="$(git -C "${REPO_DIR}" symbolic-ref --short HEAD)"
+TEST29_ROUND_KEY="$(printf '%s\n%s\n' "${TEST29_BRANCH}" "foo.sh" | shasum -a 256 | awk '{print $1}')"
+TEST29_CACHE_DIR="${REPO_DIR}/.git/claude-review-cache"
+mkdir -p "${TEST29_CACHE_DIR}"
+cat >"${TEST29_CACHE_DIR}/round-history-${TEST29_ROUND_KEY}" <<'EOF'
+VERDICT: FAIL
+
+ISSUE: Some already-addressed finding from a prior round
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Placeholder prior-round content.
+EOF
+
+# Prime the adversarial-reviewer cache with a PASS, as if a live call had
+# already happened on this exact diff+script-version and passed. Without
+# the fix, invoke_agent would serve this cached PASS straight back with no
+# live call — the mock below would never run for the adversarial-reviewer
+# agent identity, and the marker file would never appear.
+TEST29_SCRIPT_SHA="$(shasum -a 256 "${SUBJECT}" | awk '{print $1}' | cut -c1-12)"
+TEST29_DIFF="$(cd "${REPO_DIR}" && git diff --cached)"
+TEST29_DIFF_HASH="$(printf '%s\n%s\n' "${TEST29_SCRIPT_SHA}" "${TEST29_DIFF}" | shasum -a 256 | awk '{print $1}')"
+{
+  echo "PASS"
+  date -u +%Y-%m-%dT%H:%M:%SZ
+} >"${TEST29_CACHE_DIR}/adversarial-${TEST29_DIFF_HASH}"
+
+MOCK29_DIR="${TMPDIR_TEST}/mock29"
+mkdir -p "${MOCK29_DIR}"
+cat >"${MOCK29_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+if [[ "\$2" == *adversarial* ]]; then
+  echo "VERDICT: PASS
+
+No blocking issues found (live call)."
+else
+  echo "VERDICT: FAIL
+
+ISSUE: Some already-addressed finding from a prior round
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Placeholder prior-round content."
+fi
+exit 0
+EOF
+chmod +x "${MOCK29_DIR}/claude"
+
+TEST29_LOG="${TMPDIR_TEST}/test29-review.log"
+rm -f "${TEST29_LOG}"
+
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST29_LOG}" CLAUDE_CLI="${MOCK29_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+# Note: we can't use a "did adversarial-reviewer's mock run live" marker here --
+# the arbiter step (triggered by this same disagreement) always makes its own
+# live adversarial-reviewer call via a separate cache (ARBITER_CACHE), so such
+# a marker would be touched regardless of whether the parallel-phase cache was
+# bypassed. The log line is the only signal that distinguishes the two paths.
+test29_log_content="$(cat "${TEST29_LOG}")"
+adversarial_not_cached="true"
+[[ "${test29_log_content}" == *"VERDICT: PASS (cached)"* ]] && adversarial_not_cached="false"
+
+assert_eq \
+  "review log does not report a cached-PASS shortcut for adversarial-reviewer (claude-config#246)" \
+  "true" \
+  "${adversarial_not_cached}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 48 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 49 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
