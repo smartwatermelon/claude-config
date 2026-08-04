@@ -1359,12 +1359,131 @@ assert_contains \
   "Hardcoded path" \
   "${received25}"
 
+# Like make_mock_claude_by_agent, but differentiates three agent identities.
+# The real arbiter call reuses agent_name="adversarial-reviewer" (see
+# run-review.sh), so $2 alone cannot distinguish it from the real
+# adversarial-reviewer call — both would match "*adversarial*". Instead,
+# detect the arbiter call by its distinctive prompt content (piped on
+# stdin): the arbiter prompt contains "CODE-REVIEWER VERDICT" as a section
+# header, which never appears in the normal per-commit review prompt. Check
+# stdin content FIRST, before falling back to $2, so it takes precedence
+# over the "*adversarial*" branch.
+make_mock_claude_three_way() {
+  local mock_dir="$1" cr_output="$2" ar_output="$3" arbiter_output="$4"
+  mkdir -p "${mock_dir}"
+  printf '%s\n' "${cr_output}" >"${mock_dir}/cr_output.txt"
+  printf '%s\n' "${ar_output}" >"${mock_dir}/ar_output.txt"
+  printf '%s\n' "${arbiter_output}" >"${mock_dir}/arbiter_output.txt"
+  cat >"${mock_dir}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+_stdin_input="\$(cat)"
+if echo "\${_stdin_input}" | grep -q "CODE-REVIEWER VERDICT"; then
+  cat "${mock_dir}/arbiter_output.txt"
+elif [[ "\$2" == *adversarial* ]]; then
+  cat "${mock_dir}/ar_output.txt"
+else
+  cat "${mock_dir}/cr_output.txt"
+fi
+exit 0
+EOF
+  chmod +x "${mock_dir}/claude"
+}
+
+# =========================================================
+# TEST 26: arbiter overrides a code-reviewer BLOCKING FAIL when it sides
+# with adversarial-reviewer's PASS (dev-env#35)
+# =========================================================
+echo ""
+echo "=== Test 26: arbiter can override code-reviewer FAIL when adversarial-reviewer PASSes ==="
+
+setup_repo
+stage_small_change
+
+MOCK26_DIR="${TMPDIR_TEST}/mock26"
+make_mock_claude_three_way "${MOCK26_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Missing Linux platform guard
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Add a runtime OS check." \
+  "VERDICT: PASS
+
+No blocking issues found. Script header already states macOS-only scope." \
+  "VERDICT: PASS
+
+The adversarial-reviewer is correct: the script's header comment already
+documents macOS-only scope, so code-reviewer's finding does not apply."
+
+TEST26_LOG="${TMPDIR_TEST}/test26-review.log"
+rm -f "${TEST26_LOG}"
+
+exit_t26=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST26_LOG}" CLAUDE_CLI="${MOCK26_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t26=$?
+cd - >/dev/null
+
+assert_eq \
+  "arbiter PASS overrides code-reviewer BLOCKING FAIL (exit 0) - dev-env#35" \
+  "0" \
+  "${exit_t26}"
+
+# =========================================================
+# TEST 27: arbiter siding with code-reviewer still blocks the commit
+# =========================================================
+echo ""
+echo "=== Test 27: arbiter siding with code-reviewer still blocks commit ==="
+
+setup_repo
+stage_small_change
+
+MOCK27_DIR="${TMPDIR_TEST}/mock27"
+make_mock_claude_three_way "${MOCK27_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Hardcoded credential
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Remove the hardcoded credential." \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  "VERDICT: FAIL
+
+ISSUE: Hardcoded credential
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: code-reviewer is correct; adversarial-reviewer missed this."
+
+TEST27_LOG="${TMPDIR_TEST}/test27-review.log"
+rm -f "${TEST27_LOG}"
+
+exit_t27=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST27_LOG}" CLAUDE_CLI="${MOCK27_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t27=$?
+cd - >/dev/null
+
+assert_eq \
+  "arbiter siding with code-reviewer still blocks commit (exit 1)" \
+  "1" \
+  "${exit_t27}"
+
+test27_log_content="$(cat "${TEST27_LOG}")"
+assert_contains \
+  "arbiter ran for test 27 (not just coincidental pre-existing block)" \
+  "=== ARBITER" \
+  "${test27_log_content}"
+
 # =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 44 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 47 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then

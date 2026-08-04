@@ -61,6 +61,11 @@ set -euo pipefail
 CLAUDE_CLI="${CLAUDE_CLI:-${HOME}/.local/bin/claude}"
 TIMEOUT_SECONDS=$(git config --get --type=int review.timeout 2>/dev/null || echo "120")
 
+# Test-only escape hatch: skip gh issue filing entirely. Production runs
+# never set this; hooks/tests/run-review-test.sh sets it so tests don't
+# require gh auth or hit the real GitHub API.
+GH_ISSUE_FILING_DISABLED="${GH_ISSUE_FILING_DISABLED:-}"
+
 # Progressive review configuration (with git config overrides)
 REVIEW_MAX_LINES=$(git config --get --type=int review.maxLines 2>/dev/null || echo "1000")
 REVIEW_SKIP_THRESHOLD=$(git config --get --type=int review.skipThreshold 2>/dev/null || echo "2500")
@@ -127,6 +132,14 @@ fi
 ADVERSARIAL_MODEL=$(git config --get review.adversarialModel 2>/dev/null || echo "")
 [[ -n "${ADVERSARIAL_MODEL}" ]] || ADVERSARIAL_MODEL="claude-sonnet-4-6"
 ADVERSARIAL_MODEL_ARGS=(--model "${ADVERSARIAL_MODEL}")
+
+# Arbiter model: used only when code-reviewer and adversarial-reviewer
+# disagree (BLOCKING FAIL vs PASS) in commit mode. Defaults to the same
+# model as adversarial-reviewer since both need the bigger-model reasoning
+# the disagreement itself signals is warranted.
+ARBITER_MODEL=$(git config --get review.arbiterModel 2>/dev/null || echo "")
+[[ -n "${ARBITER_MODEL}" ]] || ARBITER_MODEL="claude-sonnet-4-6"
+ARBITER_MODEL_ARGS=(--model "${ARBITER_MODEL}")
 
 # --- Reviewer agent selection ---
 # Pinned to a fully-qualified plugin:agent name (git config review.codeReviewerAgent
@@ -300,6 +313,59 @@ invoke_agent() {
     echo "PASS" >"${cache_file}"
     date -u +%Y-%m-%dT%H:%M:%SZ >>"${cache_file}"
   fi
+}
+
+# Files a GitHub issue in smartwatermelon/claude-config (the reviewer
+# infrastructure's OWN repo — hardcoded, never REPO_OWNER/REPO_NAME, which
+# is the repo under review) logging a code-reviewer/adversarial-reviewer
+# disagreement and how the arbiter resolved it. Best-effort: never blocks
+# the commit regardless of gh auth state or API errors. dev-env#35's own
+# investigation asked for this so recurring disagreement patterns are
+# visible for future prompt/model tuning instead of silently resolved
+# and forgotten each time.
+file_reviewer_disagreement_issue() {
+  local cr_output="$1" ar_output="$2" arbiter_output="$3" arbiter_verdict="$4"
+
+  [[ -z "${GH_ISSUE_FILING_DISABLED}" ]] || return 0
+  command -v gh >/dev/null 2>&1 || return 0
+
+  local title="Reviewer disagreement: code-reviewer BLOCKING FAIL vs adversarial-reviewer PASS (arbiter: ${arbiter_verdict})"
+  local body
+  body=$(cat <<EOF
+## Reviewer disagreement (auto-logged by run-review.sh)
+
+**Repo under review:** ${REPO_OWNER:-unknown}/${REPO_NAME:-unknown}
+**Branch:** ${_review_branch:-unknown}
+**Commit:** ${_review_commit:-unknown}
+**Arbiter model:** ${ARBITER_MODEL}
+**Arbiter verdict:** ${arbiter_verdict}
+
+### code-reviewer output
+\`\`\`
+${cr_output}
+\`\`\`
+
+### adversarial-reviewer output
+\`\`\`
+${ar_output}
+\`\`\`
+
+### Arbiter reasoning
+\`\`\`
+${arbiter_output}
+\`\`\`
+
+---
+Filed automatically to track disagreement frequency and patterns for
+future code-reviewer prompt/model tuning. See smartwatermelon/dev-env#35.
+EOF
+)
+
+  gh issue create --repo "smartwatermelon/claude-config" \
+    --title "${title}" \
+    --body "${body}" \
+    --label "tech-debt" \
+    >/dev/null 2>&1 || true
 }
 
 # --- Helper Functions for Progressive Review ---
@@ -1348,8 +1414,71 @@ fi
 if [[ "${CODE_REVIEWER_VERDICT}" == "FAIL" ]]; then
   # Check if BLOCKING severity exists
   if echo "${CODE_REVIEWER_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
-    log_error "code-reviewer found blocking issues - commit rejected"
-    exit 1
+    # Reconciliation: if adversarial-reviewer (already a bigger model,
+    # already reasoning about failure modes) independently reached PASS,
+    # don't take code-reviewer's BLOCKING FAIL as final — ask a third
+    # agent to arbitrate rather than silently trusting either side.
+    # dev-env#35: non-convergent Haiku findings that adversarial-reviewer
+    # explicitly called "solid design choices" on the same diff.
+    if [[ "${ADVERSARIAL_AVAILABLE}" == true && "${ADVERSARIAL_VERDICT}" == "PASS" ]]; then
+      log_warn "code-reviewer BLOCKING FAIL disagrees with adversarial-reviewer PASS — arbitrating"
+
+      ARBITER_PROMPT="Two reviewers disagree on whether this diff is safe to commit. Read both verdicts and the diff, then decide which reviewer is correct.
+
+IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
+Do NOT output Protocol 0 environment check or any preamble.
+Begin your response directly with the verdict in the specified format below.
+
+=== CODE-REVIEWER VERDICT (found a BLOCKING issue) ===
+${CODE_REVIEWER_OUTPUT}
+
+=== ADVERSARIAL-REVIEWER VERDICT (found no blocking issue) ===
+${ADVERSARIAL_OUTPUT}
+
+=== DIFF UNDER REVIEW ===
+\`\`\`diff
+${DIFF}
+\`\`\`
+
+Decide: is code-reviewer's BLOCKING finding a genuine, currently-present issue in this diff, or is adversarial-reviewer correct that it doesn't apply (e.g. out of stated scope, already mitigated, a false positive)?
+
+CRITICAL: Respond with this exact format:
+
+VERDICT: [PASS or FAIL]
+
+[Explain which reviewer is correct and why, in 2-4 sentences.]
+
+[If VERDICT: FAIL, restate the still-blocking issue:]
+ISSUE: [one-line description]
+SEVERITY: BLOCKING
+LOCATION: [file:line]
+DETAILS: [explanation and fix]"
+
+      ARBITER_CACHE="${CACHE_DIR}/arbiter-${DIFF_HASH}"
+      ARBITER_OUTPUT=$(invoke_agent "adversarial-reviewer" "${ARBITER_PROMPT}" "${ARBITER_CACHE}" "${ARBITER_MODEL_ARGS[@]}") || true
+      [[ -n "${ARBITER_OUTPUT}" ]] || ARBITER_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
+
+      echo "=== ARBITER (reconciling code-reviewer vs adversarial-reviewer) ===" >&2
+      echo "${ARBITER_OUTPUT}" >&2
+      echo "" >&2
+      { printf '=== ARBITER ===\n%s\n' "${ARBITER_OUTPUT}"; } >>"${REVIEW_LOG}" || true
+
+      ARBITER_VERDICT=$(parse_verdict "${ARBITER_OUTPUT}")
+      [[ -n "${ARBITER_VERDICT}" ]] || ARBITER_VERDICT="FAIL"
+      printf 'arbiter: %s\n' "${ARBITER_VERDICT}" >>"${REVIEW_LOG}" || true
+
+      file_reviewer_disagreement_issue "${CODE_REVIEWER_OUTPUT}" "${ADVERSARIAL_OUTPUT}" "${ARBITER_OUTPUT}" "${ARBITER_VERDICT}"
+
+      if [[ "${ARBITER_VERDICT}" == "PASS" ]]; then
+        log_success "Arbiter sided with adversarial-reviewer — commit allowed"
+      else
+        log_error "Arbiter sided with code-reviewer - commit rejected"
+        exit 1
+      fi
+    else
+      log_error "code-reviewer found blocking issues - commit rejected"
+      exit 1
+    fi
   else
     log_warn "code-reviewer found warnings (non-blocking)"
     # Continue to adversarial if security-critical
