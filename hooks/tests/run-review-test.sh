@@ -1300,11 +1300,71 @@ assert_contains \
   "${received}"
 
 # =========================================================
+# TEST 25: round-over-round feedback is injected on a retry after a FAIL
+# (dev-env#35 — code-reviewer re-litigated already-addressed findings
+# with a different remedy each round because each --no-session-persistence
+# call started from zero)
+# =========================================================
+echo ""
+echo "=== Test 25: prior-round FAIL feedback is injected into the retry prompt ==="
+
+setup_repo
+stage_small_change
+
+MOCK25A_DIR="${TMPDIR_TEST}/mock25a"
+make_mock_claude "${MOCK25A_DIR}" 0 "VERDICT: FAIL
+
+ISSUE: Hardcoded path
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Use \$HOME instead of a literal path."
+
+TEST25_LOG="${TMPDIR_TEST}/test25-review.log"
+rm -f "${TEST25_LOG}"
+
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST25_LOG}" CLAUDE_CLI="${MOCK25A_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+# Second round: same branch, same changed file (foo.sh) — simulates a retry
+# after an edit that didn't fully address round 1's finding. Mock records
+# the prompt it receives.
+MOCK25B_DIR="${TMPDIR_TEST}/mock25b"
+mkdir -p "${MOCK25B_DIR}"
+cat >"${MOCK25B_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+cat >> "${MOCK25B_DIR}/received_prompt.txt"
+echo "VERDICT: PASS
+
+No blocking issues found."
+exit 0
+EOF
+chmod +x "${MOCK25B_DIR}/claude"
+rm -f "${MOCK25B_DIR}/received_prompt.txt"
+
+cd "${REPO_DIR}"
+echo "echo round2edit" >>foo.sh
+git add foo.sh
+REVIEW_LOG="${TEST25_LOG}" CLAUDE_CLI="${MOCK25B_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+received25="$(cat "${MOCK25B_DIR}/received_prompt.txt" 2>/dev/null || echo "")"
+
+assert_contains \
+  "retry prompt includes round 1's BLOCKING finding (dev-env#35)" \
+  "Hardcoded path" \
+  "${received25}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 43 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 44 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then

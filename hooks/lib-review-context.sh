@@ -53,3 +53,56 @@ extract_file_header_context() {
     { exit }                                 # first non-comment, non-blank line ends header
   ' "${file}" 2>/dev/null || true
 }
+
+# Derive a stable cache key for round-over-round feedback tracking. Diff
+# hashes change on every retry (the developer edits the code), so DIFF_HASH
+# can't key this — key on the more stable "which branch, which files are
+# in flight" identity instead. Args: $1 = CHANGED_FILES (newline-separated).
+round_history_key() {
+  local changed_files="$1"
+  local branch
+  local hash
+  branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+  hash=$(printf '%s\n%s\n' "${branch}" "$(printf '%s\n' "${changed_files}" | sort)" \
+    | shasum -a 256 2>/dev/null | awk '{print $1}')
+  printf '%s\n' "${hash:-noround}"
+}
+
+# Append a FAIL round's raw output to the history file, capped at the last
+# 2 rounds (oldest dropped). Args: $1 = history file path, $2 = round output.
+# Uses null-byte separation for safety (round_output cannot contain \0).
+write_round_feedback() {
+  local history_file="$1"
+  local round_output="$2"
+
+  local existing=""
+  [[ -f "${history_file}" ]] && existing=$(cat "${history_file}")
+
+  {
+    if [[ -n "${existing}" ]]; then
+      # Keep only the LAST round from what's already there (so appending
+      # this one caps total retained rounds at 2). Use null-byte separator
+      # for safety: review output cannot contain \0, eliminating injection risk.
+      # Parse rounds via bash array expansion, not awk regex.
+      local -a rounds
+      IFS=$'\0' read -ra rounds <<<"${existing}"
+      # If we have multiple rounds, print only the last one (index [-1]).
+      if [[ ${#rounds[@]} -gt 1 ]]; then
+        printf '%s\0' "${rounds[-1]}"
+      fi
+    fi
+    printf '%s\n' "${round_output}"
+  } >"${history_file}.tmp" && mv "${history_file}.tmp" "${history_file}"
+}
+
+# Echo a history file's contents verbatim; empty string if missing.
+read_round_feedback() {
+  local history_file="$1"
+  [[ -f "${history_file}" ]] && cat "${history_file}" || true
+}
+
+# Remove a round-history file (called on PASS to reset for future runs).
+clear_round_feedback() {
+  local history_file="$1"
+  rm -f "${history_file}"
+}

@@ -1121,6 +1121,13 @@ fi
 # Build cache keys
 CODE_REVIEWER_CACHE="${CACHE_DIR}/code-reviewer-${DIFF_HASH}"
 ADVERSARIAL_CACHE="${CACHE_DIR}/adversarial-${DIFF_HASH}"
+ROUND_HISTORY_KEY=$(round_history_key "${CHANGED_FILES}")
+ROUND_HISTORY_FILE=""
+if [[ "${ROUND_HISTORY_KEY}" != "noround" ]]; then
+  ROUND_HISTORY_FILE="${CACHE_DIR}/round-history-${ROUND_HISTORY_KEY}"
+else
+  log_warn "Could not compute round-history key; reviews on this run will not carry prior feedback"
+fi
 
 # Build structured prompt for agents
 # Use string concatenation - safe variable expansion without command execution
@@ -1148,6 +1155,31 @@ ${FILE_CONTEXT_SECTION}---
 fi
 unset _cf _cf_header
 
+# Inject prior-round feedback from a failed review attempt on this branch/file-set.
+# Each --no-session-persistence invocation starts from zero, so a FAILed round's
+# findings were forgotten by the next retry. Track up to the last 2 rounds and
+# inject them so retries build on prior findings instead of re-litigating.
+PRIOR_ROUND_SECTION=""
+if [[ -n "${ROUND_HISTORY_FILE}" ]]; then
+  _prior_feedback=$(read_round_feedback "${ROUND_HISTORY_FILE}")
+  if [[ -n "${_prior_feedback}" ]] && grep -qE "^VERDICT: (PASS|FAIL|REVISE)" <<<"${_prior_feedback}"; then
+    # Validate history format before injection (must contain a recognized verdict).
+    # This prevents corrupted or malformed history from confusing the reviewer's prompt parsing.
+    # Check that content is mostly printable (no binary junk from corrupted write).
+    if [[ $(printf '%s' "${_prior_feedback}" | tr -cd '[:print:]\n\t' | wc -c) -ge $(printf '%s' "${_prior_feedback}" | wc -c) ]]; then
+      PRIOR_ROUND_SECTION="PRIOR ROUND FEEDBACK (from up to 2 previous FAILed review attempts on this branch/file-set — do NOT re-flag an issue below unless it is still genuinely present in the current diff; do not propose a different remedy for something already addressed):
+${_prior_feedback}
+---
+
+"
+    else
+      log_warn "History file appears corrupted; discarding"
+      clear_round_feedback "${ROUND_HISTORY_FILE}"
+    fi
+  fi
+  unset _prior_feedback
+fi
+
 # Inject the developer's commit message (when available) so the reviewer sees
 # intent before code. Same pattern as the chunked path; section is omitted
 # entirely when no message is available.
@@ -1162,7 +1194,7 @@ else
   COMMIT_MSG_SECTION=""
 fi
 
-AGENT_PROMPT="${FILE_CONTEXT_SECTION}${COMMIT_MSG_SECTION}You are performing a pre-commit code review. Analyze the diff below and identify issues BEFORE code is committed.
+AGENT_PROMPT="${PRIOR_ROUND_SECTION}${FILE_CONTEXT_SECTION}${COMMIT_MSG_SECTION}You are performing a pre-commit code review. Analyze the diff below and identify issues BEFORE code is committed.
 
 IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
 Do NOT output Protocol 0 environment check or any preamble.
@@ -1281,6 +1313,18 @@ if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
     log_error "Output was:"
     echo "${ADVERSARIAL_OUTPUT}" | head -20 >&2
     exit 1
+  fi
+fi
+
+# Write/clear round-history bookkeeping based on code-reviewer verdict.
+# PASS: clear history (reset for future runs on this branch+file-set).
+# FAIL: append output so next retry inherits prior findings.
+# Only operate on history file if key computation succeeded (ROUND_HISTORY_FILE is set).
+if [[ -n "${ROUND_HISTORY_FILE}" ]]; then
+  if [[ "${CODE_REVIEWER_VERDICT}" == "PASS" ]]; then
+    clear_round_feedback "${ROUND_HISTORY_FILE}"
+  else
+    write_round_feedback "${ROUND_HISTORY_FILE}" "${CODE_REVIEWER_OUTPUT}"
   fi
 fi
 
