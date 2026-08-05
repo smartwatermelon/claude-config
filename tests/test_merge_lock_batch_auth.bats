@@ -6,10 +6,13 @@ SCRIPT="${BATS_TEST_DIRNAME}/../hooks/merge-lock.sh"
 
 setup() {
   TMP_HOME="$(mktemp -d)"
+  readonly TMP_HOME
   export HOME="${TMP_HOME}"
 }
 
 teardown() {
+  # TMP_HOME is readonly so a test can't reassign it out from under teardown,
+  # even if it reassigns HOME mid-test (see #116).
   rm -rf "${TMP_HOME}"
 }
 
