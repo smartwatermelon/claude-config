@@ -1524,8 +1524,10 @@ fi
 if [[ "${ADVERSARIAL_VERDICT}" == "FAIL" ]]; then
   # Transient infrastructure failures (timeout, CLI crash) produce "VERDICT: FAIL (timeout)"
   # or "VERDICT: FAIL (agent error: N)" with no SEVERITY: BLOCKING — treat as non-blocking,
-  # consistent with how code-reviewer handles the same case.
-  if echo "${ADVERSARIAL_OUTPUT}" | grep -qE "VERDICT: FAIL \((timeout|agent error)"; then
+  # consistent with how code-reviewer handles the same case. Also matches a
+  # "Revise (...)" form in case a future synthetic transient error is ever
+  # phrased that way instead of "FAIL (...)" (#172).
+  if echo "${ADVERSARIAL_OUTPUT}" | grep -qE "VERDICT: (FAIL|Revise) \((timeout|agent error)"; then
     log_warn "adversarial-reviewer timed out or errored — non-blocking (infrastructure failure)"
   elif echo "${ADVERSARIAL_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
     # Symmetric with the code-reviewer gate above: only a BLOCKING severity

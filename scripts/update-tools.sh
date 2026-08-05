@@ -50,7 +50,7 @@ fi
 
 _info "Updating submodules..."
 
-if git -C "${REPO_DIR}" submodule status --quiet 2>/dev/null; then
+if git -C "${REPO_DIR}" config --file .gitmodules --get-regexp path >/dev/null 2>&1; then
   git -C "${REPO_DIR}" submodule sync
   git -C "${REPO_DIR}" submodule update --remote --merge
   _ok "Submodules updated"

@@ -25,9 +25,9 @@ Many protocols are enforced by git hooks and scripts:
 | Deployment safety | deploy-commons.sh | `~/.claude/lib/deploy-commons.sh` |
 | Branch cleanup | audit-branches.sh | `~/.claude/scripts/audit-branches.sh` |
 
-**Key Point**: If hooks block an operation, it means a protocol was violated. `--no-verify` is BLOCKED by Claude Code hooks. Emergency bypass (human only): Human must run commit manually.
+**Key Point**: If hooks block an operation, it means a protocol was violated. `--no-verify` is BLOCKED by Claude Code hooks. Emergency override (human only): Human must run commit manually.
 
-**When a hook blocks your commit**: Go back and rework the code — do not ask the human to override. See CODE-REVIEW.md § "When Reviews Find Issues — Rework, Don't Override" for the full escalation ladder. Only after 3+ genuine rework attempts with no viable path forward should you present the findings and ask if the human wants to bypass.
+**When a hook blocks your commit**: Go back and rework the code — do not ask the human to override. See CODE-REVIEW.md § "When Reviews Find Issues — Rework, Don't Override" for the full escalation ladder. Only after 3+ genuine rework attempts with no viable path forward should you present the findings and ask if the human wants to override.
 
 ---
 
