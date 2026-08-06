@@ -160,3 +160,4 @@ See `CLAUDE.md` for protocol documentation.
 - claude-code-workflows: <https://github.com/smartwatermelon/claude-code-workflows-agents> (fork of wshobson/agents)
 - Personify skill: <https://github.com/smartwatermelon/personify>
 - pr-review skill: <https://github.com/smartwatermelon/pr-review>
+# Token permission test — 2026-08-06T15:13:00Z
