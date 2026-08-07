@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset CDPATH
 
 # =========================================================
 # run-review.sh — Automated code review via Claude CLI
