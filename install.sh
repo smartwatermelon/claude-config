@@ -6,6 +6,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 
 set -euo pipefail
+unset CDPATH
 
 # ~/Developer/claude-config/install.sh
 # Idempotent symlink installer for Claude Code configuration.
