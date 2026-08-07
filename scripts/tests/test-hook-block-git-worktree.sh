@@ -26,23 +26,43 @@ make_input() {
 
 echo "=== hook-block-git-worktree tests ==="
 
-# Should BLOCK (exit 2)
+# Should BLOCK (exit 2) — mutating subcommands, bare worktree, unknown subcommands
 inp="$(make_input 'git worktree add /tmp/wt feature')"
 check "git worktree add" 2 "${inp}"
-inp="$(make_input 'git worktree list')"
-check "git worktree list" 2 "${inp}"
 inp="$(make_input 'git worktree remove /tmp/wt')"
 check "git worktree remove" 2 "${inp}"
 inp="$(make_input 'git worktree prune')"
 check "git worktree prune" 2 "${inp}"
+inp="$(make_input 'git worktree move /tmp/wt /tmp/wt2')"
+check "git worktree move" 2 "${inp}"
+inp="$(make_input 'git worktree lock /tmp/wt')"
+check "git worktree lock" 2 "${inp}"
+inp="$(make_input 'git worktree unlock /tmp/wt')"
+check "git worktree unlock" 2 "${inp}"
+inp="$(make_input 'git worktree repair')"
+check "git worktree repair" 2 "${inp}"
+inp="$(make_input 'git worktree')"
+check "bare git worktree (no subcommand)" 2 "${inp}"
+inp="$(make_input 'git worktree unknownfuturesubcommand')"
+check "git worktree unknown subcommand (fail closed)" 2 "${inp}"
 inp="$(make_input 'git -C /some/path worktree add /tmp/wt')"
 check "git -C /path worktree add" 2 "${inp}"
-inp="$(make_input 'git --no-pager worktree list')"
-check "git --no-pager worktree list" 2 "${inp}"
+inp="$(make_input 'git --no-pager worktree add /tmp/wt')"
+check "git --no-pager worktree add" 2 "${inp}"
 inp="$(make_input 'cd /repo && git worktree add /tmp/wt')"
-check "chained: cd && git worktree" 2 "${inp}"
+check "chained: cd && git worktree add" 2 "${inp}"
 
-# Should PASS (exit 0)
+# Should PASS (exit 0) — read-only/inspection subcommands
+inp="$(make_input 'git worktree list')"
+check "git worktree list" 0 "${inp}"
+inp="$(make_input 'git worktree --help')"
+check "git worktree --help" 0 "${inp}"
+inp="$(make_input 'git worktree -h')"
+check "git worktree -h" 0 "${inp}"
+inp="$(make_input 'git -C /some/path worktree list')"
+check "git -C /path worktree list (interposed flag)" 0 "${inp}"
+inp="$(make_input 'cd /repo && git worktree list')"
+check "chained: cd && git worktree list" 0 "${inp}"
 inp="$(make_input 'git commit -m msg')"
 check "git commit" 0 "${inp}"
 inp="$(make_input 'git checkout -b worktree-fix')"
@@ -52,13 +72,21 @@ check "echo about worktree" 0 "${inp}"
 inp="$(make_input 'brew update')"
 check "unrelated command" 0 "${inp}"
 
-# Additional operator-chaining BLOCK cases
+# Additional operator-chaining cases (read-only allowed through even when chained)
 inp="$(make_input 'ls; git worktree list')"
-check "chained: ; git worktree" 2 "${inp}"
+check "chained: ; git worktree list" 0 "${inp}"
 inp="$(make_input 'true || git worktree list')"
-check "chained: || git worktree" 2 "${inp}"
+check "chained: || git worktree list" 0 "${inp}"
+inp="$(make_input 'echo x | git worktree list')"
+check "chained: | git worktree list" 0 "${inp}"
+
+# Additional operator-chaining BLOCK cases (mutating still blocked when chained)
+inp="$(make_input 'ls; git worktree add /tmp/wt')"
+check "chained: ; git worktree add" 2 "${inp}"
+inp="$(make_input 'true || git worktree prune')"
+check "chained: || git worktree prune" 2 "${inp}"
 inp="$(make_input 'echo x | git worktree add')"
-check "chained: | git worktree" 2 "${inp}"
+check "chained: | git worktree add" 2 "${inp}"
 
 # False-positive guard: git grep searching for "worktree" string
 inp="$(make_input 'git grep worktree')"
