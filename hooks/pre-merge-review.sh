@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset CDPATH
 
 # =========================================================
 # pre-merge-review.sh — Analyze PR reviews before merge
