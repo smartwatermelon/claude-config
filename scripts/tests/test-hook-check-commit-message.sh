@@ -2,6 +2,7 @@
 # Tests for hook-check-commit-message.sh
 
 set -euo pipefail
+unset CDPATH
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hook-check-commit-message.sh"
 pass=0
