@@ -92,6 +92,20 @@ check "chained: | git worktree add" 2 "${inp}"
 inp="$(make_input 'git grep worktree')"
 check "git grep worktree (not blocked)" 0 "${inp}"
 
+# Multi-invocation compound commands: a read-only occurrence must not mask a
+# mutating one elsewhere in the same command string (regression for the
+# single-match bypass caught in PR review — see smartwatermelon/claude-config#268).
+inp="$(make_input 'git worktree list && git worktree add /tmp/wt')"
+check "compound: list && add (must still block)" 2 "${inp}"
+inp="$(make_input 'git worktree list | git worktree add /tmp/wt')"
+check "compound: list | add (must still block)" 2 "${inp}"
+inp="$(make_input 'git worktree add /tmp/wt && git worktree list')"
+check "compound: add && list, mutating first (must still block)" 2 "${inp}"
+inp="$(make_input 'git worktree list ; git worktree remove /tmp/wt')"
+check "compound: list ; remove (must still block)" 2 "${inp}"
+inp="$(make_input 'git worktree list && git worktree --help')"
+check "compound: list && --help, both read-only (must pass)" 0 "${inp}"
+
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]
