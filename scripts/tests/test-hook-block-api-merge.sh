@@ -2,6 +2,7 @@
 # Tests for hook-block-api-merge.sh
 
 set -euo pipefail
+unset CDPATH
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hook-block-api-merge.sh"
 pass=0

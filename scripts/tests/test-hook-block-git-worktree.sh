@@ -2,6 +2,7 @@
 # Tests for hook-block-git-worktree.sh
 
 set -euo pipefail
+unset CDPATH
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hook-block-git-worktree.sh"
 pass=0
