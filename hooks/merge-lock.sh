@@ -2,6 +2,7 @@
 # ~/.claude/hooks/merge-lock.sh
 # Merge authorization lock - requires human to authorize before agent can merge
 set -euo pipefail
+unset CDPATH
 
 LOCK_DIR="${HOME}/.claude/merge-locks"
 LOCK_TTL_SECONDS=1800 # 30 minutes
