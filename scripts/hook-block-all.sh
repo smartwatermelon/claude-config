@@ -3,6 +3,7 @@
 # Keeps settings.json clean by consolidating block checks
 
 set -euo pipefail
+unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
