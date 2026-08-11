@@ -223,27 +223,11 @@ if [[ -n "${GH_REPO_OVERRIDE}" ]]; then
   REPO_FLAG=(--repo "${GH_REPO_OVERRIDE}")
 fi
 
-# --- Non-interactive flag gate ---
-# When invoked from Claude Code (CLAUDECODE set), require --squash and --delete-branch.
-# Without them the actual merge step will fail, wasting a full analysis cycle.
-if [[ -n "${CLAUDECODE:-}" ]]; then
-  _has_squash=false
-  _has_delete_branch=false
-  for _arg in "$@"; do
-    case "${_arg}" in
-      --squash) _has_squash=true ;;
-      --delete-branch) _has_delete_branch=true ;;
-      *) ;;
-    esac
-  done
-  if [[ "${_has_squash}" != "true" || "${_has_delete_branch}" != "true" ]]; then
-    log_error "Non-interactive merge requires --squash and --delete-branch"
-    log_error "Retry with: gh pr merge ${PR_NUMBER:-<PR>} --squash --delete-branch"
-    exit 1
-  fi
-fi
-
 # --- Fetch PR data ---
+# PR_NUMBER must be resolved (either parsed from args above, or fetched here
+# from the API when the caller relies on branch tracking) BEFORE the merge-lock
+# authorization check below: merge-lock.sh check "" is a usage error, not an
+# "unauthorized" result, and would falsely block an already-authorized merge.
 log_info "Fetching PR review data..."
 
 PR_JSON_FIELDS="number,title,state,reviews,comments,reviewDecision,statusCheckRollup"
@@ -298,8 +282,11 @@ STATUS_CHECKS=$(echo "${PR_JSON}" | jq -r '.statusCheckRollup // [] | if length 
 log_info "PR #${PR_NUMBER}: ${PR_TITLE}"
 log_info "Review decision: ${REVIEW_DECISION}"
 
-# --- Merge Authorization Lock (early check — before Claude CLI) ---
-# Authorization is checked here, BEFORE running the expensive Claude analysis.
+# --- Merge Authorization Lock (early check — before flag gate, before Claude CLI) ---
+# Authorization is checked here, BEFORE the non-interactive flag gate and before
+# running the expensive Claude analysis. Authorization is the more fundamental
+# gate: if the human hasn't authorized the merge, telling them to add
+# --squash --delete-branch first is not useful.
 #
 # Background: when pre-merge-review.sh spawns the claude CLI, the Claude Code
 # Bash tool stops surfacing output in the tool result (a known interaction
@@ -309,6 +296,11 @@ log_info "Review decision: ${REVIEW_DECISION}"
 #
 # After the early check passes, the SAFE_TO_MERGE block at the bottom no longer
 # needs to re-check (authorization is already verified for this session).
+#
+# Must run after PR_NUMBER is resolved above (either parsed from args or
+# fetched from the API): merge-lock.sh check "" is a usage error, not an
+# "unauthorized" result, and would falsely block an already-authorized merge
+# for the branch-tracking invocation (no explicit PR number on the CLI).
 MERGE_LOCK="${HOME}/.claude/hooks/merge-lock.sh"
 if [[ -x "${MERGE_LOCK}" ]]; then
   if ! "${MERGE_LOCK}" check "${PR_NUMBER}" >/dev/null 2>&1; then
@@ -334,6 +326,28 @@ fi
 
 # Track lock file path for dedup guard below (empty if merge-lock is not in use)
 MERGE_LOCK_FILE="${HOME}/.claude/merge-locks/pr-${PR_NUMBER}.lock"
+
+# --- Non-interactive flag gate ---
+# When invoked from Claude Code (CLAUDECODE set), require --squash and --delete-branch.
+# Without them the actual merge step will fail, wasting a full analysis cycle.
+# Runs after the merge-lock check above: authorization is the more fundamental
+# gate, so an unauthorized merge fails on that message rather than this one.
+if [[ -n "${CLAUDECODE:-}" ]]; then
+  _has_squash=false
+  _has_delete_branch=false
+  for _arg in "$@"; do
+    case "${_arg}" in
+      --squash) _has_squash=true ;;
+      --delete-branch) _has_delete_branch=true ;;
+      *) ;;
+    esac
+  done
+  if [[ "${_has_squash}" != "true" || "${_has_delete_branch}" != "true" ]]; then
+    log_error "Non-interactive merge requires --squash and --delete-branch"
+    log_error "Retry with: gh pr merge ${PR_NUMBER:-<PR>} --squash --delete-branch"
+    exit 1
+  fi
+fi
 
 # --- Hard block: CHANGES_REQUESTED review state (issue #27) ---
 # Do NOT delegate review state enforcement to Claude. Claude can rationalize
