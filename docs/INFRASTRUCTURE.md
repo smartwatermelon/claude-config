@@ -112,7 +112,7 @@ running underneath it has previously caused the classifier to override Plan Mode
 conflicting "execute immediately" behavior (see upstream Claude Code changelog).
 Keeping this `false` means every action during planning stays gated on an explicit
 human decision, consistent with this config's broader preference for explicit
-checkpoints (Protocol 6's two-step PR authorization, etc.) over auto-approval.
+checkpoints (Protocol 6's merge-lock authorization, etc.) over auto-approval.
 
 ---
 

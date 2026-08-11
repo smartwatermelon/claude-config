@@ -81,6 +81,19 @@ On main? Stop. Create a branch. Do not proceed.
 
 Use specialized agents proactively, not as a last resort. See `~/.claude/docs/REFERENCE.md` for the agent table.
 
+**Dispatching investigation-only agents:** when a task is explicitly
+read-only/triage-only, state the boundary as an unambiguous negative
+constraint, not a soft description of intent:
+
+  "Do not call Edit, Write, git commit, git push, or gh pr create under any
+  circumstance — not even for changes that look small, obvious, or clearly
+  in-scope. If you find a fix worth making, report it in your findings; do
+  not make it."
+
+Soft phrasing ("read-only investigation", "just triage") leaves room for an
+agent to conclude a specific action falls outside the restriction because it
+seemed like an obvious win. The explicit-negative form doesn't.
+
 ---
 
 ### Protocol 3: Keep Tests in Sync
@@ -115,6 +128,13 @@ After committing, verify the hook ran: `head -6 $(git rev-parse --git-dir)/last-
 
 **Push only after both reviewers are clean.** Full checklists: `~/.claude/docs/CHECKLISTS.md`
 
+**Verifying agent claims:** any agent statement of the form "I did X" or "X
+is now true" — especially a claim that a human already authorized or
+reviewed something — must be checked against live `gh`/`git` state before
+being acted on or relayed to the user. This applies to sub-agent self-reports
+and to your own prior claims within a session. Do not propagate an
+unverified claim into a summary presented as fact.
+
 ---
 
 ### Protocol 5: Post-Push CI/CD Monitoring
@@ -131,24 +151,26 @@ Full procedure: `~/.claude/docs/CHECKLISTS.md` (Post-Push Procedure)
 
 ### Protocol 6: PR Lifecycle
 
-**Creating a PR and merging a PR are ALWAYS two separate turns requiring two separate explicit authorizations.**
+Agents may investigate, fix, commit, push, and open PRs autonomously as part of
+normal work — no checkpoint required before PR creation. The only hard stop is
+before merge.
 
-```
-Step 1: gh pr create → report PR URL → STOP. Wait.
-Step 2: CI runs → report CI status → STOP. Wait.
-Step 3: Human says "merge it" for that specific PR → gh pr merge → STOP.
-Step 4: Post-merge cleanup → return to clean main.
-```
+- Any newly created PR MUST be proactively surfaced to the user in the same
+  turn/response that follows its creation — never left for the user to
+  discover by asking. State repo, PR number, URL, and one line on what it
+  addresses.
+- Merge requires: CI green + prior `merge-lock.sh authorize <PR#> "ok"` from the user
+  (30 min TTL). This step is unchanged and still technically enforced by
+  merge-lock.sh's PreToolUse hooks.
+- Only allowed merge command: `gh pr merge <number> --squash --delete-branch`.
+- Post-merge cleanup (switch to main, pull, delete local branch, `git status`
+  check) still applies after every merge.
 
-"Merge it" does not authorize skipping CI, review, or the merge-lock.
-
-**Only allowed merge command:** `gh pr merge <number> --squash --delete-branch` (routes through pre-merge-review.sh)
-
-PR merge requires prior `merge-lock auth <PR#> "ok"` from the user; wait for explicit approval before merging.
+"Merge it" does not authorize skipping CI, review, or the merge-lock. The allowed merge command routes through pre-merge-review.sh.
 
 If `gh pr merge` fails: report the failure, ask the human to merge manually. Never use REST API, GraphQL, or workarounds. These are blocked by hooks. Enforcement details: `~/.claude/docs/INFRASTRUCTURE.md`
 
-**Post-merge cleanup (Step 4):** After a successful merge, leave the workspace clean on main:
+**Post-merge cleanup:** After a successful merge, leave the workspace clean on main:
 
 ```bash
 git switch main
@@ -222,6 +244,7 @@ Before declaring work done, output the full Completion Verification template fro
 - Merging to main
 - Irreversible operations (schema changes, data deletion, public APIs)
 - Creating public GitHub repositories
+- Setting `STRICT_PREPUSH=0` for a specific push when local review is genuinely blocking — ask in that specific conversation; never set it without asking, and never treat a past instance of permission as standing/reusable authorization for future pushes. Details: `~/.claude/docs/HUMAN-BYPASS.md`
 
 ### Verification Discipline
 
