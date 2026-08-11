@@ -57,6 +57,8 @@ STRICT_PREPUSH=0 git push
 
 **What this gates:** the pre-push hook (`git/hooks/pre-push` in dotfiles) runs four non-interactive blocking review paths when a push happens inside Claude Code non-interactively (`CLAUDECODE=1`, stdin not a tty): the Semgrep supply-chain scan, Semgrep static analysis, the full-diff/codebase review, and a Protocol-4-equivalent PR-iteration checkpoint. `STRICT_PREPUSH=0` opts the push out of all four at once.
 
+> **Drift risk:** the hook this section describes lives in an external dotfiles repo, not in this one — this repo has no version control over it and can't detect if it changes. This description reflects `git/hooks/pre-push` as of dotfiles commit `05c56a61bc0105e84aeb07b85bd944c2ed9cbe33` (2026-08-11). If actual behavior doesn't match what's described here, check `~/.config/git/hooks/pre-push` (symlinked to the dotfiles repo) directly rather than trusting this doc.
+
 **How it differs from `--no-verify`:** `--no-verify` is hook-blocked for the agent — a Claude Code `PreToolUse` hook intercepts and refuses the command before it runs. `STRICT_PREPUSH=0` is **not** currently intercepted by any hook. Nothing technically stops the agent from setting this environment variable and pushing. The distinction matters: everywhere else in this doc, "not available to the agent" is a technical fact. Here it is not.
 
 **The rule, because enforcement is behavioral, not technical:**
