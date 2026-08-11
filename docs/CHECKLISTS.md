@@ -50,6 +50,11 @@
     git diff main..HEAD | claude --agent adversarial-reviewer -p --tools ""
   Per-commit subagent reviews only cover incremental diffs — cross-cutting issues
   visible only across the full feature surface will be missed otherwise.
+□ Branch is current with base (soft recommendation, not a hard gate):
+    git fetch origin && git rebase origin/main   # or origin/<default-branch>
+  Prevents GitHub's "branch out of date" banner. Skip when the branch is
+  already current, shared/collaborative, or under active review where
+  rebasing would invalidate in-progress review comments — use judgment.
 □ Tests pass IN SIMULATOR (for mobile) or local environment
 □ Linting and type checking clean locally
 □ You are CONFIDENT this will pass CI, not just hopeful
