@@ -244,7 +244,7 @@ Before declaring work done, output the full Completion Verification template fro
 - Merging to main
 - Irreversible operations (schema changes, data deletion, public APIs)
 - Creating public GitHub repositories
-- Setting `STRICT_PREPUSH=0` for a specific push when local review is genuinely blocking — ask in that specific conversation; never set it without asking, and never treat a past instance of permission as standing/reusable authorization for future pushes. Details: `docs/HUMAN-BYPASS.md`
+- Setting `STRICT_PREPUSH=0` for a specific push when local review is genuinely blocking — ask in that specific conversation; never set it without asking, and never treat a past instance of permission as standing/reusable authorization for future pushes. Details: `~/.claude/docs/HUMAN-BYPASS.md`
 
 ### Verification Discipline
 
