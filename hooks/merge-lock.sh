@@ -35,6 +35,27 @@ create_merge_lock() {
   echo -e "${GREEN}[merge-lock]${NC} Lock file: ${lock_file}"
 }
 
+purge_expired_locks() {
+  local now
+  now=$(date +%s)
+  local lock_file
+  for lock_file in "${LOCK_DIR}"/*.lock; do
+    [[ ! -f "${lock_file}" ]] && continue
+
+    local timestamp
+    timestamp=$(grep "^TIMESTAMP=" "${lock_file}" | cut -d= -f2)
+    [[ -z "${timestamp}" ]] && continue
+
+    local age=$((now - timestamp))
+    if [[ ${age} -gt ${LOCK_TTL_SECONDS} ]]; then
+      local pr
+      pr=$(grep "^PR_NUMBER=" "${lock_file}" | cut -d= -f2 || true)
+      rm -f "${lock_file}"
+      echo -e "${YELLOW}[merge-lock]${NC} Purged expired lock for PR #${pr:-?}"
+    fi
+  done
+}
+
 check_merge_lock() {
   local pr_number="$1"
   local lock_file="${LOCK_DIR}/pr-${pr_number}.lock"
@@ -158,6 +179,7 @@ case "${1:-help}" in
       echo "Usage: $0 check <pr_number>"
       exit 1
     fi
+    purge_expired_locks
     if check_merge_lock "$2"; then
       echo "Authorized"
       exit 0
@@ -171,9 +193,11 @@ case "${1:-help}" in
       echo "Usage: $0 status <pr_number>"
       exit 1
     fi
+    purge_expired_locks
     show_status "$2"
     ;;
   list)
+    purge_expired_locks
     list_locks
     ;;
   *)
