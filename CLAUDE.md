@@ -170,6 +170,8 @@ before merge.
 
 If `gh pr merge` fails: report the failure, ask the human to merge manually. Never use REST API, GraphQL, or workarounds. These are blocked by hooks. Enforcement details: `~/.claude/docs/INFRASTRUCTURE.md`
 
+**Off-org PRs are force-created as drafts — this is expected, not an error.** `gh pr create` targeting a repo whose owner is not `smartwatermelon` or `nightowlstudiollc` is hard-forced to `--draft` by `gh-wrapper.sh`, mechanically — no opt-out, no env var escape hatch (`smartwatermelon/dotfiles#174`/`#175`). If a PR you just opened comes back as a draft and you didn't ask for that, this is why. Do not treat it as a bug and do not attempt to work around it in any way. Surface the draft PR to the user as usual (repo, number, URL, one line on what it addresses) and note it's a draft pending the human's discretion — only the human promotes it out of draft, via the GitHub UI.
+
 **Post-merge cleanup:** After a successful merge, leave the workspace clean on main:
 
 ```bash
