@@ -33,6 +33,7 @@ tasks
 telemetry
 todos
 skills
+uploads
 
 # Files
 .claude.json
