@@ -78,7 +78,7 @@ This enforcement exists because of two incidents on 2026-02-24:
 
 **Why**: an automated agent should not be able to open a fully "submitted" PR against a repo outside the two orgs this environment is scoped to. The human operator remains free to promote the PR out of draft afterward, at their discretion, via the GitHub UI — the wrapper only governs creation time, not later state. See `smartwatermelon/dotfiles#174` (design) and `#175` (implementation).
 
-**If an agent hits this**: a draft PR on an off-org repo is expected behavior, not a bug. Do not attempt to work around it — not via `gh pr edit --ready`/`gh pr ready`, not via REST/GraphQL, not by invoking the real `gh` binary directly to bypass the wrapper (defeats the same purpose as the merge-bypass blocking above). Surface it to the user as a draft PR and stop there.
+**If an agent hits this**: a draft PR on an off-org repo is expected behavior, not a bug. Do not attempt to work around it in any way. Surface it to the user as a draft PR and stop there.
 
 ---
 
