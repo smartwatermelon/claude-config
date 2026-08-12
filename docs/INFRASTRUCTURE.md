@@ -21,6 +21,7 @@ Many protocols are enforced by git hooks and scripts:
 | Protocol 4 (Iterative review) | pre-push hook | `~/.config/git/hooks/pre-push` |
 | Protocol 6 (No REST/GraphQL merge) | PreToolUse Bash hook | `~/.claude/scripts/hook-block-api-merge.sh` |
 | Protocol 6 (No REST/GraphQL merge) | gh() wrapper | `~/.config/bash/functions.sh` |
+| Protocol 6 (Off-org PRs forced draft) | gh-wrapper.sh | `~/.config/bash/gh-wrapper.sh` |
 | Build consistency | build-commons.sh | `~/.claude/lib/build-commons.sh` |
 | Deployment safety | deploy-commons.sh | `~/.claude/lib/deploy-commons.sh` |
 | Branch cleanup | audit-branches.sh | `~/.claude/scripts/audit-branches.sh` |
@@ -68,6 +69,16 @@ This enforcement exists because of two incidents on 2026-02-24:
 
 - PR #813: `gh pr merge` failed → REST API used as workaround → pattern learned
 - v1.11.0: that pattern reused → 9-second unauthorized production merge → required revert
+
+---
+
+## Off-Org Draft-PR Enforcement (gh-wrapper.sh)
+
+`gh pr create` targeting a repo whose owner is not `smartwatermelon` or `nightowlstudiollc` is force-created as a draft by `~/.config/bash/gh-wrapper.sh` (symlinked as `~/.local/bin/gh`, and sourced as a bash function via `functions.sh`). This is a mechanical check on the resolved repo owner — not an AI judgement call, and there is no flag or environment variable to opt out. Owner is resolved the same way identity auto-switch resolves it: an explicit `-R`/`--repo` target takes precedence over cwd's `origin` remote.
+
+**Why**: an automated agent should not be able to open a fully "submitted" PR against a repo outside the two orgs this environment is scoped to. The human operator remains free to promote the PR out of draft afterward, at their discretion, via the GitHub UI — the wrapper only governs creation time, not later state. See `smartwatermelon/dotfiles#174` (design) and `#175` (implementation).
+
+**If an agent hits this**: a draft PR on an off-org repo is expected behavior, not a bug. Do not attempt to work around it — not via `gh pr edit --ready`/`gh pr ready`, not via REST/GraphQL, not by invoking the real `gh` binary directly to bypass the wrapper (defeats the same purpose as the merge-bypass blocking above). Surface it to the user as a draft PR and stop there.
 
 ---
 
