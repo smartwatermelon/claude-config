@@ -338,7 +338,7 @@ file_reviewer_disagreement_issue() {
   [[ -z "${GH_ISSUE_FILING_DISABLED}" ]] || return 0
   command -v gh >/dev/null 2>&1 || return 0
 
-  local title="Reviewer disagreement: code-reviewer BLOCKING FAIL vs adversarial-reviewer PASS (arbiter: ${arbiter_verdict})"
+  local title="Reviewer disagreement in ${REPO_OWNER:-unknown}/${REPO_NAME:-unknown}: code-reviewer BLOCKING FAIL vs adversarial-reviewer PASS (arbiter: ${arbiter_verdict})"
   local body
   body=$(cat <<EOF
 ## Reviewer disagreement (auto-logged by run-review.sh)
