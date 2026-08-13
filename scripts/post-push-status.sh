@@ -44,8 +44,16 @@ fi
 
 COMMIT_TIMESTAMP="${POSTPUSH_COMMIT_TIMESTAMP:-$(TZ=UTC git show -s --format=%cd --date=format:'%Y-%m-%dT%H:%M:%SZ' "${CURRENT_COMMIT}" 2>/dev/null || echo "")}"
 
+# Collapsed to a single line (newlines stripped) before being passed to `gh
+# api graphql -f query=...`. GraphQL treats newlines as insignificant
+# whitespace, so this is semantically identical to the multi-line form.
+# Required because some `gh` wrappers (e.g. an off-org draft-PR enforcement
+# shim) round-trip argv through `printf '%s\n' "$@" | mapfile -t`, which
+# splits any argument containing an embedded newline into multiple bogus
+# arguments -- producing errors like "accepts 1 arg(s), received 15" from
+# the underlying `gh` binary. A single-line query survives that round-trip.
 GQL_QUERY=$(
-  cat <<'GQLEOF'
+  cat <<'GQLEOF' | tr '\n' ' '
   query($owner:String!, $repo:String!, $number:Int!) {
     repository(owner:$owner, name:$repo) {
       pullRequest(number:$number) {
@@ -126,9 +134,11 @@ _fetch_issue_comments_gql() {
   local owner="$1" repo="$2" number="$3"
   # Heredoc keeps $owner/$name/$number literal — they're GraphQL variables, not
   # bash expansions. `gh api -f owner=... -f name=... -F number=...` substitutes them.
+  # Collapsed to a single line (newlines stripped, see GQL_QUERY comment above)
+  # so it survives `gh` wrapper argv round-trips that split on embedded newlines.
   local query
   query=$(
-    cat <<'GQLEOF'
+    cat <<'GQLEOF' | tr '\n' ' '
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
@@ -151,9 +161,13 @@ GQLEOF
   # Reshape GraphQL nodes into REST-compatible objects so the python parser is
   # unchanged. Bot authors come back from GraphQL with `[bot]` stripped from
   # login; re-append it so BOT_PATTERN matches `claude[bot]`, `sentry[bot]`, etc.
+  # Collapsed to a single line (newlines stripped, see GQL_QUERY comment
+  # above) so it survives `gh` wrapper argv round-trips that split on
+  # embedded newlines. jq treats newlines as insignificant whitespace here
+  # (no line comments in this filter), so behavior is unchanged.
   local jq_filter
   jq_filter=$(
-    cat <<'JQEOF'
+    cat <<'JQEOF' | tr '\n' ' '
 .data.repository.pullRequest.comments.nodes
   | map(select(.isMinimized == false))
   | map({
