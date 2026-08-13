@@ -165,6 +165,9 @@ GQLEOF
   # above) so it survives `gh` wrapper argv round-trips that split on
   # embedded newlines. jq treats newlines as insignificant whitespace here
   # (no line comments in this filter), so behavior is unchanged.
+  # NOTE: do not add `#`-style jq line comments inside this heredoc --
+  # `tr '\n' ' '` would merge them into the following line instead of
+  # terminating them, silently corrupting the filter.
   local jq_filter
   jq_filter=$(
     cat <<'JQEOF' | tr '\n' ' '
