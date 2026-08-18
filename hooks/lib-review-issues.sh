@@ -640,7 +640,31 @@ _find_duplicate_open_issue() {
 # factually wrong, as opposed to the hedged/suggestive phrasing ("consider",
 # "may want to", "it is unclear whether") that carries no factual claim and
 # so needs no verification. Do not grow this into a cleverness contest.
+#
+# Two groups, both narrow:
+#
+#   1. Direct assertions — "X is incorrect".
+#   2. Self-admitted-unverified assertions (#337) — the finding makes a
+#      factual claim and states in the same breath that it never checked it.
+#      github-workflows#148 is the motivating case: it asserted a bash
+#      escaping behaviour, then wrote "has not been tested in a live run",
+#      and was filed anyway. It turned out to be wrong. This is NOT the
+#      harmless hedging described above: a claim the author flags as
+#      unchecked is precisely what this gate exists to label.
+#
+# Calibrated against a 137-finding corpus of every reviewer-filed issue
+# across the fleet (see PR for the measurement). The phrases proposed in
+# claude-config#334 were measured and deliberately REJECTED:
+#   - "is not present" / "cannot be found" / "contains no" -> 0 real matches
+#   - "is not" (9 matches) and "has no" (9) are far too broad. In the corpus
+#     they overwhelmingly catch the reviewer being CAREFUL — "this is not a
+#     correctness issue", "is not currently vulnerable", "this is not a
+#     confirmed regression". Flagging those as unverified assertions would
+#     invert the gate's meaning and punish exactly the phrasing we want.
+# The additions below flag exactly one more finding in 137 (#148) and zero
+# false positives. Re-run the measurement before adding anything.
 _VERIFY_ASSERTION_MARKERS=(
+  # Group 1: direct assertions of incorrectness.
   "is incorrect"
   "are incorrect"
   "is wrong"
@@ -650,6 +674,12 @@ _VERIFY_ASSERTION_MARKERS=(
   "will fail"
   "is broken"
   "never runs"
+  # Group 2: the finding admits, in its own text, that it never checked.
+  "has not been tested"
+  "has not been verified"
+  "has not been confirmed"
+  "was not verified"
+  "not been validated"
 )
 
 # Does this finding assert that something is factually incorrect/broken?

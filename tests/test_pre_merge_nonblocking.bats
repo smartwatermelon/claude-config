@@ -1290,3 +1290,36 @@ END_ISSUE"
   ! _asserts_incorrectness "Consider extracting the retry loop" "Would reduce drift."
   ! _asserts_incorrectness "It is unclear whether this path is reachable" "May want to check."
 }
+
+@test "gate3: self-admitted-unverified phrasing is flagged (#337, github-workflows#148)" {
+  _load_gate3_fns
+
+  # The motivating case: a factual claim about bash escaping, with the
+  # finding itself stating it was never checked. Filed anyway; turned out
+  # to be wrong.
+  _asserts_incorrectness \
+    '`--model` argument now double-quoted in assembled claude_args string' \
+    'The behavior change is real. But it differs from the pre-existing unquoted form and has not been tested in a live run.'
+
+  _asserts_incorrectness "" "This has not been verified against the live API."
+  _asserts_incorrectness "" "The mapping has not been confirmed on a real run."
+  _asserts_incorrectness "" "The regex was not verified against the actual input."
+  _asserts_incorrectness "" "This path has not been validated end to end."
+}
+
+@test "gate3: broad negative phrasing stays UNflagged (rejected #334 candidates)" {
+  _load_gate3_fns
+
+  # Measured against a 137-finding corpus: "is not" and "has no"
+  # overwhelmingly catch the reviewer being CAREFUL, not asserting.
+  # Flagging these would invert the gate's meaning.
+  ! _asserts_incorrectness "" "This is not a correctness issue — capped PRs simply wait."
+  ! _asserts_incorrectness "" "It is not currently vulnerable, but a future refactor could change that."
+  ! _asserts_incorrectness "" "This is not a confirmed regression — it may be correct as written."
+  ! _asserts_incorrectness "" "The --verbose flag has no observable effect."
+  ! _asserts_incorrectness "" "This has no practical impact, but the directive is dead."
+
+  # Phrases #334 proposed that never occur in the real corpus.
+  ! _asserts_incorrectness "" "The entry is not present in the allowlist."
+  ! _asserts_incorrectness "" "The helper cannot be found on PATH."
+}
