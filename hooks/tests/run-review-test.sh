@@ -1879,12 +1879,14 @@ No blocking issues found." \
 
 adversarial-reviewer is correct; the finding does not apply."
 
+MOCK33_GH="${TMPDIR_TEST}/gh33"
+make_mock_gh "${MOCK33_GH}"
 TEST33_LOG="${TMPDIR_TEST}/test33-review.log"
 rm -f "${TEST33_LOG}"
 
 exit_t33=0
 cd "${REPO_DIR}"
-PATH="${MOCK30_GH}:${PATH}" REVIEW_LOG="${TEST33_LOG}" \
+PATH="${MOCK33_GH}:${PATH}" REVIEW_LOG="${TEST33_LOG}" \
   DISAGREEMENT_LOG="/nonexistent-dir-claude-config-332/disagreements.log" \
   CLAUDE_CLI="${MOCK33_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t33=$?
 cd - >/dev/null
