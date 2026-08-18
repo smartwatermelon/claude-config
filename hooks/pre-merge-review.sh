@@ -767,6 +767,7 @@ TITLE: [concise one-line title suitable for a GitHub issue — do not use quotes
 SOURCE: [reviewer or bot name, e.g. Seer, code-reviewer, or inline comment by alice]
 LOCATION: [file:line if applicable, or general]
 DETAILS: [2-4 sentences: what was flagged, why it matters, suggested action]
+VERIFIED: [optional — the command you actually ran and its observed output; see rules below]
 END_ISSUE
 
 IMPORTANT RULES for NON_BLOCKING_ISSUE:
@@ -775,6 +776,19 @@ IMPORTANT RULES for NON_BLOCKING_ISSUE:
 - Each block must start with NON_BLOCKING_ISSUE: on its own line and end with END_ISSUE on its own line.
 - DETAILS may span multiple lines.
 - Do not use quotes in TITLE values.
+- VERIFIABLE CLAIMS: if the finding asserts that something is incorrect, wrong,
+  broken, nonexistent, or will fail, and that assertion is about EXTERNAL STATE
+  you can check (what a commit SHA resolves to, what a file contains, whether a
+  version tag exists, how a tool or shell construct actually behaves), you must
+  either (a) run the command that checks it and record the command plus its
+  observed output in a VERIFIED: field, or (b) soften the claim into a question
+  instead of an assertion. Never assert a checkable fact you did not check.
+- VERIFIED: may span multiple lines and must come last in the block, after
+  DETAILS. Omit it entirely when the finding makes no factual claim about
+  external state (style, structure, maintainability concerns need no command).
+- Findings that assert incorrectness with no VERIFIED: field are still filed,
+  but carry an "unverified" label and a warning banner — past unverified
+  assertions of exactly this shape were false and cost a human time to disprove.
 
 Be conservative but pragmatic. If CI passes and concerns look addressed, allow merge.
 PROMPT_EOF

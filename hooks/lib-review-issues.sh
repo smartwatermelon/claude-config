@@ -160,8 +160,16 @@ needs_security_label() {
   is_security_critical "${path_only}"
 }
 
-# Extract TITLE/SOURCE/LOCATION/DETAILS fields from a single issue block.
-# Writes results into the four nameref args (caller-declared local vars).
+# Extract TITLE/SOURCE/LOCATION/DETAILS/VERIFIED fields from a single issue
+# block. Writes results into the nameref args (caller-declared local vars).
+# The fifth nameref (VERIFIED, #328 gate 3) is OPTIONAL: callers that predate
+# it pass only four names, and the field is simply not extracted for them.
+#
+# VERIFIED is a multi-line field like DETAILS, but unlike DETAILS it is not
+# open-ended — it terminates at the next known field header so a VERIFIED:
+# block placed before DETAILS: doesn't swallow it. DETAILS keeps its original
+# swallow-everything behavior, but now stops at a VERIFIED: header for the
+# same reason.
 _parse_issue_fields() {
   local block="$1"
   local -n _pif_title="$2"
@@ -172,8 +180,15 @@ _parse_issue_fields() {
   _pif_title=$(echo "${block}" | { grep "^TITLE:" || true; } | { head -1 || true; } | sed 's/^TITLE: //')
   _pif_source=$(echo "${block}" | { grep "^SOURCE:" || true; } | { head -1 || true; } | sed 's/^SOURCE: //')
   _pif_location=$(echo "${block}" | { grep "^LOCATION:" || true; } | { head -1 || true; } | sed 's/^LOCATION: //')
-  # DETAILS may span multiple lines -- grab everything after the DETAILS: line
-  _pif_details=$(echo "${block}" | { awk '/^DETAILS:/{found=1; sub(/^DETAILS: /,""); print; next} found{print}' || true; } | { sed '/^[[:space:]]*$/d' || true; })
+  # DETAILS may span multiple lines -- grab everything after the DETAILS: line,
+  # stopping at a VERIFIED: header if one follows.
+  _pif_details=$(echo "${block}" | { awk '/^VERIFIED:/{found=0} /^DETAILS:/{found=1; sub(/^DETAILS: /,""); print; next} found{print}' || true; } | { sed '/^[[:space:]]*$/d' || true; })
+
+  # VERIFIED is optional and so is this nameref.
+  if [[ -n "${6:-}" ]]; then
+    local -n _pif_verified="$6"
+    _pif_verified=$(echo "${block}" | { awk '/^(TITLE|SOURCE|LOCATION|DETAILS):/{found=0} /^VERIFIED:/{found=1; sub(/^VERIFIED:[[:space:]]*/,""); print; next} found{print}' || true; } | { sed '/^[[:space:]]*$/d' || true; })
+  fi
 }
 
 # Write an issue body to the local pending-issues fallback dir.
@@ -368,6 +383,7 @@ create_nonblocking_issues() {
     # Ensure labels exist (idempotent) — only needed for the gh-issue path.
     command gh label create "tech-debt" --color "#e4e669" --description "Technical debt to address" --repo "${REPO_OWNER}/${REPO_NAME}" --force >/dev/null 2>&1 || true
     command gh label create "security" --color "#d93f0b" --description "Security-related concern" --repo "${REPO_OWNER}/${REPO_NAME}" --force >/dev/null 2>&1 || true
+    command gh label create "unverified" --color "#fbca04" --description "Finding asserts a fact that was never checked" --repo "${REPO_OWNER}/${REPO_NAME}" --force >/dev/null 2>&1 || true
   fi
 
   # Process each block (separated by ---ISSUE--- sentinel).
@@ -585,6 +601,105 @@ _find_duplicate_open_issue() {
   done <<<"${_OPEN_ISSUES_CACHE}"
 }
 
+# ---------------------------------------------------------------
+# Verifiable-claims gate (#328, gate 3)
+# ---------------------------------------------------------------
+#
+# On 2026-08-17 the reviewer filed several findings that asserted something
+# about external state and were simply WRONG, each costing a human a manual
+# disproof:
+#
+#   github-workflows#131 — asserted a specific actions/checkout SHA
+#     "belongs to the v4.x release line, not v7.0.1 (which does not exist
+#     for this action)". One `gh api` call resolves that. It was never run.
+#     The annotation under attack was correct.
+#   github-workflows#148 — asserted that quoting a variable in
+#     CLAUDE_ARGS="--model \"$MODEL\"" makes the string "now contain
+#     literal \" around the model name". One `echo` disproves that; bash
+#     resolves the escaping at assignment. The finding even said it "has
+#     not been tested in a live run" — and was filed anyway.
+#
+# The shared defect is NOT "the finding was wrong". It is: an assertion
+# about verifiable external state, made without checking it. That is what
+# this gate targets.
+#
+# WHAT IT DOES: annotate and label. It does NOT suppress. A finding whose
+# claim carries no supporting command still files — it just files carrying a
+# visible "unverified claim" caveat and an `unverified` label, so a human
+# reading the issue knows the assertion has not been checked before spending
+# time on it. Suppression is gate 1's job (dedup, above); a lost finding is
+# strictly worse than a labelled noisy one.
+#
+# FAILS OPEN in the strongest sense: there is no path through this code that
+# can prevent a filing. The worst case is that the caveat or the label is
+# missing.
+
+# Literal, deliberately small set of assertion markers. Matched
+# case-insensitively as fixed strings against TITLE + DETAILS. Kept dumb on
+# purpose: every entry here is a phrase that states external state is
+# factually wrong, as opposed to the hedged/suggestive phrasing ("consider",
+# "may want to", "it is unclear whether") that carries no factual claim and
+# so needs no verification. Do not grow this into a cleverness contest.
+_VERIFY_ASSERTION_MARKERS=(
+  "is incorrect"
+  "are incorrect"
+  "is wrong"
+  "is factually"
+  "does not exist"
+  "doesn't exist"
+  "will fail"
+  "is broken"
+  "never runs"
+)
+
+# Does this finding assert that something is factually incorrect/broken?
+# Args: title details
+# Returns 0 (true) on a match, 1 otherwise.
+_asserts_incorrectness() {
+  local haystack
+  haystack=$(printf '%s\n%s' "${1:-}" "${2:-}" | { tr '[:upper:]' '[:lower:]' || true; })
+
+  local marker
+  for marker in "${_VERIFY_ASSERTION_MARKERS[@]}"; do
+    # -F: the markers are fixed strings, and the haystack is model-authored
+    # text that must never be read as a pattern (or as anything else — it is
+    # passed on stdin, never interpolated into a command).
+    if printf '%s' "${haystack}" | grep -qF -- "${marker}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Prepend the "unverified claim" caveat to an issue body.
+_unverified_caveat_body() {
+  local body="$1"
+  printf '%s\n' "> [!WARNING]"
+  printf '%s\n' "> **Unverified claim.** This finding asserts that something is"
+  printf '%s\n' "> incorrect, broken, or nonexistent, but carries no \`VERIFIED:\`"
+  printf '%s\n' "> field recording a command that was actually run to check it."
+  printf '%s\n' "> Confirm the assertion against reality before acting on it — several"
+  printf '%s\n' "> such findings have turned out to be false."
+  printf '%s\n' ""
+  printf '%s\n' "${body}"
+}
+
+# Append the "## Verification" section to an issue body.
+_verification_section_body() {
+  local body="$1"
+  local verified="$2"
+  printf '%s\n' "${body}"
+  printf '%s\n' ""
+  printf '%s\n' "## Verification"
+  printf '%s\n' ""
+  printf '%s\n' "The reviewer recorded the following command and output as support"
+  printf '%s\n' "for this finding:"
+  printf '%s\n' ""
+  printf '%s\n' '```'
+  printf '%s\n' "${verified}"
+  printf '%s\n' '```'
+}
+
 # Parse a single issue block and create the GH issue (or fallback file).
 _process_issue_block() {
   local block="$1"
@@ -592,8 +707,8 @@ _process_issue_block() {
 
   [[ -n "${block}" ]] || return 0
 
-  local title source location details
-  _parse_issue_fields "${block}" title source location details
+  local title source location details verified=""
+  _parse_issue_fields "${block}" title source location details verified
 
   [[ -n "${title}" ]] || return 0
 
@@ -624,6 +739,31 @@ _process_issue_block() {
   # Build issue body
   local body
   body=$(build_issue_body "${title}" "${source}" "${location}" "${details}")
+
+  # Verifiable-claims gate (#328 gate 3). Annotates only — never suppresses,
+  # and every branch here is wrapped so a failure still leaves ${body} and
+  # ${labels} usable and the filing proceeds untouched.
+  local unverified_label=false
+  if [[ -n "${verified}" ]]; then
+    if declare -F _verification_section_body >/dev/null 2>&1; then
+      local _body_with_verification
+      if _body_with_verification=$(_verification_section_body "${body}" "${verified}" 2>/dev/null); then
+        body="${_body_with_verification}"
+      fi
+    fi
+  elif declare -F _asserts_incorrectness >/dev/null 2>&1 &&
+    _asserts_incorrectness "${title}" "${details}" 2>/dev/null; then
+    if declare -F _unverified_caveat_body >/dev/null 2>&1; then
+      local _body_with_caveat
+      if _body_with_caveat=$(_unverified_caveat_body "${body}" 2>/dev/null); then
+        body="${_body_with_caveat}"
+        unverified_label=true
+      fi
+    fi
+  fi
+  if [[ "${unverified_label}" == true ]]; then
+    labels="${labels},unverified"
+  fi
 
   # Attempt to create GitHub issue — but only if the repo actually has
   # Issues enabled (#180). Repos with Issues disabled make `gh issue create`
