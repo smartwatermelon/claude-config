@@ -420,6 +420,171 @@ _repo_has_issues_enabled() {
   [[ "${_HAS_ISSUES_CACHE}" == "true" ]]
 }
 
+# ---------------------------------------------------------------
+# Deduplication against existing OPEN issues (#328)
+# ---------------------------------------------------------------
+#
+# The reviewer files a fresh issue for every finding it emits, with no
+# memory of what it already filed. In the field that produced 24 auto-filed
+# issues in one day, the largest single cluster being 8+ issues all
+# re-litigating one settled pinning-policy decision, plus repeat filings of
+# the same finding across successive PRs touching the same line.
+#
+# WHAT COUNTS AS "SIMILAR ENOUGH"
+#
+# Two signals, both required:
+#
+#   1. Same FILE PATH. The LOCATION field ("path/to/file.yml:23") is the
+#      most stable identity a finding has. Observed duplicates in
+#      smartwatermelon/dotfiles (#193 ":23", #195 ":31", #197 ":23") are the
+#      same objection at drifting line numbers, so the line suffix is
+#      stripped and only the path is compared. Findings with no usable path
+#      (LOCATION "general", or empty) are never deduped — there is no
+#      identity to match on, so they always file.
+#
+#   2. Overlapping TITLE keywords. Path alone is too blunt: two genuinely
+#      distinct findings in one large file would collide. Titles are model
+#      authored and get rephrased freely between runs (#193 "Reusable
+#      workflow reference moved from immutable SHA pin to mutable tag" vs
+#      #195 "claude.yml switched from immutable commit-SHA pin to mutable
+#      named tag"), so exact-title match catches none of the real
+#      duplicates. Instead both titles are reduced to lowercased
+#      alphanumeric tokens of 4+ characters, stopwords dropped, and a match
+#      requires at least _DEDUP_MIN_TOKEN_OVERLAP tokens in common. The pair
+#      above shares exactly two significant tokens ("immutable", "mutable"),
+#      which is why the threshold is 2 and not higher; an unrelated finding
+#      in the same file shares none.
+#
+# Deliberately NOT done here: commenting on the matched issue. That trades
+# one noise problem for another, and is out of scope for this change.
+#
+# FAILS OPEN. Only a successful listing that yields a confident match
+# suppresses a filing. A search error, timeout, empty/garbled response, or
+# missing jq output all fall through to filing the issue exactly as before —
+# same reasoning as _repo_has_issues_enabled(): a transient lookup failure
+# must never silently swallow a finding.
+
+# Minimum number of shared significant title tokens for a match.
+_DEDUP_MIN_TOKEN_OVERLAP=2
+
+# Common English words that carry no identifying signal about a finding.
+_DEDUP_STOPWORDS='this|that|with|from|when|then|than|were|will|would|should|could|have|been|does|into|only|also|same|such|they|them|there|where|which|while|about|after|before|being|other|using|used|make|made|more|most|some'
+
+# Reduce a title to a sorted, unique list of significant lowercase tokens
+# (alphanumeric, 4+ chars, stopwords removed), one per line.
+_dedup_title_tokens() {
+  printf '%s' "$1" |
+    { tr '[:upper:]' '[:lower:]' || true; } |
+    { tr -cs '[:alnum:]' '\n' || true; } |
+    { grep -E '^[[:alnum:]]{4,}$' || true; } |
+    { grep -vxE "${_DEDUP_STOPWORDS}" || true; } |
+    { sort -u || true; }
+}
+
+# Extract the bare file path from a LOCATION field, dropping any line-number
+# or line-range suffix. Prints nothing when LOCATION carries no real path.
+_dedup_location_path() {
+  local location="$1"
+  # Strip a trailing ":<digits>" or ":<digits>-<digits>" suffix.
+  local path_only="${location}"
+  path_only="$(printf '%s' "${path_only}" | sed -E 's/:[0-9]+(-[0-9]+)?[[:space:]]*$//')"
+  path_only="${path_only#"${path_only%%[![:space:]]*}"}"
+  path_only="${path_only%"${path_only##*[![:space:]]}"}"
+
+  # A usable path needs a path separator or an extension; bare words like
+  # "general" or "multiple files" carry no identity worth matching on.
+  case "${path_only}" in
+    "" | general | "multiple files" | various | n/a | N/A) return 0 ;;
+    *) ;;
+  esac
+  if [[ "${path_only}" == */* || "${path_only}" == *.* ]]; then
+    printf '%s' "${path_only}"
+  fi
+}
+
+# Cache of open issues for REPO_OWNER/REPO_NAME, as TSV: number, url, title,
+# location-path. Populated at most once per process (a single review can emit
+# many findings; one listing serves them all — same rationale and house style
+# as _HAS_ISSUES_CACHE).
+#
+# _OPEN_ISSUES_STATE is "" (not yet fetched), "ok" (usable listing, possibly
+# empty), or "error" (lookup failed — dedup disabled, everything files).
+_OPEN_ISSUES_CACHE=""
+_OPEN_ISSUES_STATE=""
+_load_open_issues() {
+  [[ -n "${_OPEN_ISSUES_STATE}" ]] && return 0
+
+  local raw jq_prog
+  # Literal jq program (single-quoted on purpose: $-free, and the escapes are
+  # jq's, not the shell's). Extracts the "**Location:** `path`" line that
+  # build_issue_body() writes into every auto-filed issue body.
+  # The backtick delimiters are written as \u0060 escapes rather than literal
+  # backticks so the single-quoted program contains no character the shell
+  # could read as a command substitution.
+  jq_prog='.[] | [(.number|tostring), .url, (.title|gsub("[\t\n\r]";" ")), ((.body // "" | capture("\\*\\*Location:\\*\\* \u0060(?<l>[^\u0060]*)\u0060").l) // "")] | @tsv'
+  # NOTE: no --search. The reviewer rephrases titles freely, so a keyword
+  # search would miss the very duplicates this targets; the whole open list
+  # is small (tens of issues) and is filtered locally instead. Untrusted
+  # model-authored text is therefore never interpolated into a query at all.
+  if ! raw=$(command gh issue list \
+    --repo "${REPO_OWNER}/${REPO_NAME}" \
+    --state open \
+    --limit 200 \
+    --json number,url,title,body \
+    --jq "${jq_prog}" 2>/dev/null); then
+    _OPEN_ISSUES_STATE="error"
+    return 0
+  fi
+
+  _OPEN_ISSUES_CACHE="${raw}"
+  _OPEN_ISSUES_STATE="ok"
+}
+
+# Find an existing OPEN issue that duplicates this finding.
+# Args: title location
+# Prints "<number>\t<url>" on a confident match; prints nothing otherwise.
+_find_duplicate_open_issue() {
+  local title="$1"
+  local location="$2"
+
+  local new_path
+  new_path=$(_dedup_location_path "${location}")
+  # No usable path identity -> never dedup, always file.
+  [[ -n "${new_path}" ]] || return 0
+
+  # NOTE: deliberately does NOT call _load_open_issues here. This function is
+  # invoked via command substitution, so any cache assignment it made would
+  # happen in a subshell and be discarded — the same trap documented above for
+  # _cached_gh_login, which is why that one re-runs `gh api user` every call.
+  # _process_issue_block primes the cache in the parent shell before calling
+  # this, so the listing really is fetched once per run.
+  # Fail open: a failed lookup disables dedup entirely for this run.
+  [[ "${_OPEN_ISSUES_STATE}" == "ok" ]] || return 0
+  [[ -n "${_OPEN_ISSUES_CACHE}" ]] || return 0
+
+  local new_tokens
+  new_tokens=$(_dedup_title_tokens "${title}")
+  [[ -n "${new_tokens}" ]] || return 0
+
+  local num url existing_title existing_loc existing_path overlap
+  while IFS=$'\t' read -r num url existing_title existing_loc; do
+    [[ -n "${num}" ]] || continue
+    existing_path=$(_dedup_location_path "${existing_loc}")
+    [[ -n "${existing_path}" ]] || continue
+    [[ "${existing_path}" == "${new_path}" ]] || continue
+
+    local existing_tokens shared
+    existing_tokens=$(_dedup_title_tokens "${existing_title}")
+    [[ -n "${existing_tokens}" ]] || continue
+    shared=$(comm -12 <(printf '%s\n' "${new_tokens}") <(printf '%s\n' "${existing_tokens}"))
+    overlap=$(printf '%s' "${shared}" | { grep -c . || true; })
+    if [[ "${overlap}" -ge "${_DEDUP_MIN_TOKEN_OVERLAP}" ]]; then
+      printf '%s\t%s' "${num}" "${url}"
+      return 0
+    fi
+  done <<<"${_OPEN_ISSUES_CACHE}"
+}
+
 # Parse a single issue block and create the GH issue (or fallback file).
 _process_issue_block() {
   local block="$1"
@@ -431,6 +596,24 @@ _process_issue_block() {
   _parse_issue_fields "${block}" title source location details
 
   [[ -n "${title}" ]] || return 0
+
+  # Dedup gate (#328): skip filing when an OPEN issue already tracks this
+  # same finding. Fails open — see _find_duplicate_open_issue.
+  local dup="" dup_num dup_url
+  if declare -F _find_duplicate_open_issue >/dev/null 2>&1 &&
+    declare -F _load_open_issues >/dev/null 2>&1; then
+    # Prime the open-issue cache in THIS shell (not inside the command
+    # substitution below, where the assignment would be lost to a subshell).
+    _load_open_issues
+    dup=$(_find_duplicate_open_issue "${title}" "${location}")
+  fi
+  if [[ -n "${dup}" ]]; then
+    dup_num="${dup%%$'\t'*}"
+    dup_url="${dup#*$'\t'}"
+    log_success "Skipped duplicate finding: ${title}"
+    log_success "  -> already tracked by #${dup_num} (${dup_url})"
+    return 0
+  fi
 
   # Determine labels
   local labels="tech-debt"
