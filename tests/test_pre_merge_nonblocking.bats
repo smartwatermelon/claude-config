@@ -858,3 +858,247 @@ EOF
 
   _repo_has_issues_enabled
 }
+
+# --- dedup against existing open issues (#328) ---
+# The reviewer files one issue per finding with no memory of what it already
+# filed; in the field that produced 24 auto-filed issues in a day, the biggest
+# cluster being repeat filings of one settled objection. _process_issue_block
+# now skips a finding when an OPEN issue already tracks the same file path with
+# an overlapping title. Fails open: any lookup failure files as before.
+
+# Common loader for the dedup tests.
+_load_dedup_fns() {
+  _load_fn is_security_critical
+  _load_fn needs_security_label
+  _load_fn is_corporate_repo
+  _load_fn _cached_gh_login
+  _load_fn is_self_authored
+  _load_fn parse_nonblocking_issues
+  _load_fn build_issue_body
+  _load_fn _parse_issue_fields
+  _load_fn _write_pending_issue_file
+  _load_fn _repo_has_issues_enabled
+  _load_fn _dedup_title_tokens
+  _load_fn _dedup_location_path
+  _load_fn _load_open_issues
+  _load_fn _find_duplicate_open_issue
+  _load_fn create_nonblocking_issues
+  _load_fn _process_issue_block
+  # Constants the extracted functions reference (not picked up by _load_fn,
+  # which only extracts function definitions).
+  _DEDUP_MIN_TOKEN_OVERLAP=2
+  _DEDUP_STOPWORDS='this|that|with|from|when|then|than|were|will|would|should|could|have|been|does|into|only|also|same|such|they|them|there|where|which|while|about|after|before|being|other|using|used|make|made|more|most|some'
+  _OPEN_ISSUES_CACHE=""
+  _OPEN_ISSUES_STATE=""
+  _HAS_ISSUES_CACHE=""
+}
+
+# Mock gh whose `issue list` returns the given TSV rows and whose
+# `issue create` is recorded. $1 = TSV payload (may be empty).
+_mock_gh_with_open_issues() {
+  export DEDUP_LIST_PAYLOAD="$1"
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+case "$*" in
+  *"api repos/"*) echo "true"; exit 0 ;;
+  *"issue list"*) printf '%s' "${DEDUP_LIST_PAYLOAD}"; exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+}
+
+@test "dedup: finding matching an existing open issue is NOT filed" {
+  _load_dedup_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  # Existing open issue: the same objection, at a different line number.
+  _mock_gh_with_open_issues \
+"193	https://github.com/org/repo/issues/193	Reusable workflow reference moved from immutable SHA pin to mutable tag	.github/workflows/claude.yml:23"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: claude.yml switched from immutable commit-SHA pin to mutable named tag
+SOURCE: code-reviewer
+LOCATION: .github/workflows/claude.yml:31
+DETAILS: Same pinning objection, rephrased.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  local created=0
+  grep -q "issue create" "${GH_CALLS_FILE}" && created=1
+  [[ "${created}" -eq 0 ]]
+}
+
+@test "dedup: a genuinely new finding is still filed" {
+  _load_dedup_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  # Open issue is in a different file entirely.
+  _mock_gh_with_open_issues \
+"193	https://github.com/org/repo/issues/193	Reusable workflow reference moved from immutable SHA pin to mutable tag	.github/workflows/claude.yml:23"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Handler does not validate the limit parameter
+SOURCE: Seer
+LOCATION: src/api/handler.ts:10
+DETAILS: Unvalidated input.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  grep -q "issue create" "${GH_CALLS_FILE}"
+}
+
+@test "dedup: two distinct findings in the SAME file are both filed" {
+  _load_dedup_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  # Same path as the new finding, but no meaningful title overlap — path
+  # alone must not be enough to suppress.
+  _mock_gh_with_open_issues \
+"193	https://github.com/org/repo/issues/193	Reusable workflow reference moved from immutable SHA pin to mutable tag	.github/workflows/claude.yml:23"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Concurrency group missing, queued runs cancel each other
+SOURCE: code-reviewer
+LOCATION: .github/workflows/claude.yml:80
+DETAILS: Unrelated concern in the same file.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  grep -q "issue create" "${GH_CALLS_FILE}"
+}
+
+@test "dedup: search failure files the issue anyway (fails open)" {
+  _load_dedup_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  # `gh issue list` fails outright (network/auth/rate limit). The finding is
+  # a textual duplicate of a real open issue, but a failed lookup must never
+  # silently suppress it.
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+case "$*" in
+  *"api repos/"*) echo "true"; exit 0 ;;
+  *"issue list"*) echo "error: could not connect" >&2; exit 1 ;;
+esac
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Reusable workflow reference moved from immutable SHA pin to mutable tag
+SOURCE: code-reviewer
+LOCATION: .github/workflows/claude.yml:23
+DETAILS: Would have been deduped had the lookup succeeded.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  grep -q "issue create" "${GH_CALLS_FILE}"
+}
+
+@test "dedup: closed issues do not suppress a new filing" {
+  _load_dedup_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  # The listing is scoped to --state open, so a matching CLOSED issue simply
+  # never appears in the payload; the finding must file.
+  _mock_gh_with_open_issues ""
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Reusable workflow reference moved from immutable SHA pin to mutable tag
+SOURCE: code-reviewer
+LOCATION: .github/workflows/claude.yml:23
+DETAILS: Prior issue on this was closed.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  local created=0
+  grep -q "issue create" "${GH_CALLS_FILE}" && created=1
+  local queried_open=0
+  grep -q -- "--state open" "${GH_CALLS_FILE}" && queried_open=1
+  [[ "${created}" -eq 1 && "${queried_open}" -eq 1 ]]
+}
+
+@test "dedup: title with shell metacharacters does not execute anything" {
+  _load_dedup_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  PWNED_FILE="${MOCK_DIR}/pwned"
+  export PWNED_FILE
+
+  _mock_gh_with_open_issues ""
+
+  # Title and location both carry command-substitution attempts, backticks
+  # and quotes. None may be evaluated by the dedup path.
+  local analysis='VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: broken $(touch "${PWNED_FILE}") and `touch "${PWNED_FILE}"` quoted'"'"'s
+SOURCE: code-reviewer
+LOCATION: src/$(touch "${PWNED_FILE}").ts:1
+DETAILS: Injection attempt.
+END_ISSUE'
+
+  create_nonblocking_issues "${analysis}"
+
+  [[ ! -e "${PWNED_FILE}" ]]
+}
+
+@test "dedup: open-issue listing is fetched once across many findings" {
+  _load_dedup_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  _mock_gh_with_open_issues ""
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: First finding here
+SOURCE: Seer
+LOCATION: src/one.ts:1
+DETAILS: First.
+END_ISSUE
+
+NON_BLOCKING_ISSUE:
+TITLE: Second finding here
+SOURCE: Seer
+LOCATION: src/two.ts:2
+DETAILS: Second.
+END_ISSUE
+
+NON_BLOCKING_ISSUE:
+TITLE: Third finding here
+SOURCE: Seer
+LOCATION: src/three.ts:3
+DETAILS: Third.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  local list_calls
+  list_calls=$(grep -c "issue list" "${GH_CALLS_FILE}" || true)
+  [[ "${list_calls}" -eq 1 ]]
+}
