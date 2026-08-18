@@ -1102,3 +1102,191 @@ END_ISSUE"
   list_calls=$(grep -c "issue list" "${GH_CALLS_FILE}" || true)
   [[ "${list_calls}" -eq 1 ]]
 }
+
+# --- verifiable-claims gate (#328 gate 3) ---
+
+_load_gate3_fns() {
+  _load_dedup_fns
+  _load_fn _asserts_incorrectness
+  _load_fn _unverified_caveat_body
+  _load_fn _verification_section_body
+  # Marker array (not a function, so _load_fn does not pick it up). Kept in
+  # sync with the array in lib-review-issues.sh by sourcing it out of the
+  # script text rather than retyping it, so drift fails the test rather than
+  # silently testing a stale list.
+  eval "$(sed -n '/^_VERIFY_ASSERTION_MARKERS=(/,/^)$/p' "${SCRIPT}")"
+}
+
+# gh mock that records the full argv of each call, one call per line, so
+# tests can assert on --label and --body values.
+_mock_gh_recording() {
+  export DEDUP_LIST_PAYLOAD=""
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${*//$'\n'/ }" >> "${GH_CALLS_FILE}"
+case "$*" in
+  *"api repos/"*) echo "true"; exit 0 ;;
+  *"issue list"*) printf '%s' "${DEDUP_LIST_PAYLOAD}"; exit 0 ;;
+  *"issue create"*) echo "https://github.com/org/repo/issues/999"; exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+}
+
+@test "gate3: assertion without VERIFIED is still filed AND labeled unverified" {
+  _load_gate3_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  _mock_gh_recording
+
+  # This is the shape of github-workflows#131: a flat assertion about what a
+  # SHA resolves to, with no command recorded.
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Pinned SHA does not match the annotated version
+SOURCE: code-reviewer
+LOCATION: .github/workflows/claude.yml:23
+DETAILS: The SHA belongs to the v4.x release line, and v7.0.1 does not exist for this action.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  local create_line
+  create_line=$(grep "issue create" "${GH_CALLS_FILE}")
+  # Filed (fail open — the gate annotates, never suppresses) ...
+  [[ -n "${create_line}" ]]
+  # ... with the unverified label added alongside the existing ones ...
+  echo "${create_line}" | grep -q "tech-debt,unverified"
+  # ... and the caveat banner in the body.
+  echo "${create_line}" | grep -q "Unverified claim"
+}
+
+@test "gate3: assertion WITH VERIFIED is filed clean, with a Verification section" {
+  _load_gate3_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  _mock_gh_recording
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Pinned SHA does not match the annotated version
+SOURCE: code-reviewer
+LOCATION: .github/workflows/claude.yml:23
+DETAILS: The comment claims v7.0.1 but the SHA does not exist under that tag.
+VERIFIED: gh api repos/actions/checkout/git/ref/tags/v7.0.1 -> HTTP 404 Not Found
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  local create_line
+  create_line=$(grep "issue create" "${GH_CALLS_FILE}")
+  [[ -n "${create_line}" ]]
+  # Verification section present ...
+  echo "${create_line}" | grep -q "## Verification"
+  echo "${create_line}" | grep -q "HTTP 404 Not Found"
+  # ... and NO unverified label or caveat, since the claim carries support.
+  ! echo "${create_line}" | grep -q "unverified"
+  ! echo "${create_line}" | grep -q "Unverified claim"
+  # The VERIFIED: line must not leak into DETAILS / "What was flagged".
+  ! echo "${create_line}" | grep -q "VERIFIED: gh api"
+}
+
+@test "gate3: a non-assertion finding is untouched" {
+  _load_gate3_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  _mock_gh_recording
+
+  # Hedged, suggestive phrasing — makes no factual claim about external
+  # state, so it needs no VERIFIED: field and must not be labelled.
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Consider extracting the retry loop into a helper
+SOURCE: code-reviewer
+LOCATION: src/api/handler.ts:42
+DETAILS: The retry logic is duplicated in three places. Extracting it would reduce drift.
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  local create_line
+  create_line=$(grep "issue create" "${GH_CALLS_FILE}")
+  [[ -n "${create_line}" ]]
+  ! echo "${create_line}" | grep -q "unverified"
+  ! echo "${create_line}" | grep -q "Unverified claim"
+  ! echo "${create_line}" | grep -q "## Verification"
+}
+
+@test "gate3: title/details/VERIFIED with shell metacharacters execute nothing" {
+  _load_gate3_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  PWNED_FILE="${MOCK_DIR}/pwned_gate3"
+  export PWNED_FILE
+  _mock_gh_recording
+
+  # All three model-authored fields carry command substitution, backticks and
+  # quotes, AND the block trips the assertion markers so the whole gate-3
+  # code path runs over the hostile text.
+  local analysis='VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: config $(touch "${PWNED_FILE}") is incorrect and `touch "${PWNED_FILE}"` is broken
+SOURCE: code-reviewer
+LOCATION: src/$(touch "${PWNED_FILE}").ts:1
+DETAILS: The value $(touch "${PWNED_FILE}") does not exist; `touch "${PWNED_FILE}"` will fail.
+VERIFIED: $(touch "${PWNED_FILE}") && `touch "${PWNED_FILE}"`
+END_ISSUE'
+
+  create_nonblocking_issues "${analysis}"
+
+  [[ ! -e "${PWNED_FILE}" ]]
+}
+
+@test "gate3: failure inside the gate does not block filing (fails open)" {
+  _load_gate3_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  _mock_gh_recording
+
+  # Simulate the gate's helpers being broken/absent at runtime. The filing
+  # must proceed exactly as it did before gate 3 existed — a lost finding is
+  # worse than an unannotated one.
+  _asserts_incorrectness() { return 1; }
+  _unverified_caveat_body() { return 1; }
+  _verification_section_body() { return 1; }
+
+  local analysis="VERDICT: SAFE_TO_MERGE
+
+NON_BLOCKING_ISSUE:
+TITLE: Pinned SHA does not match and the tag does not exist
+SOURCE: code-reviewer
+LOCATION: .github/workflows/claude.yml:23
+DETAILS: This assertion is broken and will fail.
+VERIFIED: some command output
+END_ISSUE"
+
+  create_nonblocking_issues "${analysis}"
+
+  local create_line
+  create_line=$(grep "issue create" "${GH_CALLS_FILE}")
+  # Filed, with the original body and the original labels intact.
+  [[ -n "${create_line}" ]]
+  echo "${create_line}" | grep -q "Non-Blocking Review Concern"
+  ! echo "${create_line}" | grep -q "unverified"
+}
+
+@test "gate3: _asserts_incorrectness matches markers case-insensitively and only on real assertions" {
+  _load_gate3_fns
+
+  _asserts_incorrectness "The SHA is incorrect" ""
+  _asserts_incorrectness "" "This IS WRONG in the general case"
+  _asserts_incorrectness "Tag v7.0.1 does not exist" ""
+  _asserts_incorrectness "The job never runs" ""
+  ! _asserts_incorrectness "Consider extracting the retry loop" "Would reduce drift."
+  ! _asserts_incorrectness "It is unclear whether this path is reachable" "May want to check."
+}

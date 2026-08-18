@@ -1104,7 +1104,28 @@ TITLE: <one-line title>
 SOURCE: pre-push whole-codebase review
 LOCATION: <file:line>
 DETAILS: <explanation of the pre-existing issue>
-END_ISSUE"
+VERIFIED: <optional; see VERIFIABLE CLAIMS below>
+END_ISSUE
+
+VERIFIABLE CLAIMS (mandatory):
+If a finding asserts that something is incorrect, wrong, broken, nonexistent,
+or will fail — and that assertion is about EXTERNAL STATE you can actually
+check (what a commit SHA resolves to, what a file contains, what a version
+tag points at, how a tool or shell construct actually behaves) — you must do
+ONE of these two things:
+  1. Run the command that checks it, and record the command and its observed
+     output in a VERIFIED: field on the block. Example:
+       VERIFIED: gh api repos/actions/checkout/git/ref/tags/v7.0.1 -q .object.sha
+       -> 3d3c42e5aac5ba805825da76410c181273ba90b1 (tag exists, SHA matches)
+  2. If you cannot run the check, SOFTEN the claim into a question rather
+     than an assertion — write \"is this SHA on the v4 line?\" instead of
+     \"this SHA belongs to the v4 line, not v7.0.1\".
+Never assert a checkable fact you did not check. Findings that assert
+incorrectness with no VERIFIED: field are filed with an \"unverified\" label
+and a warning banner, because past unverified assertions of exactly this
+shape turned out to be false and cost a human real time to disprove.
+VERIFIED: is optional and should be omitted entirely when the finding makes
+no factual claim about external state (style, structure, maintainability)."
 
   log_info "Running codebase reviewer with tool access..."
   codebase_start=$(date +%s)
