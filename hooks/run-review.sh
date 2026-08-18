@@ -324,40 +324,102 @@ invoke_agent() {
   fi
 }
 
-# Files a GitHub issue in smartwatermelon/claude-config (the reviewer
-# infrastructure's OWN repo — hardcoded, never REPO_OWNER/REPO_NAME, which
-# is the repo under review) logging a code-reviewer/adversarial-reviewer
-# disagreement and how the arbiter resolved it. Best-effort: never blocks
-# the commit regardless of gh auth state or API errors. dev-env#35's own
-# investigation asked for this so recurring disagreement patterns are
-# visible for future prompt/model tuning instead of silently resolved
-# and forgotten each time.
+# Records a code-reviewer/adversarial-reviewer disagreement and how the
+# arbiter resolved it. claude-config#332 reworked this: it used to file a
+# GitHub issue on EVERY disagreement, which had three defects.
+#
+#   1. Wrong destination. The destination repo is hardcoded to
+#      smartwatermelon/claude-config, but four of the six issues ever filed
+#      were about beacon-biosignals/infra — a different org entirely.
+#   2. Leaked reviewed source. The body pasted all three reviewers' verbatim
+#      output, which quotes code from the repo under review. Another org's
+#      Terraform (module wiring, cluster names, bucket refs) ended up in a
+#      personal repo purely as a side effect.
+#   3. Fired on the healthy case. The arbiter ruled PASS in 5 of 6. A strict
+#      reviewer disagreeing with a skeptical one is the system working, not
+#      a defect worth a tracked issue.
+#
+# New behavior:
+#   * The LOCAL LOG is the default record. Every disagreement appends a full
+#     verbatim record (all three reviewers) to ${DISAGREEMENT_LOG}, a sibling
+#     of REVIEW_LOG inside this repo's .git/. Verbatim is fine there: it never
+#     leaves the machine and it stays with the repo it describes.
+#   * A GitHub issue is filed ONLY when the arbiter verdict is FAIL. That is
+#     the case where the disagreement says something about the TOOLING (a
+#     reviewer produced a finding the arbiter upheld against a PASS), which is
+#     why the destination stays hardcoded to this infrastructure's own repo.
+#   * When an issue IS filed, it carries only metadata and the arbiter's own
+#     reasoning — our tooling's summary, not reviewed source. Reviewer output
+#     stays in the local log, which the issue points at by path.
+#   * Deduped on (repo, branch) using the local log as the source of truth, so
+#     a long-running branch files at most once no matter how many pushes it
+#     takes. Issues #323/#324/#325 were one branch re-filing on every push.
+#
+# Best-effort throughout: this must never block or fail a commit, whatever
+# the gh auth state, API result, or writability of the log path.
+#
+# Reviewer output is MODEL-AUTHORED and untrusted. It is only ever written to
+# a file via printf with a literal format string — never eval'd, never
+# interpolated into a command, never passed to a search query.
 file_reviewer_disagreement_issue() {
   local cr_output="$1" ar_output="$2" arbiter_output="$3" arbiter_verdict="$4"
 
+  local repo_slug="${REPO_OWNER:-unknown}/${REPO_NAME:-unknown}"
+  local branch="${_review_branch:-unknown}"
+  local commit="${_review_commit:-unknown}"
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
+
+  # Dedup key: one line per (repo, branch) that has already produced an issue.
+  # Read back from the local log before deciding to file again.
+  local dedup_marker="filed-issue-for: ${repo_slug} ${branch}"
+  local already_filed="no"
+  if [[ -n "${DISAGREEMENT_LOG}" && -r "${DISAGREEMENT_LOG}" ]]; then
+    if grep -qxF -- "${dedup_marker}" "${DISAGREEMENT_LOG}" 2>/dev/null; then
+      already_filed="yes"
+    fi
+  fi
+
+  # --- 1. Local log: the default record, written on every disagreement ---
+  # This runs even when GH_ISSUE_FILING_DISABLED is set: that is a filing
+  # guard, not a logging guard.
+  if [[ -n "${DISAGREEMENT_LOG}" ]]; then
+    {
+      printf -- '=== REVIEWER DISAGREEMENT %s ===\n' "${ts}"
+      printf -- 'repo: %s\n' "${repo_slug}"
+      printf -- 'branch: %s\n' "${branch}"
+      printf -- 'commit: %s\n' "${commit}"
+      printf -- 'arbiter_model: %s\n' "${ARBITER_MODEL:-unknown}"
+      printf -- 'arbiter_verdict: %s\n' "${arbiter_verdict}"
+      printf -- '--- code-reviewer output ---\n%s\n' "${cr_output}"
+      printf -- '--- adversarial-reviewer output ---\n%s\n' "${ar_output}"
+      printf -- '--- arbiter reasoning ---\n%s\n' "${arbiter_output}"
+      printf -- '=== END DISAGREEMENT ===\n'
+    } >>"${DISAGREEMENT_LOG}" 2>/dev/null || true
+  fi
+
+  # --- 2. GitHub issue: only for arbiter FAIL, and only once per (repo, branch) ---
+  [[ "${arbiter_verdict}" == "FAIL" ]] || return 0
+  [[ "${already_filed}" == "no" ]] || return 0
   [[ -z "${GH_ISSUE_FILING_DISABLED}" ]] || return 0
   command -v gh >/dev/null 2>&1 || return 0
 
-  local title="Reviewer disagreement in ${REPO_OWNER:-unknown}/${REPO_NAME:-unknown}: code-reviewer BLOCKING FAIL vs adversarial-reviewer PASS (arbiter: ${arbiter_verdict})"
+  local title="Reviewer disagreement upheld by arbiter in ${repo_slug} (branch ${branch})"
   local body
   body=$(cat <<EOF
-## Reviewer disagreement (auto-logged by run-review.sh)
+## Reviewer disagreement, arbiter verdict FAIL (auto-logged by run-review.sh)
 
-**Repo under review:** ${REPO_OWNER:-unknown}/${REPO_NAME:-unknown}
-**Branch:** ${_review_branch:-unknown}
-**Commit:** ${_review_commit:-unknown}
-**Arbiter model:** ${ARBITER_MODEL}
+code-reviewer returned a BLOCKING FAIL, adversarial-reviewer returned PASS,
+and the arbiter upheld code-reviewer. Filed here — in the reviewer
+infrastructure's own repo — because an arbiter FAIL is a fact about the
+TOOLING, not about the code that happened to be under review.
+
+**Repo under review:** ${repo_slug}
+**Branch under review:** ${branch}
+**Commit:** ${commit}
+**Arbiter model:** ${ARBITER_MODEL:-unknown}
 **Arbiter verdict:** ${arbiter_verdict}
-
-### code-reviewer output
-\`\`\`
-${cr_output}
-\`\`\`
-
-### adversarial-reviewer output
-\`\`\`
-${ar_output}
-\`\`\`
+**Local log (full verbatim reviewer output):** \`${DISAGREEMENT_LOG}\`
 
 ### Arbiter reasoning
 \`\`\`
@@ -365,16 +427,26 @@ ${arbiter_output}
 \`\`\`
 
 ---
-Filed automatically to track disagreement frequency and patterns for
-future code-reviewer prompt/model tuning. See smartwatermelon/dev-env#35.
+code-reviewer and adversarial-reviewer output is deliberately NOT reproduced
+here: it quotes source from the repo under review, which may belong to a
+different org (claude-config#332). Read it from the local log path above on
+the machine that ran the review.
+
+Deduped on (repo under review, branch) — one branch files at most one issue.
+See smartwatermelon/dev-env#35 and claude-config#332.
 EOF
 )
 
-  gh issue create --repo "smartwatermelon/claude-config" \
+  if gh issue create --repo "smartwatermelon/claude-config" \
     --title "${title}" \
     --body "${body}" \
     --label "tech-debt" \
-    >/dev/null 2>&1 || true
+    >/dev/null 2>&1; then
+    # Record the dedup marker only on a confirmed successful file, so a
+    # transient gh failure doesn't permanently suppress the issue.
+    [[ -n "${DISAGREEMENT_LOG}" ]] && printf -- '%s\n' "${dedup_marker}" >>"${DISAGREEMENT_LOG}" 2>/dev/null
+  fi
+  return 0
 }
 
 # --- Helper Functions for Progressive Review ---
@@ -761,6 +833,12 @@ DIFF=$(cat)
 # the repo and commit they just made.
 GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null || echo ".git")"
 REVIEW_LOG="${REVIEW_LOG:-${GIT_DIR_PATH}/last-review-result.log}"
+# Sibling of REVIEW_LOG: the append-only record of code-reviewer /
+# adversarial-reviewer disagreements and how the arbiter resolved each one.
+# Unlike REVIEW_LOG (truncated each run), this accumulates across runs — it
+# doubles as the dedup source of truth for issue filing (claude-config#332).
+# Overridable by env var so tests can point it at a temp path.
+DISAGREEMENT_LOG="${DISAGREEMENT_LOG:-${GIT_DIR_PATH}/reviewer-disagreements.log}"
 _review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
 _review_repo=$(cdup=$(git rev-parse --show-cdup 2>/dev/null) && cd "./${cdup:-.}" >/dev/null 2>&1 && pwd -L || echo "unknown")
 _review_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")

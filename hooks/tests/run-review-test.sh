@@ -27,6 +27,9 @@
 #   22. CODE_REVIEWER_AGENT default resolves to the installed agent ID (issue #209)
 #   23. review.adversarialModel overrides adversarial-reviewer's model independently
 #       of review.model / REVIEW_MODE (issue #235)
+#   30-33. Reviewer disagreements: PASS logs locally and files no issue; FAIL files
+#       one issue with no verbatim reviewer output; (repo, branch) dedup; an
+#       unwritable log path never fails the run (claude-config#332)
 
 set -euo pipefail
 
@@ -1637,12 +1640,268 @@ assert_eq \
   "true" \
   "${adversarial_not_cached}"
 
+# Mock `gh` that records every `gh issue create` invocation instead of
+# hitting the API. Placed first on PATH so run-review.sh's
+# `command -v gh` / `gh issue create` resolve to it.
+make_mock_gh() {
+  local mock_dir="$1"
+  mkdir -p "${mock_dir}"
+  : >"${mock_dir}/gh_calls.txt"
+  cat >"${mock_dir}/gh" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "issue" && "\$2" == "create" ]]; then
+  printf 'issue-create\n' >>"${mock_dir}/gh_calls.txt"
+  # Persist the body so the test can assert on what would be published.
+  _prev=""
+  for _a in "\$@"; do
+    [[ "\${_prev}" == "--body" ]] && printf '%s\n' "\${_a}" >>"${mock_dir}/gh_bodies.txt"
+    _prev="\${_a}"
+  done
+  echo "https://github.com/smartwatermelon/claude-config/issues/9999"
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "${mock_dir}/gh"
+}
+
+# =========================================================
+# TEST 30: arbiter PASS writes the local disagreement log and files NO issue
+# (claude-config#332 — a strict reviewer disagreeing with a skeptical one is
+# the system working; 5 of 6 historical filings were this healthy case)
+# =========================================================
+echo ""
+echo "=== Test 30: arbiter PASS logs locally, files no GitHub issue (claude-config#332) ==="
+
+setup_repo
+stage_small_change
+
+MOCK30_DIR="${TMPDIR_TEST}/mock30"
+make_mock_claude_three_way "${MOCK30_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Missing Linux platform guard
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: SENTINEL_CR_VERBATIM add a runtime OS check." \
+  "VERDICT: PASS
+
+No blocking issues found. SENTINEL_AR_VERBATIM macOS-only scope." \
+  "VERDICT: PASS
+
+adversarial-reviewer is correct: the header already documents macOS-only scope."
+
+MOCK30_GH="${TMPDIR_TEST}/gh30"
+make_mock_gh "${MOCK30_GH}"
+TEST30_LOG="${TMPDIR_TEST}/test30-review.log"
+TEST30_DIS="${TMPDIR_TEST}/test30-disagreements.log"
+rm -f "${TEST30_LOG}" "${TEST30_DIS}"
+
+cd "${REPO_DIR}"
+PATH="${MOCK30_GH}:${PATH}" REVIEW_LOG="${TEST30_LOG}" DISAGREEMENT_LOG="${TEST30_DIS}" \
+  CLAUDE_CLI="${MOCK30_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+test30_dis="$(cat "${TEST30_DIS}" 2>/dev/null || echo "")"
+
+assert_contains \
+  "PASS disagreement is recorded in the local disagreement log" \
+  "=== REVIEWER DISAGREEMENT" \
+  "${test30_dis}"
+
+assert_contains \
+  "local log records the arbiter verdict" \
+  "arbiter_verdict: PASS" \
+  "${test30_dis}"
+
+assert_contains \
+  "local log keeps code-reviewer output verbatim (local-only, never published)" \
+  "SENTINEL_CR_VERBATIM" \
+  "${test30_dis}"
+
+assert_contains \
+  "local log keeps adversarial-reviewer output verbatim" \
+  "SENTINEL_AR_VERBATIM" \
+  "${test30_dis}"
+
+test30_gh_calls="$(cat "${MOCK30_GH}/gh_calls.txt" 2>/dev/null || echo "")"
+assert_eq \
+  "arbiter PASS files NO GitHub issue (claude-config#332 defect 3)" \
+  "" \
+  "${test30_gh_calls}"
+
+# =========================================================
+# TEST 31: arbiter FAIL DOES file a GitHub issue, and that issue does NOT
+# contain verbatim reviewer output (claude-config#332 defect 2 — cross-org
+# source leak)
+# =========================================================
+echo ""
+echo "=== Test 31: arbiter FAIL files one issue, with no verbatim reviewer output ==="
+
+setup_repo
+stage_small_change
+
+MOCK31_DIR="${TMPDIR_TEST}/mock31"
+make_mock_claude_three_way "${MOCK31_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Hardcoded credential
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: SENTINEL_CR_VERBATIM remove the hardcoded credential." \
+  "VERDICT: PASS
+
+No blocking issues found. SENTINEL_AR_VERBATIM out of scope." \
+  "VERDICT: FAIL
+
+ISSUE: Hardcoded credential
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: SENTINEL_ARBITER_REASONING code-reviewer is correct."
+
+MOCK31_GH="${TMPDIR_TEST}/gh31"
+make_mock_gh "${MOCK31_GH}"
+TEST31_LOG="${TMPDIR_TEST}/test31-review.log"
+TEST31_DIS="${TMPDIR_TEST}/test31-disagreements.log"
+rm -f "${TEST31_LOG}" "${TEST31_DIS}"
+
+cd "${REPO_DIR}"
+PATH="${MOCK31_GH}:${PATH}" REVIEW_LOG="${TEST31_LOG}" DISAGREEMENT_LOG="${TEST31_DIS}" \
+  CLAUDE_CLI="${MOCK31_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+test31_calls="$(grep -c 'issue-create' "${MOCK31_GH}/gh_calls.txt" 2>/dev/null || echo "0")"
+assert_eq \
+  "arbiter FAIL files exactly one GitHub issue" \
+  "1" \
+  "${test31_calls}"
+
+test31_body="$(cat "${MOCK31_GH}/gh_bodies.txt" 2>/dev/null || echo "")"
+
+assert_contains \
+  "filed issue names the repo/branch actually under review" \
+  "**Branch under review:**" \
+  "${test31_body}"
+
+assert_contains \
+  "filed issue points at the local log path instead of pasting reviewer output" \
+  "${TEST31_DIS}" \
+  "${test31_body}"
+
+assert_contains \
+  "filed issue still carries the arbiter's own reasoning (our tooling's summary)" \
+  "SENTINEL_ARBITER_REASONING" \
+  "${test31_body}"
+
+test31_leaked="no"
+echo "${test31_body}" | grep -qF "SENTINEL_CR_VERBATIM" && test31_leaked="yes"
+echo "${test31_body}" | grep -qF "SENTINEL_AR_VERBATIM" && test31_leaked="yes"
+assert_eq \
+  "filed issue does NOT embed verbatim reviewer output (cross-org source leak, claude-config#332)" \
+  "no" \
+  "${test31_leaked}"
+
+# =========================================================
+# TEST 32: the same (repo, branch) files at most one issue no matter how many
+# times the disagreement recurs (claude-config#332 — #323/#324/#325 were one
+# branch re-filing on every push)
+# =========================================================
+echo ""
+echo "=== Test 32: dedup on (repo, branch) — a long-running branch files once ==="
+
+MOCK32_GH="${TMPDIR_TEST}/gh32"
+make_mock_gh "${MOCK32_GH}"
+TEST32_LOG="${TMPDIR_TEST}/test32-review.log"
+TEST32_DIS="${TMPDIR_TEST}/test32-disagreements.log"
+rm -f "${TEST32_LOG}" "${TEST32_DIS}"
+
+# Two runs on the same branch, each producing the same arbiter FAIL.
+for _t32_round in 1 2; do
+  setup_repo
+  stage_small_change
+  MOCK32_DIR="${TMPDIR_TEST}/mock32-${_t32_round}"
+  make_mock_claude_three_way "${MOCK32_DIR}" \
+    "VERDICT: FAIL
+
+ISSUE: Hardcoded credential
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Remove the hardcoded credential." \
+    "VERDICT: PASS
+
+No blocking issues found." \
+    "VERDICT: FAIL
+
+ISSUE: Hardcoded credential
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: code-reviewer is correct."
+  cd "${REPO_DIR}"
+  PATH="${MOCK32_GH}:${PATH}" REVIEW_LOG="${TEST32_LOG}" DISAGREEMENT_LOG="${TEST32_DIS}" \
+    CLAUDE_CLI="${MOCK32_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+  cd - >/dev/null
+done
+
+test32_calls="$(grep -c 'issue-create' "${MOCK32_GH}/gh_calls.txt" 2>/dev/null || echo "0")"
+assert_eq \
+  "same (repo, branch) files at most one issue across two runs (claude-config#332)" \
+  "1" \
+  "${test32_calls}"
+
+test32_records="$(grep -c '=== REVIEWER DISAGREEMENT' "${TEST32_DIS}" 2>/dev/null || echo "0")"
+assert_eq \
+  "both runs still appended a local disagreement record (dedup gates filing, not logging)" \
+  "2" \
+  "${test32_records}"
+
+# =========================================================
+# TEST 33: an unwritable disagreement-log path must not fail the run
+# (best-effort requirement, claude-config#332)
+# =========================================================
+echo ""
+echo "=== Test 33: unwritable disagreement log does not fail the run ==="
+
+setup_repo
+stage_small_change
+
+MOCK33_DIR="${TMPDIR_TEST}/mock33"
+make_mock_claude_three_way "${MOCK33_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Missing Linux platform guard
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Add a runtime OS check." \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  "VERDICT: PASS
+
+adversarial-reviewer is correct; the finding does not apply."
+
+MOCK33_GH="${TMPDIR_TEST}/gh33"
+make_mock_gh "${MOCK33_GH}"
+TEST33_LOG="${TMPDIR_TEST}/test33-review.log"
+rm -f "${TEST33_LOG}"
+
+exit_t33=0
+cd "${REPO_DIR}"
+PATH="${MOCK33_GH}:${PATH}" REVIEW_LOG="${TEST33_LOG}" \
+  DISAGREEMENT_LOG="/nonexistent-dir-claude-config-332/disagreements.log" \
+  CLAUDE_CLI="${MOCK33_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t33=$?
+cd - >/dev/null
+
+assert_eq \
+  "unwritable disagreement log does not block an otherwise-passing commit (exit 0)" \
+  "0" \
+  "${exit_t33}"
+
 # =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 49 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 62 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
