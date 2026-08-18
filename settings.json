@@ -88,7 +88,8 @@
     "apple-notes@apple-notes-mcp": false,
     "personify@personify": true,
     "pr-review@pr-review": true,
-    "superpowers@superpowers-marketplace": true
+    "superpowers@superpowers-marketplace": true,
+    "dumbify@dumbify": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -128,6 +129,12 @@
         "repo": "smartwatermelon/pr-review"
       },
       "autoUpdate": true
+    },
+    "dumbify": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/smartwatermelon/dumbify.git"
+      }
     }
   },
   "spinnerTipsOverride": {
