@@ -254,6 +254,16 @@ Before declaring work done, output the full Completion Verification template fro
 - Batch size ~3 changes, then verify against reality
 - More than 5 actions without verification = accumulating unjustified beliefs
 - **Chesterton's Fence**: Before removing anything, articulate why it exists
+- **Resolve the thing; don't match its label.** A name, tag, comment, or
+  count is a claim about state, not state. Follow it to what it actually
+  resolves to — and validate the check against a known-bad case first, or a
+  clean result proves nothing. Four wrong conclusions in one session came
+  from skipping this: a pinned SHA whose trailing `# v3` comment was four
+  months stale; an exact version tag that read as conformant while serving
+  pre-patch content; a green CI check whose job had skipped without
+  running; 62 transcript "mentions" of a tool never once invoked. Applies
+  to your own prior claims as much as to any agent's "I did X"
+  (see Protocol 4).
 
 ---
 
