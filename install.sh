@@ -28,6 +28,11 @@ _dry() { printf '\033[1;35m[DRY]\033[0m   %s\n' "$*"; }
 installed=()
 skipped=()
 failures=()
+# Dry-run counterpart to installed[]: the DRY_RUN early-return paths never
+# reach the installed+=() at the end of _ensure_symlink, so without this the
+# --sync --dry-run summary reported zero pending work and printed "deployed
+# tree already matches repo" even with items queued up (claude-config#344).
+would_install=()
 
 # ── Constants ────────────────────────────────────────────
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -185,6 +190,7 @@ _ensure_symlink() {
     _warn "Symlink ${link} points to ${current}, replacing"
     if [[ "${DRY_RUN}" == true ]]; then
       _dry "Would replace symlink: ${link} -> ${target}"
+      would_install+=("symlink:${link}")
       return
     fi
     rm "${link}"
@@ -196,6 +202,7 @@ _ensure_symlink() {
     else
       _dry "Would symlink: ${link} -> ${target}"
     fi
+    would_install+=("symlink:${link}")
     return
   fi
 
@@ -235,6 +242,9 @@ repair_symlinks() {
     if [[ -f "${link}" && ! -L "${link}" ]]; then
       if [[ "${DRY_RUN}" == true ]]; then
         _dry "Would repair: ${link} -> ${target}"
+        # Repairs are pending work too — the non-dry path rewrites the link,
+        # so the dry-run summary must count them or it under-reports.
+        would_install+=("repair:${link}")
         ((repair_count += 1))
         continue
       fi
@@ -392,9 +402,27 @@ fi
 # surfaces a broken deploy instead of silently continuing to `updates`.
 if ${SYNC_ONLY}; then
   echo ""
-  if [[ ${#installed[@]} -gt 0 ]]; then
-    _info "Sync created:"
-    for item in "${installed[@]}"; do
+  # Under --dry-run nothing was actually created, so the summary must report
+  # from would_install[] instead of installed[] (which is always empty in that
+  # mode). Reporting from installed[] made a dry run claim the tree already
+  # matched the repo while listing [DRY] lines above it (claude-config#344).
+  # This block runs at script scope, so no `local`/nameref: copy the right
+  # array into a plain one and pick the matching wording.
+  _sync_pending=("${installed[@]}")
+  _sync_header="Sync created:"
+  _sync_empty="Sync complete — deployed tree already matches repo"
+  _sync_prefix="Sync complete — "
+  _sync_suffix=" item(s) created"
+  if [[ "${DRY_RUN}" == true ]]; then
+    _sync_pending=("${would_install[@]}")
+    _sync_header="Sync would create:"
+    _sync_empty="Dry run complete — deployed tree already matches repo"
+    _sync_prefix="Dry run complete — would create "
+    _sync_suffix=" item(s)"
+  fi
+  if [[ ${#_sync_pending[@]} -gt 0 ]]; then
+    _info "${_sync_header}"
+    for item in "${_sync_pending[@]}"; do
       echo "  + ${item}"
     done
   fi
@@ -405,10 +433,10 @@ if ${SYNC_ONLY}; then
     done
     exit 1
   fi
-  if [[ ${#installed[@]} -eq 0 ]]; then
-    _ok "Sync complete — deployed tree already matches repo"
+  if [[ ${#_sync_pending[@]} -eq 0 ]]; then
+    _ok "${_sync_empty}"
   else
-    _ok "Sync complete — ${#installed[@]} item(s) created"
+    _ok "${_sync_prefix}${#_sync_pending[@]}${_sync_suffix}"
   fi
   exit 0
 fi
