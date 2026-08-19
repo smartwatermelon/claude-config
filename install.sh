@@ -37,25 +37,33 @@ BACKUP_DIR="${DEPLOY_DIR}/backups/symlink-migration"
 # ── Parse arguments ─────────────────────────────────────
 DRY_RUN=false
 REPAIR_ONLY=false
+SYNC_ONLY=false
 for arg in "$@"; do
   case "${arg}" in
     --dry-run) DRY_RUN=true ;;
     --repair)  REPAIR_ONLY=true ;;
+    --sync)    SYNC_ONLY=true ;;
     --help)
-      echo "Usage: install.sh [--dry-run] [--repair] [--help]"
+      echo "Usage: install.sh [--dry-run] [--repair] [--sync] [--help]"
       echo ""
       echo "  --dry-run  Show what would be done without making changes"
       echo "  --repair   Repair broken symlinks only (no new installs)"
+      echo "  --sync     Repair broken symlinks AND install newly-added files"
       echo "  --help     Show this help message"
       exit 0
       ;;
     *)
       _err "Unknown argument: ${arg}"
-      echo "Usage: install.sh [--dry-run] [--repair] [--help]"
+      echo "Usage: install.sh [--dry-run] [--repair] [--sync] [--help]"
       exit 1
       ;;
   esac
 done
+
+if [[ "${REPAIR_ONLY}" == true && "${SYNC_ONLY}" == true ]]; then
+  _err "--repair and --sync are mutually exclusive (--sync already repairs)"
+  exit 1
+fi
 
 if [[ "${DRY_RUN}" == true ]]; then
   _info "Dry-run mode — no changes will be made"
@@ -255,6 +263,15 @@ if ${REPAIR_ONLY}; then
   exit 0
 fi
 
+# Sync mode runs repair first: repair_symlinks copies edited deploy content
+# back to the repo before restoring the link, whereas _ensure_symlink would
+# back the file up and overwrite. Repair must win, then the main loop below
+# creates symlinks for files that --repair deliberately skips (new files
+# have no existing link, so repair's "regular file" test never matches).
+if ${SYNC_ONLY}; then
+  repair_symlinks
+fi
+
 # ============================================================================
 # 5. MAIN SYMLINK LOOP
 # ============================================================================
@@ -366,6 +383,34 @@ else
   if [[ "${symlink_errors}" -eq 0 ]]; then
     _ok "All config symlinks healthy"
   fi
+fi
+
+# ── Sync-mode exit ───────────────────────────────────────
+# Sections 5-7 reconcile the deployed tree with the repo and verify it.
+# Everything below is bootstrap-only (and section 8 is destructive), so
+# --sync stops here. Exits non-zero on failures so `allup`'s `|| return $?`
+# surfaces a broken deploy instead of silently continuing to `updates`.
+if ${SYNC_ONLY}; then
+  echo ""
+  if [[ ${#installed[@]} -gt 0 ]]; then
+    _info "Sync created:"
+    for item in "${installed[@]}"; do
+      echo "  + ${item}"
+    done
+  fi
+  if [[ ${#failures[@]} -gt 0 ]]; then
+    _warn "Sync completed with ${#failures[@]} issue(s):"
+    for item in "${failures[@]}"; do
+      echo "  ! ${item}"
+    done
+    exit 1
+  fi
+  if [[ ${#installed[@]} -eq 0 ]]; then
+    _ok "Sync complete — deployed tree already matches repo"
+  else
+    _ok "Sync complete — ${#installed[@]} item(s) created"
+  fi
+  exit 0
 fi
 
 # ============================================================================
