@@ -859,6 +859,68 @@ EOF
   _repo_has_issues_enabled
 }
 
+# --- _parse_issue_fields: END_ISSUE stop-set (#333) ---
+# In the normal flow parse_nonblocking_issues() has already consumed the
+# END_ISSUE terminator, so these blocks never reach _parse_issue_fields with it
+# attached. The stop-set entry is defensive hardening against a caller that
+# doesn't strip it first; these tests pin that behavior so it can't regress
+# back into a silent call-site dependency.
+
+@test "_parse_issue_fields: DETAILS stops at a trailing END_ISSUE" {
+  _load_fn _parse_issue_fields
+  local block="TITLE: Something
+SOURCE: code-reviewer
+LOCATION: src/a.ts:1
+DETAILS: First detail line.
+Second detail line.
+END_ISSUE"
+
+  local t s l d
+  _parse_issue_fields "${block}" t s l d
+
+  [[ "${d}" == "First detail line.
+Second detail line." ]]
+}
+
+@test "_parse_issue_fields: VERIFIED stops at a trailing END_ISSUE" {
+  _load_fn _parse_issue_fields
+  local block="TITLE: Something
+SOURCE: code-reviewer
+LOCATION: src/a.ts:1
+DETAILS: A detail.
+VERIFIED: gh api some/path -> 404
+second line of evidence
+END_ISSUE"
+
+  local t s l d v
+  _parse_issue_fields "${block}" t s l d v
+
+  [[ "${v}" == "gh api some/path -> 404
+second line of evidence" ]]
+  # DETAILS still terminates at the VERIFIED: header, as before.
+  [[ "${d}" == "A detail." ]]
+}
+
+@test "_parse_issue_fields: END_ISSUE-stripped blocks parse exactly as before" {
+  # Regression guard: the stop-set addition must not change the normal path,
+  # where parse_nonblocking_issues() has already removed the terminator.
+  _load_fn _parse_issue_fields
+  local block="TITLE: Something
+SOURCE: code-reviewer
+LOCATION: src/a.ts:1
+DETAILS: First detail line.
+Second detail line.
+VERIFIED: a command"
+
+  local t s l d v
+  _parse_issue_fields "${block}" t s l d v
+
+  [[ "${t}" == "Something" ]]
+  [[ "${d}" == "First detail line.
+Second detail line." ]]
+  [[ "${v}" == "a command" ]]
+}
+
 # --- dedup against existing open issues (#328) ---
 # The reviewer files one issue per finding with no memory of what it already
 # filed; in the field that produced 24 auto-filed issues in a day, the biggest
@@ -891,6 +953,10 @@ _load_dedup_fns() {
   _OPEN_ISSUES_CACHE=""
   _OPEN_ISSUES_STATE=""
   _HAS_ISSUES_CACHE=""
+  # Deliberately small so the truncation tests can hit the limit with a
+  # two-row payload instead of generating a thousand of them; the production
+  # value lives in lib-review-issues.sh and is asserted separately below.
+  _OPEN_ISSUES_LIMIT=2
 }
 
 # Mock gh whose `issue list` returns the given TSV rows and whose
@@ -1103,18 +1169,109 @@ END_ISSUE"
   [[ "${list_calls}" -eq 1 ]]
 }
 
+# --- open-issue listing truncation (#330) ---
+# `gh issue list --limit N` returns at most N rows and gives no signal that it
+# clipped anything, so a repo with more open issues than the limit would let
+# duplicates through with no explanation. The listing now asks for gh's maximum
+# and warns when the row count lands on the limit.
+
+# Capture log_warn output for the duration of one test. The file-scope
+# log_warn is a silent no-op; this shadows it locally.
+_capture_warnings() {
+  WARN_FILE="${MOCK_DIR}/warnings"
+  export WARN_FILE
+  log_warn() { printf '%s\n' "$*" >>"${WARN_FILE}"; }
+}
+
+@test "truncation: production limit is gh's documented maximum" {
+  # Guards against the limit being quietly lowered back toward the old 200.
+  # Read from the real library rather than the test's local override.
+  local limit
+  limit=$(bash -c 'source "$1"; printf "%s" "${_OPEN_ISSUES_LIMIT}"' _ "${SCRIPT}")
+  [[ "${limit}" -eq 1000 ]]
+}
+
+@test "truncation: listing at the limit warns that dedup may be incomplete" {
+  _load_dedup_fns
+  _capture_warnings
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  # _OPEN_ISSUES_LIMIT is 2 in tests, so a two-row payload is "full".
+  _mock_gh_with_open_issues \
+"1	https://github.com/org/repo/issues/1	First open issue title here	src/a.ts:1
+2	https://github.com/org/repo/issues/2	Second open issue title here	src/b.ts:2"
+
+  _load_open_issues
+
+  # Warned ...
+  grep -q "dedup may be incomplete" "${WARN_FILE}"
+  # ... but the listing is still usable, not downgraded to "error".
+  [[ "${_OPEN_ISSUES_STATE}" == "ok" ]]
+  [[ -n "${_OPEN_ISSUES_CACHE}" ]]
+}
+
+@test "truncation: a listing under the limit warns about nothing" {
+  _load_dedup_fns
+  _capture_warnings
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  _mock_gh_with_open_issues \
+"1	https://github.com/org/repo/issues/1	First open issue title here	src/a.ts:1"
+
+  _load_open_issues
+
+  [[ ! -e "${WARN_FILE}" ]]
+  [[ "${_OPEN_ISSUES_STATE}" == "ok" ]]
+}
+
+@test "truncation: an empty listing warns about nothing" {
+  _load_dedup_fns
+  _capture_warnings
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  _mock_gh_with_open_issues ""
+
+  _load_open_issues
+
+  [[ ! -e "${WARN_FILE}" ]]
+  [[ "${_OPEN_ISSUES_STATE}" == "ok" ]]
+}
+
+@test "truncation: the requested limit is what gh is actually asked for" {
+  _load_dedup_fns
+  PR_NUMBER="55"; PR_TITLE="Test PR"; REPO_OWNER="org"; REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+
+  _mock_gh_with_open_issues ""
+  _load_open_issues
+
+  grep -q -- "--limit ${_OPEN_ISSUES_LIMIT}" "${GH_CALLS_FILE}"
+}
+
 # --- verifiable-claims gate (#328 gate 3) ---
 
 _load_gate3_fns() {
+  # Marker array (not a function, so _load_fn does not pick it up). Get the
+  # REAL array by sourcing the library, rather than re-extracting its text
+  # with a sed range (#335) — a pattern match on the source silently yields an
+  # empty or partial array the moment the array's formatting changes, and an
+  # empty marker list makes every gate3 assertion test pass vacuously.
+  # Sourcing is safe here: lib-review-issues.sh is function definitions plus a
+  # source guard and a few constant assignments, with no top-level code that
+  # runs commands, exits, or touches the filesystem. `_LIB_REVIEW_ISSUES_LOADED`
+  # is cleared first so a second test in the same shell isn't no-op'd by the
+  # guard.
+  unset _LIB_REVIEW_ISSUES_LOADED
+  source "${SCRIPT}"
+  # _load_fn extraction still runs afterwards, so these tests keep exercising
+  # the same individually-extracted definitions they always did.
   _load_dedup_fns
   _load_fn _asserts_incorrectness
   _load_fn _unverified_caveat_body
   _load_fn _verification_section_body
-  # Marker array (not a function, so _load_fn does not pick it up). Kept in
-  # sync with the array in lib-review-issues.sh by sourcing it out of the
-  # script text rather than retyping it, so drift fails the test rather than
-  # silently testing a stale list.
-  eval "$(sed -n '/^_VERIFY_ASSERTION_MARKERS=(/,/^)$/p' "${SCRIPT}")"
 }
 
 # gh mock that records the full argv of each call, one call per line, so

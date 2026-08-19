@@ -170,6 +170,14 @@ needs_security_label() {
 # block placed before DETAILS: doesn't swallow it. DETAILS keeps its original
 # swallow-everything behavior, but now stops at a VERIFIED: header for the
 # same reason.
+#
+# Both multi-line fields also stop at a bare END_ISSUE line (#333). In the
+# normal flow that line is already gone — parse_nonblocking_issues() consumes
+# END_ISSUE as the block terminator and never emits it — so this is defensive
+# hardening, not a live bug fix: it removes a silent dependency on that
+# call-site behavior, so a caller that hands _parse_issue_fields a raw block
+# with its terminator still attached can't get END_ISSUE swallowed into the
+# tail of DETAILS or VERIFIED.
 _parse_issue_fields() {
   local block="$1"
   local -n _pif_title="$2"
@@ -181,13 +189,13 @@ _parse_issue_fields() {
   _pif_source=$(echo "${block}" | { grep "^SOURCE:" || true; } | { head -1 || true; } | sed 's/^SOURCE: //')
   _pif_location=$(echo "${block}" | { grep "^LOCATION:" || true; } | { head -1 || true; } | sed 's/^LOCATION: //')
   # DETAILS may span multiple lines -- grab everything after the DETAILS: line,
-  # stopping at a VERIFIED: header if one follows.
-  _pif_details=$(echo "${block}" | { awk '/^VERIFIED:/{found=0} /^DETAILS:/{found=1; sub(/^DETAILS: /,""); print; next} found{print}' || true; } | { sed '/^[[:space:]]*$/d' || true; })
+  # stopping at a VERIFIED: header or an END_ISSUE terminator if one follows.
+  _pif_details=$(echo "${block}" | { awk '/^VERIFIED:/{found=0} /^END_ISSUE$/{found=0} /^DETAILS:/{found=1; sub(/^DETAILS: /,""); print; next} found{print}' || true; } | { sed '/^[[:space:]]*$/d' || true; })
 
   # VERIFIED is optional and so is this nameref.
   if [[ -n "${6:-}" ]]; then
     local -n _pif_verified="$6"
-    _pif_verified=$(echo "${block}" | { awk '/^(TITLE|SOURCE|LOCATION|DETAILS):/{found=0} /^VERIFIED:/{found=1; sub(/^VERIFIED:[[:space:]]*/,""); print; next} found{print}' || true; } | { sed '/^[[:space:]]*$/d' || true; })
+    _pif_verified=$(echo "${block}" | { awk '/^(TITLE|SOURCE|LOCATION|DETAILS):/{found=0} /^END_ISSUE$/{found=0} /^VERIFIED:/{found=1; sub(/^VERIFIED:[[:space:]]*/,""); print; next} found{print}' || true; } | { sed '/^[[:space:]]*$/d' || true; })
   fi
 }
 
@@ -525,6 +533,12 @@ _dedup_location_path() {
 #
 # _OPEN_ISSUES_STATE is "" (not yet fetched), "ok" (usable listing, possibly
 # empty), or "error" (lookup failed — dedup disabled, everything files).
+#
+# _OPEN_ISSUES_LIMIT is gh's documented maximum for `issue list --limit`.
+# Asking for the maximum is free — gh paginates internally and returns only
+# what exists — so there is no cost to raising it, and a repo that really has
+# grown past the old 200 no longer loses its tail silently.
+_OPEN_ISSUES_LIMIT=1000
 _OPEN_ISSUES_CACHE=""
 _OPEN_ISSUES_STATE=""
 _load_open_issues() {
@@ -539,17 +553,33 @@ _load_open_issues() {
   # could read as a command substitution.
   jq_prog='.[] | [(.number|tostring), .url, (.title|gsub("[\t\n\r]";" ")), ((.body // "" | capture("\\*\\*Location:\\*\\* \u0060(?<l>[^\u0060]*)\u0060").l) // "")] | @tsv'
   # NOTE: no --search. The reviewer rephrases titles freely, so a keyword
-  # search would miss the very duplicates this targets; the whole open list
-  # is small (tens of issues) and is filtered locally instead. Untrusted
-  # model-authored text is therefore never interpolated into a query at all.
+  # search would miss the very duplicates this targets, so the whole open list
+  # is fetched and filtered locally instead. Untrusted model-authored text is
+  # therefore never interpolated into a query at all. On the repos this runs
+  # against the list is normally small (tens of issues), but that is an
+  # observation, not a guarantee — hence the explicit _OPEN_ISSUES_LIMIT and
+  # the truncation check below.
   if ! raw=$(command gh issue list \
     --repo "${REPO_OWNER}/${REPO_NAME}" \
     --state open \
-    --limit 200 \
+    --limit "${_OPEN_ISSUES_LIMIT}" \
     --json number,url,title,body \
     --jq "${jq_prog}" 2>/dev/null); then
     _OPEN_ISSUES_STATE="error"
     return 0
+  fi
+
+  # Probable-truncation check (#330). gh gives no "there was more" signal, so
+  # the only tell is a row count that lands exactly on the requested limit.
+  # That is suggestive, not proof (a repo with precisely _OPEN_ISSUES_LIMIT
+  # open issues is a false positive), which is why this warns rather than
+  # setting "error": the listing we did get is still usable for dedup, it just
+  # may be incomplete, and the operator should know that a duplicate slipping
+  # through has a known explanation.
+  local row_count
+  row_count=$(printf '%s' "${raw}" | { grep -c . || true; })
+  if [[ "${row_count}" -ge "${_OPEN_ISSUES_LIMIT}" ]]; then
+    log_warn "Open-issue listing for ${REPO_OWNER}/${REPO_NAME} hit the ${_OPEN_ISSUES_LIMIT}-issue limit; dedup may be incomplete and duplicates may be filed."
   fi
 
   _OPEN_ISSUES_CACHE="${raw}"

@@ -34,10 +34,40 @@ unset CDPATH
 
 # --- Configuration ---
 CLAUDE_CLI="${CLAUDE_CLI:-${HOME}/.local/bin/claude}"
-# Default 180s handles typical PRs; large PRs with 30k+ token smart-diffs
-# routinely exceeded the prior 120s default and timed out unnecessarily.
-# Override via `git config review.preMergeTimeout N` when needed.
-TIMEOUT_SECONDS=$(git config --get --type=int review.preMergeTimeout 2>/dev/null || echo "180")
+
+# Analysis timeout policy.
+#
+# The time the model needs to render a verdict tracks the size of the prompt it
+# is handed, and prompt size varies enormously between PRs — independently of
+# anything knowable at startup. A flat constant is therefore the wrong shape:
+# it is either too small for big diffs (an infrastructure timeout that presents
+# as a merge-blocking review objection) or wastefully large for small ones.
+#
+# Note the failure is NOT confined to the >1000-line "smart diff" path, which
+# an earlier version of this comment claimed. The observed timeout came from a
+# 460-line PR taking the ordinary full-diff path: its prompt was 33,835 bytes,
+# it timed out twice at 180s, and it completed comfortably at 420s.
+#
+# So the effective timeout is computed AFTER the prompt is assembled, from its
+# actual byte size — see compute_effective_timeout() and its call site below.
+# These constants calibrate that scaling:
+#   - FLOOR is the previous flat default, retained for small prompts.
+#   - PER_KB is set so the 33,835-byte data point yields 510s: comfortably
+#     above the 420s that was observed to work, without being open-ended.
+#   - CEILING bounds a pathological prompt so a wedged call cannot hang the
+#     merge for the better part of an hour.
+TIMEOUT_FLOOR_SECONDS=180
+TIMEOUT_PER_KB_SECONDS=10
+TIMEOUT_CEILING_SECONDS=900
+
+# Explicit operator override. When `git config review.preMergeTimeout N` is set
+# (repo-local or --global), that value is honored verbatim and scaling is
+# skipped entirely — an operator who has named a number means that number.
+# Unset (the normal case) means "scale with the prompt".
+TIMEOUT_OVERRIDE=$(git config --get --type=int review.preMergeTimeout 2>/dev/null || echo "")
+
+# Placeholder until the prompt exists; see compute_effective_timeout() below.
+TIMEOUT_SECONDS="${TIMEOUT_FLOOR_SECONDS}"
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -51,6 +81,41 @@ log_info() { echo -e "${BLUE}[pre-merge]${NC} $*" >&2; }
 log_success() { echo -e "${GREEN}[pre-merge]${NC} $*" >&2; }
 log_warn() { echo -e "${YELLOW}[pre-merge]${NC} $*" >&2; }
 log_error() { echo -e "${RED}[pre-merge]${NC} $*" >&2; }
+
+# --- Timeout Scaling ---
+
+# Resolve the analysis timeout for a prompt of a given byte size.
+#
+# Sets TIMEOUT_SECONDS and logs which path was taken, so an operator reading
+# the transcript can see why the analysis was given the budget it got.
+#
+# Args:
+#   $1 - prompt size in bytes
+compute_effective_timeout() {
+  local prompt_size="$1"
+  local prompt_kb scaled
+
+  # Explicit override wins outright — no scaling, no clamping to the ceiling.
+  if [[ -n "${TIMEOUT_OVERRIDE}" ]]; then
+    TIMEOUT_SECONDS="${TIMEOUT_OVERRIDE}"
+    log_info "Analysis timeout: ${TIMEOUT_SECONDS}s (explicit override from git config review.preMergeTimeout)"
+    return 0
+  fi
+
+  # Integer division: sub-1KB prompts contribute nothing and land on the floor.
+  prompt_kb=$((prompt_size / 1024))
+  scaled=$((TIMEOUT_FLOOR_SECONDS + (prompt_kb * TIMEOUT_PER_KB_SECONDS)))
+
+  if ((scaled > TIMEOUT_CEILING_SECONDS)); then
+    scaled=${TIMEOUT_CEILING_SECONDS}
+    TIMEOUT_SECONDS="${scaled}"
+    log_info "Analysis timeout: ${TIMEOUT_SECONDS}s (scaled for ${prompt_kb}KB prompt, clamped to ${TIMEOUT_CEILING_SECONDS}s ceiling)"
+    return 0
+  fi
+
+  TIMEOUT_SECONDS="${scaled}"
+  log_info "Analysis timeout: ${TIMEOUT_SECONDS}s (scaled: ${TIMEOUT_FLOOR_SECONDS}s floor + ${prompt_kb}KB x ${TIMEOUT_PER_KB_SECONDS}s/KB)"
+}
 
 # --- File Classification Functions ---
 
@@ -835,6 +900,10 @@ fi
 PROMPT_SIZE=${#FULL_PROMPT}
 PROMPT_LINES=$(echo "${FULL_PROMPT}" | wc -l)
 log_info "Prompt size: ${PROMPT_SIZE} bytes, ${PROMPT_LINES} lines"
+
+# Now that the prompt exists, size the timeout to it (or honor an override).
+compute_effective_timeout "${PROMPT_SIZE}"
+
 log_info "Analyzing review comments..."
 
 # Unset CLAUDECODE so this can be invoked from within a Claude Code session.
@@ -843,7 +912,20 @@ log_info "Analyzing review comments..."
 ANALYSIS_TEXT=$(echo "${FULL_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" -p "${MERGE_MODEL_ARGS[@]}" --tools "" --no-session-persistence 2>&1) || {
   EXIT_CODE=$?
   if [[ ${EXIT_CODE} -eq 124 ]]; then
-    log_error "Analysis timed out after ${TIMEOUT_SECONDS}s"
+    # An infrastructure failure, NOT a review finding. Say so unambiguously:
+    # a bare "timed out" line above an `exit 1` reads like the reviewer
+    # objected to the PR, when in fact it never got far enough to have an
+    # opinion about it at all.
+    log_error "Analysis TIMED OUT after ${TIMEOUT_SECONDS}s (prompt: ${PROMPT_SIZE} bytes)."
+    log_error "This is an infrastructure failure, not a review finding: the"
+    log_error "analysis never completed and rendered NO opinion on this PR."
+    log_error "Nothing was found wrong with the code - nothing was assessed."
+    log_error ""
+    log_error "What to do:"
+    log_error "  1. Re-run the merge - the analysis often completes on a retry."
+    log_error "  2. If it times out repeatedly, raise the ceiling explicitly:"
+    log_error "       git config --global review.preMergeTimeout $((TIMEOUT_SECONDS * 2))"
+    log_error "     That value is honored verbatim and disables size-based scaling."
   else
     log_error "Claude CLI failed (exit code: ${EXIT_CODE})"
     log_error "${ANALYSIS_TEXT}"
