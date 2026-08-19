@@ -39,7 +39,11 @@
 #
 #   Both the Bash-level command and the EnterWorktree built-in tool are gated.
 #   This script handles the Bash layer only; EnterWorktree is handled separately
-#   by hook-block-enter-worktree.sh, which applies the same path-scoping rule.
+#   by hook-block-enter-worktree.sh. Note that path scoping does NOT apply
+#   there: EnterWorktree's tool_input carries only a `name` and no path, so the
+#   caller cannot choose a location and there is nothing to scope. That hook
+#   validates the name as a strict slug instead, since it becomes a directory
+#   component. See its header for the reasoning.
 #
 # Called by: hook-block-all.sh (PreToolUse Bash hook chain)
 
