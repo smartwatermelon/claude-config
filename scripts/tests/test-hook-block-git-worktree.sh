@@ -27,13 +27,10 @@ make_input() {
 
 echo "=== hook-block-git-worktree tests ==="
 
-# Should BLOCK (exit 2) — mutating subcommands, bare worktree, unknown subcommands
+# Should BLOCK (exit 2) — unscoped creation, administrative subcommands,
+# bare worktree, unknown subcommands
 inp="$(make_input 'git worktree add /tmp/wt feature')"
-check "git worktree add" 2 "${inp}"
-inp="$(make_input 'git worktree remove /tmp/wt')"
-check "git worktree remove" 2 "${inp}"
-inp="$(make_input 'git worktree prune')"
-check "git worktree prune" 2 "${inp}"
+check "creation outside scope (/tmp)" 2 "${inp}"
 inp="$(make_input 'git worktree move /tmp/wt /tmp/wt2')"
 check "git worktree move" 2 "${inp}"
 inp="$(make_input 'git worktree lock /tmp/wt')"
@@ -47,11 +44,80 @@ check "bare git worktree (no subcommand)" 2 "${inp}"
 inp="$(make_input 'git worktree unknownfuturesubcommand')"
 check "git worktree unknown subcommand (fail closed)" 2 "${inp}"
 inp="$(make_input 'git -C /some/path worktree add /tmp/wt')"
-check "git -C /path worktree add" 2 "${inp}"
+check "git -C /path, unscoped creation" 2 "${inp}"
 inp="$(make_input 'git --no-pager worktree add /tmp/wt')"
-check "git --no-pager worktree add" 2 "${inp}"
+check "git --no-pager, unscoped creation" 2 "${inp}"
 inp="$(make_input 'cd /repo && git worktree add /tmp/wt')"
-check "chained: cd && git worktree add" 2 "${inp}"
+check "chained: cd && unscoped creation" 2 "${inp}"
+
+# --- dotfiles#200: cleanup subcommands are now ALLOWED ---
+# These only ever reduce worktree count, so they cannot reintroduce the
+# collisions the original ban existed to prevent.
+inp="$(make_input 'git worktree remove .claude/worktrees/agent-abc')"
+check "cleanup: remove (now allowed)" 0 "${inp}"
+inp="$(make_input 'git worktree prune')"
+check "cleanup: prune (now allowed)" 0 "${inp}"
+inp="$(make_input 'git worktree remove /tmp/some-stale-wt')"
+check "cleanup: remove of an out-of-scope stale worktree (allowed)" 0 "${inp}"
+inp="$(make_input 'git -C /some/repo worktree prune')"
+check "cleanup: prune with interposed -C flag" 0 "${inp}"
+# `remove` refuses when the worktree has untracked files, so real cleanup of an
+# agent worktree (whose post-checkout setup generates files) needs --force.
+# Verified against a live create/remove cycle; blocking this would leave the
+# un-cleanable-worktree problem from dotfiles#200 only half fixed.
+inp="$(make_input 'git worktree remove --force .claude/worktrees/agent-abc')"
+check "cleanup: remove --force (required for dirty worktrees)" 0 "${inp}"
+inp="$(make_input 'git worktree prune --dry-run')"
+check "cleanup: prune --dry-run" 0 "${inp}"
+
+# --- dotfiles#200: creation ALLOWED only under .claude/worktrees/ ---
+inp="$(make_input 'git worktree add .claude/worktrees/agent-abc123')"
+check "creation: scoped relative path" 0 "${inp}"
+inp="$(make_input 'git worktree add ./.claude/worktrees/agent-abc123')"
+check "creation: scoped ./ relative path" 0 "${inp}"
+inp="$(make_input 'git worktree add /Users/me/Developer/repo/.claude/worktrees/wt1')"
+check "creation: scoped absolute path" 0 "${inp}"
+inp="$(make_input 'git worktree add -b claude/my-feature .claude/worktrees/wt1')"
+check "creation: scoped with -b branch before path" 0 "${inp}"
+inp="$(make_input 'git worktree add --detach .claude/worktrees/wt1')"
+check "creation: scoped with valueless flag" 0 "${inp}"
+inp="$(make_input 'git worktree add .claude/worktrees/wt1 HEAD~2')"
+check "creation: scoped with trailing commit-ish" 0 "${inp}"
+inp="$(make_input 'git -C /some/repo worktree add .claude/worktrees/wt1')"
+check "creation: scoped with interposed -C flag" 0 "${inp}"
+
+# Creation rejections: the path must be PROVABLY in scope.
+inp="$(make_input 'git worktree add ../elsewhere/.claude/worktrees/wt1')"
+check "creation: rejects leading .. traversal" 2 "${inp}"
+inp="$(make_input 'git worktree add .claude/worktrees/../../escape')"
+check "creation: rejects embedded .. traversal" 2 "${inp}"
+# The literal dollar sign is assembled rather than written inline: the hook must
+# see an UNEXPANDED variable reference, which is precisely what this asserts.
+dollar='$'
+inp="$(make_input "git worktree add ${dollar}HOME/.claude/worktrees/wt1")"
+check "creation: rejects unexpanded variable reference" 2 "${inp}"
+inp="$(make_input 'git worktree add ~/.claude/worktrees/wt1')"
+check "creation: rejects unexpanded ~" 2 "${inp}"
+inp="$(make_input 'git worktree add .claude/worktrees/*')"
+check "creation: rejects glob" 2 "${inp}"
+inp="$(make_input 'git worktree add .claude/worktrees')"
+check "creation: rejects bare scope dir with no leaf" 2 "${inp}"
+inp="$(make_input 'git worktree add')"
+check "creation: rejects missing path" 2 "${inp}"
+inp="$(make_input 'git worktree add -b claude/feature')"
+check "creation: rejects -b consuming the only operand" 2 "${inp}"
+inp="$(make_input 'git worktree add /tmp/.claude/worktreesevil/wt1')"
+check "creation: rejects scope-lookalike prefix" 2 "${inp}"
+inp="$(make_input 'git worktree add notclaude/worktrees/wt1')"
+check "creation: rejects non-scope path" 2 "${inp}"
+
+# A scoped creation must not launder a mutating sibling in a compound command.
+inp="$(make_input 'git worktree add .claude/worktrees/ok && git worktree move /a /b')"
+check "compound: scoped add && move (must still block)" 2 "${inp}"
+inp="$(make_input 'git worktree add .claude/worktrees/ok && git worktree add /tmp/bad')"
+check "compound: scoped add && unscoped add (must still block)" 2 "${inp}"
+inp="$(make_input 'git worktree add .claude/worktrees/a && git worktree remove .claude/worktrees/b')"
+check "compound: scoped add && remove (both allowed)" 0 "${inp}"
 
 # Should PASS (exit 0) — read-only/inspection subcommands
 inp="$(make_input 'git worktree list')"
@@ -85,7 +151,9 @@ check "chained: | git worktree list" 0 "${inp}"
 inp="$(make_input 'ls; git worktree add /tmp/wt')"
 check "chained: ; git worktree add" 2 "${inp}"
 inp="$(make_input 'true || git worktree prune')"
-check "chained: || git worktree prune" 2 "${inp}"
+check "chained: || git worktree prune (cleanup, now allowed)" 0 "${inp}"
+inp="$(make_input 'true || git worktree move /a /b')"
+check "chained: || git worktree move (still blocked)" 2 "${inp}"
 inp="$(make_input 'echo x | git worktree add')"
 check "chained: | git worktree add" 2 "${inp}"
 
@@ -102,10 +170,61 @@ inp="$(make_input 'git worktree list | git worktree add /tmp/wt')"
 check "compound: list | add (must still block)" 2 "${inp}"
 inp="$(make_input 'git worktree add /tmp/wt && git worktree list')"
 check "compound: add && list, mutating first (must still block)" 2 "${inp}"
+inp="$(make_input 'git worktree list ; git worktree lock /tmp/wt')"
+check "compound: list ; lock (must still block)" 2 "${inp}"
 inp="$(make_input 'git worktree list ; git worktree remove /tmp/wt')"
-check "compound: list ; remove (must still block)" 2 "${inp}"
+check "compound: list ; remove (cleanup, now allowed)" 0 "${inp}"
 inp="$(make_input 'git worktree list && git worktree --help')"
 check "compound: list && --help, both read-only (must pass)" 0 "${inp}"
+
+# --- Separator coverage (closed by the dotfiles#200 review) ---
+# These forms previously evaded the matcher entirely, which mattered more once
+# `add` became a conditional allow: an unmatched occurrence skips path scoping.
+inp="$(make_input 'git worktree list & git worktree add /tmp/evil')"
+check "separator: & backgrounding" 2 "${inp}"
+inp="$(make_input '(git worktree add /tmp/evil)')"
+check "separator: subshell parens" 2 "${inp}"
+inp="$(make_input 'git status && (git worktree add /tmp/evil)')"
+check "separator: subshell after &&" 2 "${inp}"
+inp="$(make_input '{ git worktree add /tmp/evil; }')"
+check "separator: brace group" 2 "${inp}"
+inp="$(make_input 'if true; then git worktree add /tmp/evil; fi')"
+check "separator: then keyword" 2 "${inp}"
+inp="$(make_input 'for i in 1; do git worktree add /tmp/evil; done')"
+check "separator: do keyword" 2 "${inp}"
+# Scoped creation must still be allowed through the newly-recognized separators.
+inp="$(make_input '(git worktree add .claude/worktrees/ok)')"
+check "separator: subshell with scoped path (allowed)" 0 "${inp}"
+
+# --- Wrapped / path-prefixed invocation (also closed by the review) ---
+inp="$(make_input "echo ${dollar}(git worktree add /tmp/evil)")"
+check "wrapper: command substitution" 2 "${inp}"
+inp="$(make_input '/usr/bin/git worktree add /tmp/evil')"
+check "wrapper: absolute-path git" 2 "${inp}"
+inp="$(make_input 'env git worktree add /tmp/evil')"
+check "wrapper: env-prefixed git" 2 "${inp}"
+inp="$(make_input 'command git worktree add /tmp/evil')"
+check "wrapper: command-prefixed git" 2 "${inp}"
+inp="$(make_input 'sudo git worktree add /tmp/evil')"
+check "wrapper: sudo-prefixed git" 2 "${inp}"
+inp="$(make_input '/usr/bin/git worktree add .claude/worktrees/ok')"
+check "wrapper: absolute-path git, scoped path (allowed)" 0 "${inp}"
+
+# False-positive guards for the wrapper/path-prefix alternatives above: a bare
+# word merely ENDING in `git` must not match (the prefix requires a `/`).
+inp="$(make_input 'mygit worktree add /tmp/x')"
+check "false positive: mygit is not git" 0 "${inp}"
+inp="$(make_input 'echo not-git worktree stuff')"
+check "false positive: hyphenated word containing git" 0 "${inp}"
+
+# --- KNOWN-OPEN gap, asserted as CURRENT behavior, not as desired behavior ---
+# Documented in the KNOWN LIMITATION block in the hook header. Asserted so the
+# gap stays visible, and so a future fix trips this test (expected-0 -> 2)
+# rather than changing behavior unnoticed. Closing it properly needs real shell
+# tokenization, not a regex.
+backtick='`'
+inp="$(make_input "echo ${backtick}git worktree add /tmp/evil${backtick}")"
+check "KNOWN GAP: backtick substitution is not detected" 0 "${inp}"
 
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
