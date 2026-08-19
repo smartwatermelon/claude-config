@@ -159,9 +159,15 @@ before merge.
   turn/response that follows its creation — never left for the user to
   discover by asking. State repo, PR number, URL, and one line on what it
   addresses.
-- Merge requires: CI green + prior `merge-lock.sh authorize <PR#> "ok"` from the user
-  (30 min TTL). This step is unchanged and still technically enforced by
-  merge-lock.sh's PreToolUse hooks.
+- Merge requires: CI green + a valid merge-lock from the user, created via
+  `merge-lock.sh authorize <PR#> "ok"` (30 min TTL). Still technically enforced
+  by merge-lock.sh's PreToolUse hooks.
+- **The lock IS the approval.** Creating it is a human-only operation, so a
+  valid lock plus green CI is sufficient to merge — do NOT additionally wait
+  for the user to type "approved". Asking for a second confirmation treats the
+  lock as if an agent could have forged it, which it cannot, and stalls the
+  merge on a signal that carries no authority the lock doesn't already supply.
+  If CI is green and the lock is valid, proceed to merge.
 - Only allowed merge command: `gh pr merge <number> --squash --delete-branch`.
 - Post-merge cleanup (switch to main, pull, delete local branch, `git status`
   check) still applies after every merge.
