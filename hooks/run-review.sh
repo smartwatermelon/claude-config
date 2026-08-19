@@ -405,8 +405,19 @@ file_reviewer_disagreement_issue() {
   command -v gh >/dev/null 2>&1 || return 0
 
   local title="Reviewer disagreement upheld by arbiter in ${repo_slug} (branch ${branch})"
-  local body
-  body=$(cat <<EOF
+
+  # The issue body is built in a tempfile and handed to `gh --body-file`,
+  # NOT captured from a heredoc into a variable. ${arbiter_output} is
+  # MODEL-AUTHORED: if the arbiter ever emitted a line consisting of exactly
+  # the heredoc delimiter, a `body=$(cat <<EOF ...)` capture would terminate
+  # early and file a silently truncated issue (claude-config#342). Writing
+  # to a file keeps model text off the delimiter-collision path entirely
+  # while preserving the ${var} expansion the body needs.
+  #
+  # Not `local`: the EXIT trap references this by name as the backstop for
+  # SIGINT / errexit. The explicit rm below is the normal-path cleanup.
+  _issue_body=$(mktemp "${TMPDIR:-/tmp}/run-review-issue-body.XXXXXX") || return 0
+  cat >"${_issue_body}" <<EOF
 ## Reviewer disagreement, arbiter verdict FAIL (auto-logged by run-review.sh)
 
 code-reviewer returned a BLOCKING FAIL, adversarial-reviewer returned PASS,
@@ -435,17 +446,18 @@ the machine that ran the review.
 Deduped on (repo under review, branch) — one branch files at most one issue.
 See smartwatermelon/dev-env#35 and claude-config#332.
 EOF
-)
 
   if gh issue create --repo "smartwatermelon/claude-config" \
     --title "${title}" \
-    --body "${body}" \
+    --body-file "${_issue_body}" \
     --label "tech-debt" \
     >/dev/null 2>&1; then
     # Record the dedup marker only on a confirmed successful file, so a
     # transient gh failure doesn't permanently suppress the issue.
     [[ -n "${DISAGREEMENT_LOG}" ]] && printf -- '%s\n' "${dedup_marker}" >>"${DISAGREEMENT_LOG}" 2>/dev/null
   fi
+  { rm -f "${_issue_body}" || true; }
+  _issue_body=""
   return 0
 }
 
@@ -863,7 +875,7 @@ _global_log="${HOME}/.claude/last-review-result.log"
 } >"${_global_log}" || true
 
 _ec=0 # captured by EXIT trap; declared here so shellcheck sees the assignment
-trap '_ec=$?; rm -rf "${_chunk_results:-}" 2>/dev/null; rm -f "${_cr_out:-}" "${_ar_out:-}" "${DIFF_TMPFILE:-}" "${_codebase_err:-}" 2>/dev/null; [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >> "${REVIEW_LOG}" || true' EXIT
+trap '_ec=$?; rm -rf "${_chunk_results:-}" 2>/dev/null; rm -f "${_cr_out:-}" "${_ar_out:-}" "${DIFF_TMPFILE:-}" "${_codebase_err:-}" "${_issue_body:-}" 2>/dev/null; [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >> "${REVIEW_LOG}" || true' EXIT
 
 if [[ -z "${DIFF}" ]]; then
   log_warn "No staged changes to review"
