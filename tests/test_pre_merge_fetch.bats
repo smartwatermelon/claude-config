@@ -10,7 +10,7 @@
 #
 # Run: bats ~/.claude/tests/test_pre_merge_fetch.bats
 
-SCRIPT="${HOME}/.claude/hooks/pre-merge-review.sh"
+SCRIPT="${BATS_TEST_DIRNAME}/../hooks/pre-merge-review.sh"
 VALID_JSON='{"number":53,"title":"test PR","reviewDecision":"","reviews":[],"comments":[],"state":"OPEN","statusCheckRollup":[]}'
 
 setup() {

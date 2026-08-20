@@ -12,7 +12,7 @@
 #
 # Run: bats ~/.claude/tests/test_hook_block_api_merge.bats
 
-HOOK="${HOME}/.claude/scripts/hook-block-api-merge.sh"
+HOOK="${BATS_TEST_DIRNAME}/../scripts/hook-block-api-merge.sh"
 
 # Build a Claude Code PreToolUse JSON payload for a Bash tool call.
 # Uses jq to properly escape special characters (quotes, backslashes, etc.)

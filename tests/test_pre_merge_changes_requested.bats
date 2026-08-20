@@ -11,7 +11,7 @@
 #
 # Run: bats ~/.claude/tests/test_pre_merge_changes_requested.bats
 
-SCRIPT="${HOME}/.claude/hooks/pre-merge-review.sh"
+SCRIPT="${BATS_TEST_DIRNAME}/../hooks/pre-merge-review.sh"
 
 # PR JSON with reviewDecision = CHANGES_REQUESTED
 JSON_CHANGES_REQUESTED='{"number":640,"title":"fix: something","reviewDecision":"CHANGES_REQUESTED","reviews":[{"author":{"login":"alice"},"state":"CHANGES_REQUESTED","body":"needs work","submittedAt":"2026-01-20T18:00:00Z"}],"comments":[],"state":"OPEN","statusCheckRollup":[]}'
@@ -83,7 +83,7 @@ echo \"[]\"
 exit 0
 GHEOF
       chmod +x \"${MOCK_DIR}/gh\"
-      '${SCRIPT}' pr merge 640
+      '${SCRIPT}' pr merge 640 --squash --delete-branch
     " 2>&1
 }
 

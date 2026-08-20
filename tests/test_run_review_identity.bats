@@ -6,6 +6,12 @@
 #
 # Run: bats ~/.claude/tests/test_run_review_identity.bats
 
+# Resolve the script under test relative to THIS test file, not via
+# ${HOME}/.claude/hooks — that path is a symlink to the main working
+# directory, so in a git worktree it would silently exercise main's copy
+# instead of the branch under test.
+SCRIPT="${BATS_TEST_DIRNAME}/../hooks/run-review.sh"
+
 setup() {
   # Create a temp git repo so git commands work
   TMPDIR_TEST="$(mktemp -d)"
@@ -46,7 +52,7 @@ run_review() {
   cd "${TMPDIR_TEST}" || exit
   printf 'diff --git a/foo.js b/foo.js\nindex 0000000..1234567 100644\n--- a/foo.js\n+++ b/foo.js\n@@ -0,0 +1 @@\n+const x = 1;\n' \
     | REVIEW_LOG="${EXPECTED_LOG}" CLAUDE_CLI="${CLAUDE_CLI}" \
-      bash "${HOME}/.claude/hooks/run-review.sh"
+      bash "${SCRIPT}"
 }
 
 @test "log header contains 'repo:' field pointing to the test repo root" {
@@ -77,7 +83,7 @@ run_review() {
   cd "${TMPDIR_TEST}"
   printf 'diff --git a/foo.js b/foo.js\nindex 0000000..1234567 100644\n--- a/foo.js\n+++ b/foo.js\n@@ -0,0 +1 @@\n+const x = 1;\n' \
     | CLAUDE_CLI="${CLAUDE_CLI}" \
-      bash "${HOME}/.claude/hooks/run-review.sh" || true
+      bash "${SCRIPT}" || true
   [[ -f "${TMPDIR_TEST}/.git/last-review-result.log" ]]
 }
 

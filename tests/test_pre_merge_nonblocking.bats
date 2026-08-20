@@ -5,7 +5,7 @@
 
 bats_require_minimum_version 1.5.0
 
-SCRIPT="${HOME}/.claude/hooks/lib-review-issues.sh"
+SCRIPT="${BATS_TEST_DIRNAME}/../hooks/lib-review-issues.sh"
 
 # Suppress log output in tests (exported so eval'd functions can call them)
 log_info() { :; }
