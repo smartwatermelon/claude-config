@@ -14,6 +14,12 @@
 #
 # Run: bats ~/.claude/tests/test_run_review_message_file.bats
 
+# Resolve the script under test relative to THIS test file, not via
+# ${HOME}/.claude/hooks — that path is a symlink to the main working
+# directory, so in a git worktree it would silently exercise main's copy
+# instead of the branch under test.
+SCRIPT="${BATS_TEST_DIRNAME}/../hooks/run-review.sh"
+
 setup() {
   TMPDIR_TEST="$(mktemp -d)"
   export TMPDIR_TEST
@@ -82,7 +88,7 @@ _run_review() {
     cd "${TMPDIR_TEST}" || return 1
     printf '%s\n' "${diff}" \
       | REVIEW_LOG="${EXPECTED_LOG}" CLAUDE_CLI="${CLAUDE_CLI}" \
-        bash "${HOME}/.claude/hooks/run-review.sh" "$@"
+        bash "${SCRIPT}" "$@"
   )
 }
 

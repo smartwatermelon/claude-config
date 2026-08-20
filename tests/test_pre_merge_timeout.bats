@@ -17,7 +17,7 @@
 
 bats_require_minimum_version 1.5.0
 
-SCRIPT="${HOME}/.claude/hooks/pre-merge-review.sh"
+SCRIPT="${BATS_TEST_DIRNAME}/../hooks/pre-merge-review.sh"
 
 # Capture log_info output so tests can assert on which path was reported.
 # Exported so the eval'd function can call them.
