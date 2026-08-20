@@ -89,7 +89,11 @@ detailed ledger describing fixes whose code no longer exists, and the next round
 works against a tree missing the fix that spawned its follow-ups.
 
 **Check:** name the exact step that moves code out of the worktree. If you cannot
-point to it, it is not there. Snapshot diffs before any cleanup runs.
+point to it, it is not there. Recording metadata about a fix is not integrating
+it — look for the command that transfers the diff, and confirm it runs *before*
+cleanup. Have agents commit in their own worktree and report `commit`, `branch`,
+and `worktreePath`; the orchestrator then `git fetch`es each branch into the main
+repo. A worktree path you never captured is a diff you cannot retrieve.
 
 ### Establish the full verification command before dispatching anyone
 

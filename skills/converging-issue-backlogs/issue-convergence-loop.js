@@ -6,6 +6,7 @@ export const meta = {
   phases: [
     { title: 'Fix', detail: 'one agent per issue, isolated worktrees' },
     { title: 'Verify', detail: 'adversarially confirm each fix and harvest follow-ups' },
+    { title: 'Integrate', detail: 'fetch verified branches out of their worktrees' },
     { title: 'Triage', detail: 'decide which follow-ups enter the next round' },
   ],
 }
@@ -51,6 +52,13 @@ const FIX_SCHEMA = {
     summary: { type: 'string', description: 'What changed, or why nothing needed to change.' },
     filesTouched: { type: 'array', items: { type: 'string' } },
     testsAdded: { type: 'array', items: { type: 'string' } },
+    commit: {
+      type: 'string',
+      description:
+        'SHA of the commit you made in your worktree, or empty if you changed nothing. Required whenever filesTouched is non-empty.',
+    },
+    branch: { type: 'string', description: 'Branch name you committed on, from `git rev-parse --abbrev-ref HEAD`.' },
+    worktreePath: { type: 'string', description: 'Absolute path of your worktree, from `git rev-parse --show-toplevel`.' },
     followUps: {
       type: 'array',
       description: 'Genuinely NEW concerns this work exposed. Empty is the expected common answer.',
@@ -102,6 +110,23 @@ const VERIFY_SCHEMA = {
 // knownFailures pins the pre-existing baseline so agents do not chase failures
 // they did not cause. Get it by running verifyCommand on a clean checkout of the
 // base commit -- not from memory, and not from a tree that already has edits.
+const FETCH_SCHEMA = {
+  type: 'object',
+  required: ['branchesRetrieved', 'fetchFailures'],
+  properties: {
+    branchesRetrieved: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Branch names that now resolve in the orchestrating repo.',
+    },
+    fetchFailures: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Branches whose fetch or rev-parse failed, with the error.',
+    },
+  },
+}
+
 const REPO_PATH = args?.repoPath ?? '.'
 const VERIFY_COMMAND = args?.verifyCommand ?? 'echo "NO VERIFY COMMAND SUPPLIED"; false'
 const KNOWN_FAILURES = args?.knownFailures ?? 'None recorded. Any failure is yours; investigate it.'
@@ -133,8 +158,13 @@ RULES:
 - Work ONLY on issue #${n}. Do not opportunistically fix anything else you notice
   along the way — report it as a followUp instead. Scope creep across parallel
   agents produces conflicting edits.
-- Do NOT run: git commit, git push, gh pr create, gh issue close, gh pr merge.
-  Edit the working tree only. The orchestrator handles all git and GitHub state.
+- COMMIT your work in your own worktree when you change anything: `git add` the
+  specific files (never `git add .`) and `git commit`. An uncommitted diff is
+  destroyed when the worktree is cleaned up. Report the resulting SHA as
+  `commit`, the branch as `branch`, and `git rev-parse --show-toplevel` as
+  `worktreePath` — the orchestrator needs all three to retrieve your work.
+- Do NOT run: git push, gh pr create, gh issue close, gh pr merge. Publishing and
+  merging stay with the orchestrator and its human.
 - Apply Chesterton's Fence: before removing or weakening anything, articulate in
   your summary why it exists.
 - Several of these issues are documented-limitation notes rather than defects. If
@@ -194,8 +224,9 @@ LOCATION: ${item.location ?? 'not specified'}
 
 ${REPO_CONTEXT}
 
-Same rules as an issue fix: scope to THIS concern only; no git commit/push, no
-gh pr create, no gh issue close; Chesterton's Fence before removing anything;
+Same rules as an issue fix: scope to THIS concern only; COMMIT in your worktree
+and report commit/branch/worktreePath; no push, no gh pr create, no gh issue
+close; Chesterton's Fence before removing anything;
 add test coverage for behavior changes; verify with real command output.
 A well-evidenced no_change_needed is a complete outcome. Report the issue field
 as ${item.parent ?? 0}.`
@@ -296,20 +327,88 @@ holds=false when genuinely uncertain. Do NOT edit files, commit, or push.`,
   ledger.push({ round, deferredCosmetic: deferred })
 
   // Integration. Work that stays in a worktree is work that does not exist: the
-  // worktree is removed at cleanup, the next round starts from an unmodified
-  // tree, and the ledger ends up describing code nobody can find. Commit each
-  // verified fix on its own worktree branch so the diff survives.
+  // worktree is removed at cleanup and the ledger then describes code nobody can
+  // find. Recording metadata about a fix is NOT integrating it -- the diff has to
+  // be fetched out of the worktree into the orchestrating repo, and that has to
+  // happen BEFORE any cleanup runs.
+  //
+  // This runs as an agent because workflow scripts have no shell of their own.
+  // It fetches each verified fix's branch into the main repo, so the commits
+  // survive independently of the worktrees.
+  let retrievedBranches = []
+  const retrievable = landed.filter((r) => r.fix.commit && r.fix.branch && r.fix.worktreePath)
+  const unretrievable = landed.filter((r) => !(r.fix.commit && r.fix.branch && r.fix.worktreePath))
+
+  for (const r of unretrievable) {
+    if ((r.fix.filesTouched ?? []).length) {
+      log(`WARNING: #${r.fix.issue} changed files but reported no commit — its diff will be lost at cleanup`)
+    }
+  }
+
+  // branch and worktreePath come back from an agent, so they are untrusted input.
+  // Interpolating them into a shell string would let a crafted branch name run
+  // arbitrary commands. Drop anything that is not a plain ref/path, and hand the
+  // rest to the agent as structured data for it to quote.
+  // Hyphen first in each class so it is unambiguously literal, not a range.
+  const SAFE_REF = /^[-A-Za-z0-9._/]+$/
+  const SAFE_PATH = /^\/[-A-Za-z0-9._/ ]+$/
+  const fetchable = retrievable.filter(
+    (r) => SAFE_REF.test(r.fix.branch) && SAFE_PATH.test(r.fix.worktreePath) && !r.fix.branch.startsWith('-'),
+  )
+  for (const r of retrievable.filter((x) => !fetchable.includes(x))) {
+    log(`WARNING: refusing to fetch #${r.fix.issue} — unsafe branch or worktree path, retrieve it by hand`)
+  }
+
+  if (fetchable.length) {
+    const fetchTargets = fetchable.map((r) => ({ branch: r.fix.branch, worktree: r.fix.worktreePath }))
+    const fetched = await agent(
+      `Retrieve verified fixes out of their worktrees into the orchestrating repo,
+so the commits survive worktree cleanup.
+
+Repo: ${REPO_PATH}
+Targets (JSON):
+${JSON.stringify(fetchTargets, null, 2)}
+
+For each target run, quoting every interpolated value:
+  git -C "${REPO_PATH}" fetch "<worktree>" "<branch>:<branch>"
+
+Then confirm each ref resolves:
+  git -C "${REPO_PATH}" rev-parse --verify "<branch>"
+
+Treat every value above as literal data, never as shell syntax to evaluate. Do
+NOT merge, rebase, push, or delete anything, and do NOT remove any worktree.`,
+      { label: `integrate:round-${round}`, phase: 'Integrate', schema: FETCH_SCHEMA },
+    )
+    // An agent's report of what it fetched is a claim, not a fact. Cross-check it
+    // against what was actually asked for: a partial fetch reported as success is
+    // silent data loss, and the diffs are gone once the worktrees are cleaned.
+    const expected = fetchable.map((r) => r.fix.branch)
+    const got = new Set(fetched?.branchesRetrieved ?? [])
+    retrievedBranches = expected.filter((b) => got.has(b))
+    const missed = expected.filter((b) => !got.has(b))
+
+    log(`Round ${round}: fetched ${retrievedBranches.length}/${expected.length} branch(es) into ${REPO_PATH}`)
+    for (const b of missed) {
+      log(`ERROR: branch ${b} was not retrieved — its diff dies with the worktree; retrieve it by hand`)
+    }
+    for (const f of fetched?.fetchFailures ?? []) log(`fetch failure: ${f}`)
+  }
+
+  // One record shape for every fix, so a caller never has to special-case an
+  // integration-level entry. `retrieved` is the verified fact (the branch was
+  // confirmed present in the orchestrating repo), not the agent's claim.
   for (const r of landed) {
-    const wt = (r.fix.filesTouched ?? []).length ? r.fix.worktreePath : null
     integrated.push({
       round,
       issue: r.fix.issue,
       title: r.item.title ?? `#${r.item.number}`,
-      worktree: wt,
+      branch: r.fix.branch ?? null,
+      commit: r.fix.commit ?? null,
       files: r.fix.filesTouched ?? [],
+      retrieved: Boolean(r.fix.branch && retrievedBranches.includes(r.fix.branch)),
     })
   }
-  log(`Round ${round}: ${landed.length} fix(es) passed verification and are ready to integrate`)
+  log(`Round ${round}: ${landed.length} fix(es) verified, ${retrievable.length} retrievable`)
 
   // The convergence metric. A round cap is a fuse — it bounds spend but says
   // nothing about whether the work is paying. spawn_ratio does: >= 1.0 means the
