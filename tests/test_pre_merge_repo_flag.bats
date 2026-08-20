@@ -17,7 +17,7 @@
 #
 # Run: bats ~/.claude/tests/test_pre_merge_repo_flag.bats
 
-SCRIPT="${HOME}/.claude/hooks/pre-merge-review.sh"
+SCRIPT="${BATS_TEST_DIRNAME}/../hooks/pre-merge-review.sh"
 VALID_JSON='{"number":123,"title":"test PR","reviewDecision":"APPROVED","reviews":[],"comments":[],"state":"OPEN","statusCheckRollup":[{"name":"CI","status":"COMPLETED","conclusion":"SUCCESS"}]}'
 
 setup() {
