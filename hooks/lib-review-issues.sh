@@ -875,10 +875,15 @@ create_batched_nonblocking_issue() {
   local sections="" labels="tech-debt" count=0 has_unverified=false
   local current_block="" section
 
+  # Bash has no nested-function scope: this name lands in the GLOBAL function
+  # namespace while create_batched_nonblocking_issue runs, so it is prefixed
+  # to avoid clobbering an unrelated `_accumulate` in a calling context. See
+  # #391.
+  #
   # MUST be called directly, never via $(...) or a pipeline: it mutates the
   # enclosing function's locals (sections, count, labels, has_unverified),
   # and a subshell would discard those mutations silently. See #388.
-  _accumulate() {
+  _cbni_accumulate() {
     local block="$1"
     [[ -n "${block}" ]] || return 0
 
@@ -927,14 +932,14 @@ create_batched_nonblocking_issue() {
 
   while IFS= read -r line; do
     if [[ "${line}" == "---ISSUE---" ]]; then
-      _accumulate "${current_block}"
+      _cbni_accumulate "${current_block}"
       current_block=""
     else
       current_block+="${line}"$'\n'
     fi
   done <<<"${parsed}"
-  _accumulate "${current_block}"
-  unset -f _accumulate
+  _cbni_accumulate "${current_block}"
+  unset -f _cbni_accumulate
 
   # Nothing parsed into a renderable finding — file nothing.
   [[ "${count}" -gt 0 ]] || return 0
