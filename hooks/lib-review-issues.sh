@@ -863,6 +863,9 @@ create_batched_nonblocking_issue() {
   local sections="" labels="tech-debt" count=0 has_unverified=false
   local current_block="" section
 
+  # MUST be called directly, never via $(...) or a pipeline: it mutates the
+  # enclosing function's locals (sections, count, labels, has_unverified),
+  # and a subshell would discard those mutations silently. See #388.
   _accumulate() {
     local block="$1"
     [[ -n "${block}" ]] || return 0
@@ -928,12 +931,20 @@ create_batched_nonblocking_issue() {
     labels="${labels},unverified"
   fi
 
-  local pr_ref="${PR_NUMBER:-unknown}"
-  local title="Non-blocking review findings from PR #${pr_ref} (${count})"
-  local body
-  body="Non-blocking concerns raised while reviewing PR #${pr_ref}"
-  if [[ -n "${PR_TITLE:-}" ]]; then
-    body+=" (${PR_TITLE})"
+  # PR_NUMBER is optional: run-review.sh's whole-codebase pre-push review
+  # calls this with no PR in context. Match the per-issue path's convention
+  # (build_issue_body, above) and describe the review instead of emitting a
+  # placeholder PR number. See #388.
+  local title body
+  if [[ -n "${PR_NUMBER:-}" ]]; then
+    title="Non-blocking review findings from PR #${PR_NUMBER} (${count})"
+    body="Non-blocking concerns raised while reviewing PR #${PR_NUMBER}"
+    if [[ -n "${PR_TITLE:-}" ]]; then
+      body+=" (${PR_TITLE})"
+    fi
+  else
+    title="Non-blocking review findings from pre-push review (${count})"
+    body="Non-blocking concerns raised during pre-push whole-codebase review"
   fi
   body+=".
 

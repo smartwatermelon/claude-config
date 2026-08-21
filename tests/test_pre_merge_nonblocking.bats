@@ -1680,6 +1680,10 @@ DETAILS: Detail two."
   cat >"${MOCK_DIR}/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "$@" >> "${GH_CALLS_FILE}"
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--body" ]]; then printf '%s' "$2" > "${MOCK_DIR}/body.txt"; fi
+  shift
+done
 exit 0
 EOF
   chmod +x "${MOCK_DIR}/gh"
@@ -1696,8 +1700,11 @@ DETAILS: Detail two."
 
   create_batched_nonblocking_issue "${parsed}" "${PENDING_ISSUES_DIR}"
 
-  grep -q "Alpha finding" "${GH_CALLS_FILE}"
-  grep -q "Beta finding" "${GH_CALLS_FILE}"
+  # Assert against the --body argument specifically, not the whole gh call
+  # line: a whole-line grep would also pass if the strings only appeared in
+  # --title or --label, which is a weaker contract than intended (#388).
+  grep -q "Alpha finding" "${MOCK_DIR}/body.txt"
+  grep -q "Beta finding" "${MOCK_DIR}/body.txt"
 }
 
 @test "create_batched_nonblocking_issue: applies the security label when any finding is security-critical" {
@@ -1839,4 +1846,70 @@ DETAILS: Detail two." "${PENDING_ISSUES_DIR}"
 
   # A detail line must never be immediately followed by the next bullet.
   ! grep -q 'Detail one ends here\.- \[ \]' "${GH_CALLS_FILE}"
+}
+
+@test "create_batched_nonblocking_issue: non-PR context does not emit 'PR #unknown' (#388)" {
+  _load_fn _parse_issue_fields
+  _load_fn _asserts_incorrectness
+  _load_fn _format_issue_section
+  _load_fn needs_security_label
+  _load_fn is_security_critical
+  _load_fn _repo_has_issues_enabled
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
+
+  # run-review.sh's whole-codebase review calls this with no PR in context.
+  PR_NUMBER=""
+  PR_TITLE=""
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  create_batched_nonblocking_issue "TITLE: Some finding
+SOURCE: pre-push whole-codebase review
+LOCATION: src/a.ts:1
+DETAILS: Detail one." "${PENDING_ISSUES_DIR}"
+
+  ! grep -q "PR #unknown" "${GH_CALLS_FILE}"
+  ! grep -q "unknown" "${GH_CALLS_FILE}"
+}
+
+@test "create_batched_nonblocking_issue: PR context still names the PR in the title" {
+  _load_fn _parse_issue_fields
+  _load_fn _asserts_incorrectness
+  _load_fn _format_issue_section
+  _load_fn needs_security_label
+  _load_fn is_security_critical
+  _load_fn _repo_has_issues_enabled
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
+
+  PR_NUMBER="91"
+  PR_TITLE="Some PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  create_batched_nonblocking_issue "TITLE: Some finding
+SOURCE: code-reviewer
+LOCATION: src/a.ts:1
+DETAILS: Detail one." "${PENDING_ISSUES_DIR}"
+
+  grep -q "from PR #91" "${GH_CALLS_FILE}"
 }
