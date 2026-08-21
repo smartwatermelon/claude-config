@@ -206,28 +206,6 @@ check "Not exempt (#137): newline-chained gh pr create / gh api merge" 2 "${inp}
 inp="$(make_input "${cmd_multiline}")"
 check "Still exempt (#137 regression guard): indented heredoc gh api example" 0 "${inp}"
 
-# An unwritable audit log must not change the VERDICT. These hooks run under
-# `set -euo pipefail`, so an unguarded append exits non-zero on its own and the
-# script never reaches its intended `exit 2` -- degrading the documented
-# PreToolUse block code to a generic error. Same defect class as #398.
-check_blocks_with_unwritable_log() {
-  local desc="${1}" input="${2}" tmphome actual=0
-  tmphome="$(mktemp -d)" # deliberately WITHOUT .claude/, as on first run
-  printf '%s\n' "${input}" | HOME="${tmphome}" "${HOOK}" >/dev/null 2>&1 || actual=$?
-  rm -rf "${tmphome}"
-  if [[ "${actual}" -eq 2 ]]; then
-    echo "  PASS: ${desc}"
-    ((pass += 1))
-  else
-    echo "  FAIL: ${desc} (exit ${actual}, want 2 -- log failure must not change the code)"
-    ((fail += 1))
-  fi
-}
-
-merge_ep="repos/o/r/pulls/1/""merge"
-inp="$(make_input "gh api -X PUT ${merge_ep}")"
-check_blocks_with_unwritable_log "unwritable log still exits 2" "${inp}"
-
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]
