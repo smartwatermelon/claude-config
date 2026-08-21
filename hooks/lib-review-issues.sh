@@ -735,7 +735,8 @@ _VERIFY_ASSERTION_MARKERS=(
   #
   # Measured against the same corpus as Groups 1-2 plus the 13 findings in
   # tests/test_pre_merge_nonblocking.bats that must stay unflagged (the
-  # test-54 "careful phrasing" set and a style-finding set): 6/6 of the real
+  # "broad negative phrasing stays UNflagged" set (7) and the "style and
+  # structure findings stay UNflagged" set (6)): 6/6 of the real
   # false findings flag, 0/13 legitimate findings do. Re-run that measurement
   # before adding anything here -- broad terms like "treats" or "resolves to"
   # were rejected for catching careful phrasing.
