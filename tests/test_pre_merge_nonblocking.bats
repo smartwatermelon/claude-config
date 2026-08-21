@@ -1302,6 +1302,20 @@ _load_gate3_fns() {
   # guard.
   unset _LIB_REVIEW_ISSUES_LOADED
   source "${SCRIPT}"
+
+  # Fail loudly if the source did not actually take effect. If a fixture
+  # sources the library earlier WITHOUT clearing the guard, the source above
+  # returns immediately and _VERIFY_ASSERTION_MARKERS stays empty or stale --
+  # at which point _asserts_incorrectness matches nothing and every gate3
+  # test passes vacuously. Verified reachable: with the guard pre-set, the
+  # re-source is a no-op and "The SHA is incorrect" stops being flagged.
+  # See #356.
+  if [[ "${#_VERIFY_ASSERTION_MARKERS[@]}" -eq 0 ]]; then
+    echo "_load_gate3_fns: _VERIFY_ASSERTION_MARKERS is empty after sourcing" >&2
+    echo "  ${SCRIPT} was likely already sourced with the guard set," >&2
+    echo "  making the source a no-op. gate3 tests would pass vacuously." >&2
+    return 1
+  fi
   # _load_fn extraction still runs afterwards, so these tests keep exercising
   # the same individually-extracted definitions they always did.
   _load_dedup_fns

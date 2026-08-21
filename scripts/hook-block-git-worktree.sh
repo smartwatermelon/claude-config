@@ -100,6 +100,18 @@ path_in_scope() {
     path="${BASH_REMATCH[1]}"
   fi
 
+  # A multi-token quoted match leaves the CLOSING quote on the path token
+  # rather than the subcommand: `bash -c 'git worktree add
+  # .claude/worktrees/ok'` arrives here as `.claude/worktrees/ok'`. That was
+  # accepted only because the scope prefix match below ends in `?*`, which
+  # tolerates a stray quote inside the leaf name -- the right answer for an
+  # incidental reason. Strip one unmatched trailing quote so the acceptance
+  # is explicit, and so tightening that match later (e.g. to an exact-segment
+  # comparison) does not silently reject legitimate quoted creation.
+  # Unscoped paths were and remain rejected either way. See #377.
+  path="${path%\'}"
+  path="${path%\"}"
+
   # Reject unexpanded shell constructs. We cannot resolve these statically,
   # so they can never be proven in-scope. Covers $VAR, ${VAR}, $(cmd),
   # backticks, ~ expansion, and glob characters.

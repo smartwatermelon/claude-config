@@ -150,7 +150,7 @@
   "skipDangerousModePermissionPrompt": true,
   "theme": "dark",
   "editorMode": "normal",
-  "verbose": true,
+  "verbose": false,
   "remoteControlAtStartup": true,
   "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
