@@ -170,16 +170,17 @@ path_in_scope() {
   return 1
 }
 
-# Pull the target path out of a creation invocation's argument list.
+# Pull the target path out of a subcommand's argument list.
 #
-# Creation accepts flags before the path (`-b <branch>`, `-B <branch>`,
+# Both callers accept flags before the path (`-b <branch>`, `-B <branch>`,
 # `--detach`, `--force`, ...), so the path is NOT reliably the first argument.
 # Walk the tokens, consuming flags (and the value of those flags that take one),
 # and return the first bare operand -- that is the path. A trailing <commit-ish>
 # may follow it, which we ignore.
-# First non-flag operand of a subcommand's argument list. Correct for both
-# `add <path>` and `remove [--force] <worktree>`: --force is valueless, so the
-# valueless-flag arm skips it and the worktree path is still the first operand.
+#
+# Correct for both `add <path>` and `remove [--force] <worktree>`: --force is
+# valueless, so the valueless-flag arm skips it and the path is still the first
+# bare operand.
 extract_path_operand() {
   local -a tokens=("$@")
   local i=0 tok
