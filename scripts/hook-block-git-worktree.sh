@@ -190,27 +190,43 @@ block() {
 # KNOWN LIMITATION -- READ BEFORE RELYING ON THIS AS A SECURITY BOUNDARY.
 # This is a regex approximation of shell syntax, not a shell parser, and it is
 # BYPASSABLE. The separator alternation below recognizes `&&`, `||`, `;`, `|`,
-# `&`, `(`, and `{`, plus the `then`/`do` keywords. It does NOT recognize:
-#
-#   * backticks:             echo `git ... `                   -- NOT blocked
-#   * aliases and shell functions that resolve to git
-#   * obfuscation via variables, e.g. G=git; $G ...
+# `&`, `(`, `{`, and the backtick, plus the `then`/`do` keywords.
 #
 # Handled: `$(...)` command substitution (the `(` alternative catches it),
-# `env`/`command`/`sudo`-prefixed git, and absolute/relative-path invocation
-# such as `/usr/bin/git`.
+# `` `...` `` command substitution (the backtick alternative, which also
+# terminates the captured argument list so the closing backtick is not
+# swallowed into the path token), `env`/`command`/`sudo`-prefixed git, and
+# absolute/relative-path invocation such as `/usr/bin/git`.
+#
+# NOT handled, and NOT closeable at this layer:
+#
+#   * aliases and shell functions that resolve to git
+#   * obfuscation via variables, e.g. G=git; $G worktree add /tmp/evil
+#
+# Both require knowing what a name resolves to at runtime. A PreToolUse hook
+# receives the raw, unexpanded command string and never sees the shell that
+# will execute it: there is no alias table, no function table, and no variable
+# environment to consult. No amount of parsing -- regex or full tokenization --
+# recovers that information, so these two are permanent properties of where
+# this check runs, not a to-do. Closing them would require gating at execution
+# time inside the shell rather than before it.
 #
 # These gaps predate the dotfiles#200 carve-out (the pre-change hook fails open
 # on them identically), but they matter MORE now. Previously this regex gated a
 # decision already fixed at "block", so a bypass merely produced an unscoped
 # worktree. Now it is the sole gate deciding whether path-scoping runs at all:
 # a bypassed occurrence skips path_in_scope() entirely. Treat the policy table
-# at the top of this file as describing INTENT, not a guarantee that no crafted
-# string can evade it. Properly closing this requires real shell tokenization
-# rather than a regex, which is deliberately out of scope here.
+# at the top of this file as describing INTENT for cooperative callers, not a
+# guarantee that no crafted string can evade it.
 # `(env|command|sudo[[:space:]]+)*` consumes wrapper commands; `([^[:space:]]*/)?`
 # consumes a leading path on the git binary itself (/usr/bin/git, ./git).
-worktree_re='(^|&&|\|\||;|\||&|\(|\{|[[:space:]]then|[[:space:]]do)[[:space:]]*((env|command|sudo)[[:space:]]+)*([^[:space:]|;&(){]*/)?git[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*worktree([[:space:]]+[^|;&){]*)?'
+#
+# The backtick is spelled via ${bt} rather than inline: a literal backtick
+# inside a single-quoted string reads to shellcheck as an unexpanded command
+# substitution (SC2016), and disable directives are not permitted here.
+bt=$(printf '\140')
+readonly bt
+worktree_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|[[:space:]]then|[[:space:]]do)[[:space:]]*((env|command|sudo)[[:space:]]+)*([^[:space:]|;&(){${bt}]*/)?git[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&${bt}[:space:]]*[[:space:]]+)?)*worktree([[:space:]]+[^|;&){${bt}]*)?"
 
 mapfile -t matches < <(printf '%s\n' "${cmd}" | grep -oE "${worktree_re}" || true)
 
