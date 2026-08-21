@@ -384,7 +384,7 @@ check_audit() {
   # bug that split the record apart would still pass. Match the whole shape --
   # timestamp, prefix, scope path, then the command.
   if [[ -s "${logfile}" ]] && grep -qE \
-    '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z AUDIT GIT WORKTREE REMOVE \(out of scope: [^)]+\): .*git worktree remove' \
+    '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z AUDIT GIT WORKTREE REMOVE \(out of scope: [^)]+\): .*git worktree remove' \
     "${logfile}"; then
     logged=yes
   fi
