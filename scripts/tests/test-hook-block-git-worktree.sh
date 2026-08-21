@@ -272,6 +272,19 @@ check "quote prefix: read-only subcommand allowed" 0 "${inp}"
 heredoc_cmd=$(printf 'cat <<EOF\ngit %s add /tmp/evil\nEOF' 'worktree')
 inp="$(make_input "${heredoc_cmd}")"
 check "heredoc body is matched at line start (not a bypass)" 2 "${inp}"
+# --- Backslash in a path (read -r -a does not honor the escape) ---
+# `read -r -a` splits on IFS without honoring backslash escapes, so
+# `.claude/worktrees/my\\ evil` arrives as two tokens and only the first reaches
+# path_in_scope(). That token IS a valid in-scope prefix, so the hook would
+# approve it -- while the shell goes on to create `.claude/worktrees/my evil`,
+# a different path than the one validated. Refused rather than approximated.
+bs='\\'
+inp="$(make_input "git worktree add .claude/worktrees/my${bs} evil")"
+check "backslash: escaped space in an in-scope path is refused" 2 "${inp}"
+inp="$(make_input "git worktree add /tmp/my${bs} evil")"
+check "backslash: escaped space in an out-of-scope path is refused" 2 "${inp}"
+inp="$(make_input "git worktree add .claude/worktrees/plain")"
+check "backslash: an unescaped scoped path is still allowed" 0 "${inp}"
 
 # --- PERMANENTLY OPEN gaps, asserted as CURRENT behavior, not desired ---
 # Documented in the KNOWN LIMITATION block in the hook header. A PreToolUse
