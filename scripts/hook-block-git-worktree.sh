@@ -17,7 +17,8 @@
 #                                 predating the ban was permanently
 #                                 un-cleanable by tooling, and held its
 #                                 branch checked out so `git branch -D`
-#                                 refused.
+#                                 refused. Deliberately NOT path-scoped --
+#                                 see the ACCEPTED TRADE-OFF note below.
 #     ALLOWED  add <path>         ONLY when <path> is under `.claude/worktrees/`.
 #                                 This matches the Agent tool's
 #                                 `isolation: "worktree"` convention
@@ -29,6 +30,29 @@
 #     BLOCKED  move, lock, unlock, repair
 #                                 rewrite worktree administrative state.
 #     BLOCKED  bare `git worktree`, unknown/future subcommands (fail closed).
+#
+#   ACCEPTED TRADE-OFF -- `remove`/`prune` accept ANY path, in or out of scope.
+#   Unlike `add`, cleanup runs no path inspection at all. `git worktree remove
+#   --force /anywhere/else` passes, and `--force` is itself allowed on purpose
+#   (agent worktrees carry untracked setup files, and plain `remove` refuses
+#   those). So one agent CAN destroy a peer agent's worktree along with its
+#   uncommitted work. That is a real consequence, not a theoretical one.
+#
+#   It is accepted rather than fixed because path-scoping `remove` would undo
+#   the exact thing dotfiles#200 fixed: the worktrees most needing cleanup are
+#   the pre-ban ones, which by definition sit at arbitrary paths OUTSIDE
+#   `.claude/worktrees/`. A scoped `remove` would leave them permanently
+#   un-cleanable and still holding their branches checked out -- the original
+#   bug. Scoping creation but not cleanup is the asymmetry that makes both
+#   halves work.
+#
+#   What bounds the risk: `remove` only affects worktrees already registered in
+#   `.git/config`, so it cannot reach into arbitrary directories; and cleanup
+#   only ever reduces worktree count, so it cannot recreate a collision. The
+#   residual exposure is peer-agent worktrees, which are registered by design.
+#   If concurrent-agent worktree clobbering is ever observed in practice, the
+#   fix belongs in agent orchestration (ownership metadata per worktree), not
+#   in a regex hook that cannot tell one agent's path from another's.
 #
 #   Why the ban was relaxed at all: "work directly on a feature branch instead"
 #   assumed one worker per checkout. Subagent-driven execution is now the
@@ -246,6 +270,12 @@ for match in "${matches[@]}"; do
       ;;
     # Cleanup: only ever reduces worktree count, so it cannot recreate the
     # collision conditions the ban was written for.
+    #
+    # Intentionally NOT path-scoped, unlike `add` above. The worktrees most in
+    # need of cleanup are pre-ban ones living outside `.claude/worktrees/`, so
+    # scoping here would restore the un-cleanable-worktree bug dotfiles#200
+    # fixed. The cost is that an agent can remove a peer agent's worktree; see
+    # the ACCEPTED TRADE-OFF note in the header before narrowing this.
     remove | prune)
       continue
       ;;

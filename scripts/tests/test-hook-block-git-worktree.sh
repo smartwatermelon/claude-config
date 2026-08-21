@@ -69,6 +69,14 @@ inp="$(make_input 'git worktree remove --force .claude/worktrees/agent-abc')"
 check "cleanup: remove --force (required for dirty worktrees)" 0 "${inp}"
 inp="$(make_input 'git worktree prune --dry-run')"
 check "cleanup: prune --dry-run" 0 "${inp}"
+# ACCEPTED TRADE-OFF (#347): cleanup is deliberately NOT path-scoped, so the
+# forceful out-of-scope form -- the one that can destroy a peer agent's
+# worktree and its uncommitted work -- is allowed too. Pinned so that adding
+# path-scoping to `remove` trips a test instead of silently re-breaking the
+# pre-ban cleanup case dotfiles#200 fixed. See the header's ACCEPTED TRADE-OFF
+# note before changing this expectation.
+inp="$(make_input 'git worktree remove --force /tmp/other-agents-worktree')"
+check "cleanup: forceful out-of-scope remove (deliberately allowed, #347)" 0 "${inp}"
 
 # --- dotfiles#200: creation ALLOWED only under .claude/worktrees/ ---
 inp="$(make_input 'git worktree add .claude/worktrees/agent-abc123')"
