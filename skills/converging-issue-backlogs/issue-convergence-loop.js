@@ -181,8 +181,21 @@ followUps must be genuinely NEW problems this work exposed — not restatements 
 Returning an empty followUps array is the expected common answer.
 `
 
+// Dedup is best-effort text matching over LLM-generated output, not semantic
+// similarity. Two reports of one concern differ in incidental ways -- whitespace,
+// and especially precision: `scripts/foo.sh:42` and `scripts/foo.sh` name the
+// same file. Normalizing both away costs nothing (a genuinely distinct concern
+// in the same file still differs by title) and closes the re-admission path
+// that keeps a backlog alive. Near-duplicates that survive this still need a
+// human to merge them.
 function keyOf(c) {
-  return `${(c.location ?? '').trim()}::${c.title.trim().toLowerCase().slice(0, 80)}`
+  const location = (c.location ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/:\d+(?::\d+)?$/, '') // drop trailing :line or :line:col
+    .replace(/\s+/g, '')
+  const title = c.title.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 80)
+  return `${location}::${title}`
 }
 
 const MAX_ATTEMPTS = args?.maxAttempts ?? 2
@@ -355,7 +368,11 @@ holds=false when genuinely uncertain. Do NOT edit files, commit, or push.`,
   const fetchable = retrievable.filter(
     (r) => SAFE_REF.test(r.fix.branch) && SAFE_PATH.test(r.fix.worktreePath) && !r.fix.branch.startsWith('-'),
   )
-  for (const r of retrievable.filter((x) => !fetchable.includes(x))) {
+  // Set membership over object refs, not `fetchable.includes` inside a filter:
+  // the same pattern copy-pasted into a higher-fan-out context is quadratic.
+  const fetchableRefs = new Set(fetchable)
+  for (const r of retrievable) {
+    if (fetchableRefs.has(r)) continue
     log(`WARNING: refusing to fetch #${r.fix.issue} — unsafe branch or worktree path, retrieve it by hand`)
   }
 
@@ -480,7 +497,10 @@ return {
   roundsRun: round,
   maxRounds: MAX_ROUNDS,
   ledger: ledger.filter((e) => e.issue !== undefined),
-  deferredCosmetic: ledger.flatMap((e) => e.deferredCosmetic ?? []),
+  // Stamped with the round it was deferred in. `roundStats[].deferred` gives the
+  // per-round count; without `round` on the entries themselves a caller reading
+  // this list cannot line the two up, and reads convergence history blind.
+  deferredCosmetic: ledger.flatMap((e) => (e.deferredCosmetic ?? []).map((c) => ({ ...c, round: e.round }))),
   roundStats,
   integrated,
   quarantined,
