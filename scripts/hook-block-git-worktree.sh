@@ -201,7 +201,12 @@ extract_path_operand() {
         ;;
     esac
   done
-  # No operand found.
+  # No operand found. Callers diverge on what that means, deliberately:
+  # `add` treats an empty result as "creation with no explicit path" and
+  # BLOCKS it (a path that cannot be shown in scope is not allowed); `remove`
+  # treats it as "nothing to inspect" and skips the audit, since a removal with
+  # no operand is rejected by git itself. Returning empty rather than failing
+  # keeps that policy choice at the call site.
   return 0
 }
 
@@ -210,6 +215,8 @@ extract_path_operand() {
 # on purpose (see the ACCEPTED TRADE-OFF note in the header) but leaves no
 # trace otherwise. A distinct prefix keeps it out of anything counting
 # "BLOCKED GIT WORKTREE" -- this is an audit record, not a refusal.
+# Reads ${cmd} from the enclosing scope, matching block() below. Both are
+# defined only for use inside the command-scanning loop where ${cmd} is set.
 warn_out_of_scope_remove() {
   local target="${1}"
   printf '%s AUDIT GIT WORKTREE REMOVE (out of scope: %s): %s\n' \
