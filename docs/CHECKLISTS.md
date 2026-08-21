@@ -96,9 +96,10 @@ sed -n '/NON_BLOCKING_ISSUE:/,/END_ISSUE/p' /tmp/dryrev/out.txt
 Fix what it reports, commit, re-run until the count is 0, then push.
 
 **Why the stub:** filing is gated on the output containing
-`NON_BLOCKING_ISSUE:`, and `gh` failing makes the filing step write a local
-fallback file instead of creating an issue. Nothing is lost and no issue is
-created.
+`NON_BLOCKING_ISSUE:`, and `gh` failing makes the filing step fall back to a
+local file under `~/.claude/pending-issues/` instead of creating an issue. If
+that write also fails the findings are dropped with a warning — but you are
+reading them from `out.txt` anyway, which is the point of the dry-run.
 
 **Bonus:** the review cache is keyed on the diff hash, so a clean dry-run makes
 the real push a cache hit — it reports "Codebase review cached: identical diff
