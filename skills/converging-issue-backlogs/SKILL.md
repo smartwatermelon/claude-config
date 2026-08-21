@@ -133,6 +133,29 @@ asserted logic; and a second suite never run.
 Fixes land looking verified, vacuous green hides what is wrong, the next round
 rediscovers it as new. Fix the verification before running rounds.
 
+### Read review findings before the tooling files them
+
+If your review tooling files its findings as issues, the backlog is
+self-feeding by construction: every push that fixes issues creates the next
+round of them, and you only learn what they say after they exist. Rounds
+measured this way look like progress while the queue never drains.
+
+Run the same reviewer yourself, before the push, with its filing path disabled
+-- a stubbed CLI, a dry-run flag, whatever the tool offers. Then a finding is
+something you fix, not something you inherit.
+
+Two rules for acting on what it says:
+
+- **A finding can be right about what to change and wrong about why.** Check the
+  mechanism before you act on it, especially when the finding explains how a
+  tool or runtime behaves. One in a real run asserted a regex matched a literal
+  character rather than a newline, with a "verified" note attached; a one-line
+  check showed the opposite. The conclusion was still correct.
+- **Never loosen a matcher without pinning its true positives first.** Build the
+  corpus of cases that must still match, then change the pattern, then re-run.
+  A fix that stops one false positive is one character away from silently
+  un-blocking a real one.
+
 ## Admitting Follow-Ups
 
 Agents are rewarded for finishing. Filing a follow-up is the cheapest way to
@@ -172,6 +195,8 @@ about half.
 - Round cap treated as the stopping rule, with no convergence measure
 - A follow-up with no artifact, only a description
 - A round reported as complete while its code sits uncommitted in a worktree
+- Review tooling that files findings as issues, run without reading them first
+- A matcher loosened to kill a false positive, with no corpus of true positives
 
 ## Common Mistakes
 
@@ -184,6 +209,8 @@ about half.
 | Trusting green without falsifying it | The check is the bug; backlog regenerates |
 | Working cosmetic follow-ups | Loop never terminates |
 | Dedup against the queue only | Rejected concerns return every round |
+| Findings read only after the tooling files them | Every push seeds the next round |
+| Acting on a finding without checking its mechanism | You fix the wrong thing, confidently |
 
 ## Reference Implementation
 

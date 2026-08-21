@@ -45,6 +45,10 @@
 ```
 □ All pre-commit checks pass
 □ Adversarial review clean (runs on every commit via hook)
+□ Dry-run the pre-push codebase reviewer and FIX what it finds, before pushing
+  (see "Pre-Push Review Dry-Run" below). The pre-push hook files its
+  non-blocking findings as GitHub issues; reading them first means fixing
+  them instead of inheriting a backlog.
 □ If subagent-driven-development was used: treat all subagent-reported reviews
   as UNVERIFIED. Before pushing, run a full-diff adversarial review manually:
     git diff main..HEAD | claude --agent adversarial-reviewer -p --tools ""
@@ -64,6 +68,62 @@
 □ Ready to monitor CI and respond to reviewer
 □ Will not context-switch until Protocol 5 complete
 ```
+
+---
+
+## Pre-Push Review Dry-Run
+
+The pre-push hook runs a whole-codebase review and **files every non-blocking
+finding as a GitHub issue**. Learning about findings after the push means
+inheriting them as a backlog; running the same reviewer first means fixing
+them.
+
+Run the reviewer the hook would run, with `gh` stubbed out so it cannot file:
+
+```bash
+mkdir -p /tmp/dryrev/bin
+printf '#!/bin/sh\nexit 1\n' > /tmp/dryrev/bin/gh
+chmod +x /tmp/dryrev/bin/gh
+
+git diff origin/main...HEAD > /tmp/dryrev/diff.txt
+PATH="/tmp/dryrev/bin:$PATH" ~/.claude/hooks/run-review.sh --mode=codebase \
+  < /tmp/dryrev/diff.txt > /tmp/dryrev/out.txt 2>&1
+
+grep -c 'NON_BLOCKING_ISSUE:' /tmp/dryrev/out.txt   # 0 means nothing will be filed
+sed -n '/NON_BLOCKING_ISSUE:/,/END_ISSUE/p' /tmp/dryrev/out.txt
+```
+
+Fix what it reports, commit, re-run until the count is 0, then push.
+
+**Why the stub:** filing is gated on the output containing
+`NON_BLOCKING_ISSUE:`, and `gh` failing makes the filing step fall back to a
+local file under `~/.claude/pending-issues/` instead of creating an issue. If
+that write also fails the findings are dropped with a warning — but you are
+reading them from `out.txt` anyway, which is the point of the dry-run.
+
+**Bonus:** the review cache is keyed on the diff hash, so a clean dry-run makes
+the real push a cache hit — it reports "Codebase review cached: identical diff
+previously passed" and does not re-review.
+
+### Treat findings as claims, not facts
+
+A finding can be right about *what* to change and wrong about *why*. One in
+this repo asserted that `[\n]` in an ERE bracket matches a literal `n` and not
+a newline, with a `VERIFIED:` block stating so; a one-line check showed the
+opposite. The conclusion (dead weight, remove it) was still correct.
+
+Check the mechanism before acting on it, especially when the finding explains
+how a tool or runtime behaves. That is what `lib-review-issues.sh` Group 3
+exists to flag, and it applies to findings about your own diff too.
+
+### Do not loosen a matcher without pinning the true positives first
+
+When a finding asks you to stop something from matching, build the corpus of
+cases that MUST still match before you touch the pattern, and re-run it after.
+A fix to the api-merge hook here omitted `$(` from a command-position anchor —
+command substitution executes, so that silently un-blocked a real bypass. The
+existing suite caught it. Falsify in both directions: the loosened case must
+now pass, and every previously-blocking case must still block.
 
 ---
 
