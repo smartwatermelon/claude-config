@@ -394,25 +394,24 @@ create_nonblocking_issues() {
     command gh label create "unverified" --color "#fbca04" --description "Finding asserts a fact that was never checked" --repo "${REPO_OWNER}/${REPO_NAME}" --force >/dev/null 2>&1 || true
   fi
 
-  # Process each block (separated by ---ISSUE--- sentinel).
+  # Personal repos: batch every finding into ONE tracking issue rather than
+  # one issue per finding. See create_batched_nonblocking_issue for why.
+  if ! is_corporate_repo; then
+    create_batched_nonblocking_issue "${parsed}" "${pending_dir}"
+    return 0
+  fi
+
+  # Corporate repos keep the per-finding Apple Note path unchanged.
   local current_block=""
   while IFS= read -r line; do
     if [[ "${line}" == "---ISSUE---" ]]; then
-      if is_corporate_repo; then
-        _process_issue_block_apple_note "${current_block}" "${pending_dir}"
-      else
-        _process_issue_block "${current_block}" "${pending_dir}"
-      fi
+      _process_issue_block_apple_note "${current_block}" "${pending_dir}"
       current_block=""
     else
       current_block+="${line}"$'\n'
     fi
   done <<<"${parsed}"
-  if is_corporate_repo; then
-    _process_issue_block_apple_note "${current_block}" "${pending_dir}"
-  else
-    _process_issue_block "${current_block}" "${pending_dir}"
-  fi
+  _process_issue_block_apple_note "${current_block}" "${pending_dir}"
 }
 
 # Does REPO_OWNER/REPO_NAME have GitHub Issues enabled? Cached for the
@@ -814,6 +813,176 @@ _verification_section_body() {
 }
 
 # Parse a single issue block and create the GH issue (or fallback file).
+# Render one parsed issue block as a checklist item for the batched issue
+# body. Unlike _format_issue_bullet (PR-comment path) this preserves the
+# verification signal: a VERIFIED: command is shown, and a finding that
+# asserts incorrectness without one is marked inline, so the per-finding
+# meaning of the #328 gate 3 annotation survives batching.
+_format_issue_section() {
+  local block="$1"
+  [[ -n "${block}" ]] || return 0
+
+  local title source location details verified=""
+  _parse_issue_fields "${block}" title source location details verified
+  [[ -n "${title}" ]] || return 0
+
+  # DETAILS may span multiple lines; collapse so the item stays one bullet.
+  details="${details//$'\n'/ }"
+
+  local marker=""
+  if [[ -n "${verified}" ]]; then
+    marker=" _(verified: ${verified//$'\n'/ })_"
+  elif declare -F _asserts_incorrectness >/dev/null 2>&1 &&
+    _asserts_incorrectness "${title}" "${details}" 2>/dev/null; then
+    marker=" _(unverified claim — check before acting)_"
+  fi
+
+  printf -- "- [ ] **%s** (%s, \`%s\`)%s\n      %s\n" \
+    "${title}" "${source}" "${location}" "${marker}" "${details}"
+}
+
+# File every non-blocking finding from one review as a SINGLE tracking issue
+# with a checklist, instead of one issue per finding.
+#
+# WHY: one-issue-per-finding was the dominant source of backlog growth —
+# measured at 13 of 16 open issues, with issues opening at 1.69x the rate
+# they closed. Batching keeps every finding recorded and readable (nothing
+# is suppressed, per the "a lost finding is strictly worse than a labelled
+# noisy one" principle above) while collapsing a review's findings into one
+# unit of human attention.
+#
+# Best-effort in the same sense as the other filing paths: a gh failure
+# writes a fallback file rather than dropping the findings.
+create_batched_nonblocking_issue() {
+  local parsed="$1"
+  local pending_dir="$2"
+
+  # Accumulate sections, and decide the security label from the union of
+  # locations: if any finding in the batch is security-critical, the whole
+  # issue carries the label.
+  local sections="" labels="tech-debt" count=0 has_unverified=false
+  local current_block="" section
+
+  _accumulate() {
+    local block="$1"
+    [[ -n "${block}" ]] || return 0
+
+    local _t _s _loc _d _v=""
+    _parse_issue_fields "${block}" _t _s _loc _d _v
+    [[ -n "${_t}" ]] || return 0
+
+    # Per-finding dedup gate (#328) still applies inside a batch: a finding
+    # already tracked by an open issue is dropped from the checklist rather
+    # than restated. Fails open, same as the per-issue path.
+    if declare -F _find_duplicate_open_issue >/dev/null 2>&1 &&
+      declare -F _load_open_issues >/dev/null 2>&1; then
+      local _dup
+      _dup=$(_find_duplicate_open_issue "${_t}" "${_loc}")
+      if [[ -n "${_dup}" ]]; then
+        log_success "Skipped duplicate finding: ${_t}"
+        log_success "  -> already tracked by #${_dup%%$'\t'*}"
+        return 0
+      fi
+    fi
+
+    section=$(_format_issue_section "${block}")
+    [[ -n "${section}" ]] || return 0
+    # $(...) strips trailing newlines, so restore the blank line that keeps
+    # consecutive checklist items from running together.
+    sections+="${section}"$'\n\n'
+    count=$((count + 1))
+    if [[ "${labels}" != *,security* ]] && needs_security_label "${_loc}"; then
+      labels="${labels},security"
+    fi
+    # The #328 gate-3 label survives batching: if ANY finding in the batch
+    # asserts incorrectness without a VERIFIED: command, the issue carries
+    # the `unverified` label. Per-item status stays visible inline via
+    # _format_issue_section, so the label is a summary, not the only signal.
+    if [[ -z "${_v}" ]] && declare -F _asserts_incorrectness >/dev/null 2>&1 &&
+      _asserts_incorrectness "${_t}" "${_d}" 2>/dev/null; then
+      has_unverified=true
+    fi
+  }
+
+  # Prime the open-issue cache in THIS shell so the dedup lookups above
+  # (which run inside command substitution) see a populated cache.
+  if declare -F _load_open_issues >/dev/null 2>&1; then
+    _load_open_issues
+  fi
+
+  while IFS= read -r line; do
+    if [[ "${line}" == "---ISSUE---" ]]; then
+      _accumulate "${current_block}"
+      current_block=""
+    else
+      current_block+="${line}"$'\n'
+    fi
+  done <<<"${parsed}"
+  _accumulate "${current_block}"
+  unset -f _accumulate
+
+  # Nothing parsed into a renderable finding — file nothing.
+  [[ "${count}" -gt 0 ]] || return 0
+
+  if [[ "${has_unverified}" == true ]]; then
+    labels="${labels},unverified"
+  fi
+
+  local pr_ref="${PR_NUMBER:-unknown}"
+  local title="Non-blocking review findings from PR #${pr_ref} (${count})"
+  local body
+  body="Non-blocking concerns raised while reviewing PR #${pr_ref}"
+  if [[ -n "${PR_TITLE:-}" ]]; then
+    body+=" (${PR_TITLE})"
+  fi
+  body+=".
+
+None of these blocked the merge. They are batched into one issue so a
+review's findings stay one unit of attention rather than ${count} separate
+tracking issues; tick items off as they are addressed, and close this issue
+when the list is done or the remaining items are judged not worth doing.
+
+"
+  body+="${sections}"
+
+  local issue_url gh_stderr_file gh_err="" created=false
+  gh_stderr_file=$(mktemp)
+  if _repo_has_issues_enabled; then
+    if issue_url=$(command gh issue create \
+      --repo "${REPO_OWNER}/${REPO_NAME}" \
+      --title "${title}" \
+      --body "${body}" \
+      --label "${labels}" 2>"${gh_stderr_file}"); then
+      created=true
+    else
+      gh_err=$(cat "${gh_stderr_file}")
+    fi
+  else
+    gh_err="GitHub Issues are disabled for ${REPO_OWNER}/${REPO_NAME}"
+  fi
+  rm -f "${gh_stderr_file}"
+
+  if [[ "${created}" == true ]]; then
+    log_success "Filed ${count} non-blocking finding(s) as one issue: ${issue_url}"
+    return 0
+  fi
+
+  log_warn "Could not create batched non-blocking issue: ${gh_err}"
+  local fallback_file
+  if fallback_file=$(_write_pending_issue_file "${title}" "${body}" "${pending_dir}"); then
+    log_warn "  Saved to: ${fallback_file}"
+  else
+    log_warn "  Could not write fallback file either (${pending_dir}) — ${count} finding(s) lost"
+  fi
+}
+
+# NOTE: no longer on the default filing path. create_nonblocking_issues now
+# routes personal repos to create_batched_nonblocking_issue (one issue per
+# review) and corporate repos to _process_issue_block_apple_note. This
+# per-finding GitHub-issue path is retained deliberately: it is the revert
+# target if batching proves wrong, and its tests still pin the per-finding
+# body/label contract that create_batched_nonblocking_issue reuses pieces of.
+# Remove it (with its tests and the helpers only it calls) if batching sticks.
 _process_issue_block() {
   local block="$1"
   local pending_dir="$2"
