@@ -1210,6 +1210,13 @@ ONE of these two things:
   2. If you cannot run the check, SOFTEN the claim into a question rather
      than an assertion — write \"is this SHA on the v4 line?\" instead of
      \"this SHA belongs to the v4 line, not v7.0.1\".
+
+HOW A TOOL OR RUNTIME BEHAVES COUNTS AS EXTERNAL STATE. Claims like \"argv[1]
+is the script path\", \"if: failure() only covers the previous step\", \"grep -w
+splits on /\", \"this flag does not exist\", or \"an empty object passes\" are
+all checkable, usually by one command. Six such findings in a single session
+were asserted from memory and every one was false. Run the one-liner, or ask
+the question instead of making the assertion.
 Never assert a checkable fact you did not check. Findings that assert
 incorrectness with no VERIFIED: field are filed with an \"unverified\" label
 and a warning banner, because past unverified assertions of exactly this

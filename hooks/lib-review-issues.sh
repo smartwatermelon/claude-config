@@ -710,6 +710,50 @@ _VERIFY_ASSERTION_MARKERS=(
   "has not been confirmed"
   "was not verified"
   "not been validated"
+  # Group 3: claims about how a tool, runtime, or API actually BEHAVES
+  # (projectinsomnia #124/#128/#131/#132/#133/#137). Six findings in one
+  # session asserted mechanism -- what process.argv holds, whether `if:
+  # failure()` covers a prior step, how `grep -w` treats `/`, whether an
+  # empty vulnerabilities object passes -- and all six were wrong. None used
+  # Group 1 phrasing, so none were labelled; each cost a human a command to
+  # disprove.
+  #
+  # These are worth flagging precisely because they are the CHEAPEST claims
+  # to check: every one fell to a single one-liner. A reviewer asserting
+  # mechanism it did not run is the exact shape this gate exists to mark.
+  #
+  # Measured against the same corpus as Groups 1-2 plus the 13 findings in
+  # tests/test_pre_merge_nonblocking.bats that must stay unflagged (the
+  # test-54 "careful phrasing" set and a style-finding set): 6/6 of the real
+  # false findings flag, 0/13 legitimate findings do. Re-run that measurement
+  # before adding anything here -- broad terms like "treats" or "resolves to"
+  # were rejected for catching careful phrasing.
+  "process.argv"
+  "argv["
+  "off-by-one"
+  "word-splitting"
+  "word splitting"
+  "will be skipped"
+  "is skipped"
+  "only runs"
+  "does not run"
+  "never fires"
+  "silently drop"
+  "silently lose"
+  "silently lost"
+  "silently swallow"
+  "silently ignore"
+  "silently fail"
+  "silently succeed"
+  "false positive"
+  "false negative"
+  "no such flag"
+  "no such option"
+  "no such version"
+  "no such release"
+  "has no v"
+  "produce an empty"
+  "returns an empty"
 )
 
 # Does this finding assert that something is factually incorrect/broken?
@@ -740,6 +784,10 @@ _unverified_caveat_body() {
   printf '%s\n' "> field recording a command that was actually run to check it."
   printf '%s\n' "> Confirm the assertion against reality before acting on it — several"
   printf '%s\n' "> such findings have turned out to be false."
+  printf '%s\n' ">"
+  printf '%s\n' "> Run the check before you fix anything. If the claim is about how a"
+  printf '%s\n' "> tool or runtime behaves, it is usually one command — and if it is"
+  printf '%s\n' "> wrong, close this issue with the output rather than changing code."
   printf '%s\n' ""
   printf '%s\n' "${body}"
 }
