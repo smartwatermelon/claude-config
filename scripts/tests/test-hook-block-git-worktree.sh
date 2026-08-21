@@ -217,14 +217,31 @@ check "false positive: mygit is not git" 0 "${inp}"
 inp="$(make_input 'echo not-git worktree stuff')"
 check "false positive: hyphenated word containing git" 0 "${inp}"
 
-# --- KNOWN-OPEN gap, asserted as CURRENT behavior, not as desired behavior ---
-# Documented in the KNOWN LIMITATION block in the hook header. Asserted so the
-# gap stays visible, and so a future fix trips this test (expected-0 -> 2)
-# rather than changing behavior unnoticed. Closing it properly needs real shell
-# tokenization, not a regex.
+# --- Backtick command substitution (was a pinned KNOWN GAP; now closed) ---
+# The backtick is a separator alternative, and also terminates the captured
+# argument list so the closing backtick is not swallowed into the path token.
 backtick='`'
 inp="$(make_input "echo ${backtick}git worktree add /tmp/evil${backtick}")"
-check "KNOWN GAP: backtick substitution is not detected" 0 "${inp}"
+check "backtick substitution: unscoped creation blocked" 2 "${inp}"
+inp="$(make_input "echo ${backtick}git worktree move /tmp/a /tmp/b${backtick}")"
+check "backtick substitution: administrative subcommand blocked" 2 "${inp}"
+# The closing backtick must not contaminate the path, or a scoped target would
+# be read as `.claude/worktrees/ok\`` and wrongly rejected.
+inp="$(make_input "echo ${backtick}git worktree add .claude/worktrees/ok${backtick}")"
+check "backtick substitution: scoped creation allowed" 0 "${inp}"
+inp="$(make_input "echo ${backtick}git worktree list${backtick}")"
+check "backtick substitution: read-only subcommand allowed" 0 "${inp}"
+
+# --- PERMANENTLY OPEN gaps, asserted as CURRENT behavior, not desired ---
+# Documented in the KNOWN LIMITATION block in the hook header. A PreToolUse
+# hook sees the raw, unexpanded command string with no access to the executing
+# shell's alias, function, or variable tables, so no parser at this layer can
+# resolve these. Asserted so the behavior is explicit rather than an untested
+# assumption.
+inp="$(make_input "G=git; ${dollar}G worktree add /tmp/evil")"
+check "PERMANENT GAP: variable-obfuscated git is not detected" 0 "${inp}"
+inp="$(make_input 'wt worktree add /tmp/evil')"
+check "PERMANENT GAP: alias/function resolving to git is not detected" 0 "${inp}"
 
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
