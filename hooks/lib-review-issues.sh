@@ -192,8 +192,12 @@ _parse_issue_fields() {
   # stopping at a VERIFIED: header or an END_ISSUE terminator if one follows.
   _pif_details=$(echo "${block}" | { awk '/^VERIFIED:/{found=0} /^END_ISSUE$/{found=0} /^DETAILS:/{found=1; sub(/^DETAILS: /,""); print; next} found{print}' || true; } | { sed '/^[[:space:]]*$/d' || true; })
 
-  # VERIFIED is optional and so is this nameref.
-  if [[ -n "${6:-}" ]]; then
+  # VERIFIED is optional and so is this nameref. Test arg COUNT, not the
+  # argument's content: `-n "${6:-}"` asks "is the name non-empty", which
+  # happens to work only because every caller passes a variable name. A
+  # caller passing "" would silently skip VERIFIED extraction instead of
+  # failing. `$# -ge 6` states the actual intent -- was a 6th arg given.
+  if [[ $# -ge 6 ]]; then
     local -n _pif_verified="$6"
     _pif_verified=$(echo "${block}" | { awk '/^(TITLE|SOURCE|LOCATION|DETAILS):/{found=0} /^END_ISSUE$/{found=0} /^VERIFIED:/{found=1; sub(/^VERIFIED:[[:space:]]*/,""); print; next} found{print}' || true; } | { sed '/^[[:space:]]*$/d' || true; })
   fi

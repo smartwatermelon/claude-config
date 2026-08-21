@@ -210,3 +210,22 @@ _setup_timeout_fn() {
 @test "message: timeout error tells the operator to re-run the merge" {
   grep -qi "Re-run the merge" "${SCRIPT}"
 }
+
+@test "message: timeout error warns the override bypasses the ceiling (#355)" {
+  # The suggested value is TIMEOUT_SECONDS * 2. At the ceiling that is 1800s,
+  # double the documented cap -- an operator following the instruction should
+  # be told the override leaves the ceiling behind, not just that scaling is
+  # skipped.
+  # Assert on the rendered message block, not on single-line layout: the
+  # sentence wraps across log_error calls, so a one-line regex is brittle.
+  local msg
+  msg=$(grep -A4 'honored verbatim' "${SCRIPT}" | tr '\n' ' ')
+  [[ "${msg}" == *"scaling"* ]] || {
+    echo "override note does not mention scaling: ${msg}"
+    return 1
+  }
+  [[ "${msg}" == *"ceiling"* ]] || {
+    echo "override note does not warn that the ceiling is bypassed: ${msg}"
+    return 1
+  }
+}
