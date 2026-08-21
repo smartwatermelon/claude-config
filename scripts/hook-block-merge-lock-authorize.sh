@@ -11,7 +11,7 @@ input=$(cat)
 cmd=$(printf '%s\n' "$input" | jq -r '.tool_input.command // empty')
 
 if printf '%s\n' "$cmd" | grep -qE 'merge-lock\.sh[[:space:]]+(authorize|auth)([[:space:]]|$)'; then
-  printf '%s BLOCKED MERGE-LOCK AUTHORIZE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "$cmd" >>"${HOME}/.claude/blocked-commands.log"
+  printf '%s BLOCKED MERGE-LOCK AUTHORIZE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "$cmd" >>"${HOME}/.claude/blocked-commands.log" || true
   printf '🛑 BLOCKED: merge-lock.sh authorize is a human-only action.\n' >&2
   printf '\n' >&2
   printf 'Merge authorization must be granted by the human, not Claude.\n' >&2
