@@ -286,6 +286,31 @@ check "backslash: escaped space in an out-of-scope path is refused" 2 "${inp}"
 inp="$(make_input "git worktree add .claude/worktrees/plain")"
 check "backslash: an unescaped scoped path is still allowed" 0 "${inp}"
 
+# --- Quoted MENTION vs quoted INVOCATION (#371) ---
+# Making the quote a separator (so `bash -c 'git worktree add ...'` is
+# inspected) also matched a quoted string that merely CONTAINS the phrase.
+# `echo` and `grep` of the phrase were blocked despite executing nothing, which
+# made writing docs and tests about this hook impossible.
+#
+# The captured match is identical either way -- quote, phrase, quote -- so the
+# discriminator is the command PRECEDING the quote. Only a shell or `eval` runs
+# the string. The lookback skips flags (`bash -c` puts `-c` next to the quote)
+# and the ANSI-C `$` sigil.
+inp="$(make_input "echo ${dq}git worktree add /tmp/x${dq}")"
+check "mention: echo of a creation string is not an invocation" 0 "${inp}"
+inp="$(make_input "echo ${dq}git worktree list${dq}")"
+check "mention: echo of a read-only string is not an invocation" 0 "${inp}"
+inp="$(make_input "grep -r ${dq}git worktree add${dq} docs/")"
+check "mention: grep for the phrase in docs is allowed" 0 "${inp}"
+inp="$(make_input "printf '%s' ${dq}git worktree move a b${dq}")"
+check "mention: printf of an admin string is allowed" 0 "${inp}"
+
+# The executor forms must still block -- this is the half that must not regress.
+inp="$(make_input "sh -c ${sq}git worktree add /tmp/evil${sq}")"
+check "invocation: sh -c still blocks despite the mention carve-out" 2 "${inp}"
+inp="$(make_input "bash -c ${dq}git worktree add /tmp/evil${dq}")"
+check "invocation: bash -c double-quoted still blocks" 2 "${inp}"
+
 # --- PERMANENTLY OPEN gaps, asserted as CURRENT behavior, not desired ---
 # Documented in the KNOWN LIMITATION block in the hook header. A PreToolUse
 # hook sees the raw, unexpanded command string with no access to the executing

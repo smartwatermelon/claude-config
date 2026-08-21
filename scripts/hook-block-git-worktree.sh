@@ -274,7 +274,60 @@ worktree_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]
 
 mapfile -t matches < <(printf '%s\n' "${cmd}" | grep -oE "${worktree_re}" || true)
 
+# Commands that EXECUTE a quoted string argument. Only these turn a quoted
+# occurrence into a real invocation; anything else that merely carries the
+# phrase as text does not.
+#
+# This is an allowlist, so an unrecognized command keeps the quoted occurrence
+# under inspection: a new executor that nobody listed here fails CLOSED (still
+# blocked), never open. The cost is that an unlisted printer stays a false
+# positive, which is the safe direction for this trade.
+_executes_quoted_string() {
+  case "$1" in
+    # *sh covers sh/bash/zsh/ksh/dash and any path-qualified form.
+    *sh | eval | *xargs | *env) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 for match in "${matches[@]}"; do
+  # Skip a quoted MENTION of the phrase rather than an invocation of it.
+  #
+  # Adding the quote characters to the separator alternation (so that
+  # `bash -c 'git worktree add ...'` gets inspected) also made a quoted string
+  # merely CONTAINING the phrase match. `echo "git worktree add /tmp/x"` and
+  # `grep -r "git worktree add" docs/` were blocked despite executing nothing,
+  # which made writing docs and tests about this hook impossible.
+  #
+  # The captured match is identical in both cases -- quote, phrase, quote --
+  # so the match alone cannot decide. What differs is the command PRECEDING
+  # the quote: `bash -c` and `eval` run the string, `echo` and `grep` do not.
+  # Look back at the text before this occurrence and take the last word.
+  if [[ "${match:0:1}" == "'" || "${match:0:1}" == '"' ]]; then
+    prefix="${cmd%%"${match}"*}"
+    # Trailing whitespace off, then the final word of what came before.
+    prefix="${prefix%"${prefix##*[![:space:]]}"}"
+    # Walk back over flags: `bash -c 'X'` puts `-c` immediately before the
+    # quote, not `bash`, so testing only the last word misses every real
+    # executor invocation.
+    # ANSI-C quoting puts a bare `$` immediately before the quote
+    # (`bash -c $'...'`), which would otherwise read as the preceding word and
+    # match no executor. Drop a trailing sigil so the real command is found.
+    prefix="${prefix%$}"
+    prefix="${prefix%"${prefix##*[![:space:]]}"}"
+    read -r -a _pre_tokens <<<"${prefix}" || true
+    preceding=""
+    for ((_i = ${#_pre_tokens[@]} - 1; _i >= 0; _i--)); do
+      if [[ "${_pre_tokens[_i]}" != -* ]]; then
+        preceding="${_pre_tokens[_i]}"
+        break
+      fi
+    done
+    if [[ -n "${preceding}" ]] && ! _executes_quoted_string "${preceding}"; then
+      continue
+    fi
+  fi
+
   # Isolate the argument list that follows the `worktree` keyword in this
   # specific occurrence, then split it into tokens.
   args="${match#*worktree}"
