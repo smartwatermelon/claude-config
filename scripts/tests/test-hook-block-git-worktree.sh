@@ -369,6 +369,43 @@ check "PERMANENT GAP: variable-obfuscated git is not detected" 0 "${inp}"
 inp="$(make_input 'wt worktree add /tmp/evil')"
 check "PERMANENT GAP: alias/function resolving to git is not detected" 0 "${inp}"
 
+# --- #374: out-of-scope `remove` is ALLOWED but audited ---
+# Exit-code assertions cannot express this: the whole point is that exit stays
+# 0. These run the hook under a throwaway HOME and assert on the log instead.
+check_audit() {
+  local desc="${1}" expect_logged="${2}" input="${3}"
+  local tmphome logfile actual=0 logged=no
+  tmphome="$(mktemp -d)"
+  mkdir -p "${tmphome}/.claude"
+  logfile="${tmphome}/.claude/blocked-commands.log"
+  printf '%s\n' "${input}" | HOME="${tmphome}" "${HOOK}" >/dev/null 2>&1 || actual=$?
+  [[ -s "${logfile}" ]] && grep -q 'AUDIT GIT WORKTREE REMOVE' "${logfile}" && logged=yes
+  rm -rf "${tmphome}"
+  if [[ "${actual}" -eq 0 && "${logged}" == "${expect_logged}" ]]; then
+    echo "  PASS: ${desc}"
+    ((pass += 1))
+  else
+    echo "  FAIL: ${desc} (exit ${actual} want 0; logged=${logged} want ${expect_logged})"
+    ((fail += 1))
+  fi
+}
+
+inp="$(make_input 'git worktree remove /tmp/peer-agent-wt')"
+check_audit "remove outside scope is allowed AND audited" yes "${inp}"
+inp="$(make_input 'git worktree remove --force /tmp/peer-agent-wt')"
+check_audit "remove --force outside scope is allowed AND audited" yes "${inp}"
+inp="$(make_input 'git worktree remove .claude/worktrees/mine')"
+check_audit "remove inside scope is allowed and NOT audited" no "${inp}"
+inp="$(make_input 'git worktree prune')"
+check_audit "prune takes no path, so it is never audited" no "${inp}"
+# Bare `prune` cannot distinguish correct routing from a broken audit -- it has
+# no operand, so the -n guard short-circuits either way. `prune --expire <time>`
+# does have a trailing operand, so it is audited as a bogus path if `prune` is
+# ever folded back into the `remove` branch. This is the assertion that fails
+# on that regression; the bare-prune one above does not.
+inp="$(make_input 'git worktree prune --expire 3.days.ago')"
+check_audit "prune --expire operand is not mistaken for a worktree path" no "${inp}"
+
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]
