@@ -306,7 +306,29 @@ _executes_quoted_string() {
   esac
 }
 
+# Cursor over `cmd`, advanced past each occurrence as it is consumed. The
+# same quoted literal can appear more than once with DIFFERENT preceding
+# commands (`echo "X" && bash -c "X"`), and each occurrence must be judged by
+# what precedes IT. Without this, every iteration re-derived its prefix from
+# the first occurrence, so a leading harmless mention masked a real executor
+# later in the same command line. See #383.
+_remaining="${cmd}"
+_consumed=""
+
 for match in "${matches[@]}"; do
+  # Split `_remaining` at THIS occurrence: `_before` is the text preceding it
+  # (with everything already consumed prepended), and `_remaining` advances
+  # past it so the next iteration looks at the next occurrence.
+  if [[ "${_remaining}" == *"${match}"* ]]; then
+    _before="${_consumed}${_remaining%%"${match}"*}"
+    _rest="${_remaining#*"${match}"}"
+    _consumed="${_consumed}${_remaining%%"${match}"*}${match}"
+    _remaining="${_rest}"
+  else
+    # Should not happen (matches came from cmd), but fail safe by keeping the
+    # old whole-command view rather than silently skipping the check.
+    _before="${cmd}"
+  fi
   # Skip a quoted MENTION of the phrase rather than an invocation of it.
   #
   # Adding the quote characters to the separator alternation (so that
@@ -320,7 +342,7 @@ for match in "${matches[@]}"; do
   # the quote: `bash -c` and `eval` run the string, `echo` and `grep` do not.
   # Look back at the text before this occurrence and take the last word.
   if [[ "${match:0:1}" == "'" || "${match:0:1}" == '"' ]]; then
-    prefix="${cmd%%"${match}"*}"
+    prefix="${_before}"
     # Trailing whitespace off, then the final word of what came before.
     prefix="${prefix%"${prefix##*[![:space:]]}"}"
     # Walk back over flags: `bash -c 'X'` puts `-c` immediately before the

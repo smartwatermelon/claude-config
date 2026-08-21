@@ -189,6 +189,9 @@ DETAILS: Tests failing."
   _load_fn _repo_has_issues_enabled
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
+  _load_fn _format_issue_section
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
 
   PR_NUMBER="55"
   PR_TITLE="Test PR"
@@ -232,6 +235,9 @@ END_ISSUE"
   _load_fn _repo_has_issues_enabled
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
+  _load_fn _format_issue_section
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
 
   PR_NUMBER="55"
   PR_TITLE="Test PR"
@@ -274,6 +280,9 @@ END_ISSUE"
   _load_fn _repo_has_issues_enabled
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
+  _load_fn _format_issue_section
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
 
   PR_NUMBER="55"
   PR_TITLE="Test PR"
@@ -311,6 +320,9 @@ All review comments appear resolved."
   _load_fn _repo_has_issues_enabled
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
+  _load_fn _format_issue_section
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
 
   PR_NUMBER="55"
   PR_TITLE="Test PR"
@@ -435,6 +447,9 @@ EOF
   _load_fn create_apple_note_issue
   _load_fn _process_issue_block_apple_note
   _load_fn create_nonblocking_issues
+  _load_fn _format_issue_section
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
 
   PR_NUMBER=""
   REPO_OWNER="beacon-biosignals"
@@ -487,6 +502,9 @@ END_ISSUE"
   _load_fn create_apple_note_issue
   _load_fn _process_issue_block_apple_note
   _load_fn create_nonblocking_issues
+  _load_fn _format_issue_section
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
 
   # Unlike the PR_NUMBER="" case above, this exercises the actual
   # `gh pr view` / `gh api user` comparison inside is_self_authored.
@@ -547,6 +565,9 @@ END_ISSUE"
   _load_fn _format_issue_bullet
   _load_fn post_nonblocking_as_pr_comment
   _load_fn create_nonblocking_issues
+  _load_fn _format_issue_section
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
 
   PR_NUMBER="42"
   PR_TITLE="Teammate PR"
@@ -594,6 +615,9 @@ END_ISSUE"
   _load_fn _format_issue_bullet
   _load_fn post_nonblocking_as_pr_comment
   _load_fn create_nonblocking_issues
+  _load_fn _format_issue_section
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
 
   PR_NUMBER="42"
   PR_TITLE="Teammate PR"
@@ -648,6 +672,9 @@ END_ISSUE"
   _load_fn _repo_has_issues_enabled
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
+  _load_fn _format_issue_section
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
 
   PR_NUMBER="42"
   PR_TITLE="Teammate PR"
@@ -740,6 +767,9 @@ EOF
   _load_fn _repo_has_issues_enabled
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
+  _load_fn _format_issue_section
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
 
   PR_NUMBER="55"
   PR_TITLE="Test PR"
@@ -801,6 +831,9 @@ END_ISSUE"
   _load_fn _repo_has_issues_enabled
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
+  _load_fn _format_issue_section
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
 
   PR_NUMBER="55"
   PR_TITLE="Test PR"
@@ -946,6 +979,9 @@ _load_dedup_fns() {
   _load_fn _find_duplicate_open_issue
   _load_fn create_nonblocking_issues
   _load_fn _process_issue_block
+  _load_fn _format_issue_section
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
   # Constants the extracted functions reference (not picked up by _load_fn,
   # which only extracts function definitions).
   _DEDUP_MIN_TOKEN_OVERLAP=2
@@ -1316,8 +1352,10 @@ END_ISSUE"
   [[ -n "${create_line}" ]]
   # ... with the unverified label added alongside the existing ones ...
   echo "${create_line}" | grep -q "tech-debt,unverified"
-  # ... and the caveat banner in the body.
-  echo "${create_line}" | grep -q "Unverified claim"
+  # ... and the caveat visible on the item itself. Batched filing renders
+  # findings as checklist items, so the per-finding warning is an inline
+  # marker rather than a body-level blockquote banner.
+  echo "${create_line}" | grep -q "unverified claim"
 }
 
 @test "gate3: assertion WITH VERIFIED is filed clean, with a Verification section" {
@@ -1341,12 +1379,12 @@ END_ISSUE"
   local create_line
   create_line=$(grep "issue create" "${GH_CALLS_FILE}")
   [[ -n "${create_line}" ]]
-  # Verification section present ...
-  echo "${create_line}" | grep -q "## Verification"
+  # The supporting command is surfaced on the item ...
+  echo "${create_line}" | grep -q "verified:"
   echo "${create_line}" | grep -q "HTTP 404 Not Found"
   # ... and NO unverified label or caveat, since the claim carries support.
-  ! echo "${create_line}" | grep -q "unverified"
-  ! echo "${create_line}" | grep -q "Unverified claim"
+  ! echo "${create_line}" | grep -q "tech-debt,unverified"
+  ! echo "${create_line}" | grep -q "unverified claim"
   # The VERIFIED: line must not leak into DETAILS / "What was flagged".
   ! echo "${create_line}" | grep -q "VERIFIED: gh api"
 }
@@ -1431,9 +1469,9 @@ END_ISSUE"
 
   local create_line
   create_line=$(grep "issue create" "${GH_CALLS_FILE}")
-  # Filed, with the original body and the original labels intact.
+  # Filed, with the finding intact and the original labels unchanged.
   [[ -n "${create_line}" ]]
-  echo "${create_line}" | grep -q "Non-Blocking Review Concern"
+  echo "${create_line}" | grep -q "Pinned SHA does not match"
   ! echo "${create_line}" | grep -q "unverified"
 }
 
@@ -1506,4 +1544,419 @@ END_ISSUE"
   ! _asserts_incorrectness "" "The comment density here is lower than the surrounding file."
   ! _asserts_incorrectness "" "Test coverage for the error path is missing."
   ! _asserts_incorrectness "" "This adds a second source of truth for the same list."
+}
+
+# --- _format_issue_section (batched filing, #388) ---
+
+@test "_format_issue_section: renders a checklist item with title, source and location" {
+  _load_fn _parse_issue_fields
+  _load_fn _format_issue_section
+
+  local block="TITLE: Fix the thing
+SOURCE: Seer
+LOCATION: src/a.ts:10
+DETAILS: Some detail here."
+  result=$(_format_issue_section "${block}")
+  [[ "${result}" == *"- [ ] **Fix the thing**"* ]]
+  [[ "${result}" == *"Seer"* ]]
+  [[ "${result}" == *"src/a.ts:10"* ]]
+  [[ "${result}" == *"Some detail here."* ]]
+}
+
+@test "_format_issue_section: returns nothing for an empty block" {
+  _load_fn _parse_issue_fields
+  _load_fn _format_issue_section
+  result=$(_format_issue_section "")
+  [[ -z "${result}" ]]
+}
+
+@test "_format_issue_section: returns nothing when TITLE is absent" {
+  _load_fn _parse_issue_fields
+  _load_fn _format_issue_section
+  local block="SOURCE: Seer
+LOCATION: src/a.ts:10
+DETAILS: No title in this block."
+  result=$(_format_issue_section "${block}")
+  [[ -z "${result}" ]]
+}
+
+@test "_format_issue_section: collapses multi-line DETAILS into one line" {
+  _load_fn _parse_issue_fields
+  _load_fn _format_issue_section
+  local block="TITLE: Multi
+SOURCE: code-reviewer
+LOCATION: src/b.ts:4
+DETAILS: First line of detail.
+Second line of detail."
+  result=$(_format_issue_section "${block}")
+  [[ "${result}" == *"First line of detail. Second line of detail."* ]]
+}
+
+@test "_format_issue_section: surfaces the VERIFIED command when present" {
+  _load_fn _parse_issue_fields
+  _load_fn _format_issue_section
+  local block="TITLE: Checked thing
+SOURCE: code-reviewer
+LOCATION: src/c.ts:7
+DETAILS: Detail.
+VERIFIED: ran the suite and it failed"
+  result=$(_format_issue_section "${block}")
+  [[ "${result}" == *"ran the suite and it failed"* ]]
+}
+
+@test "_format_issue_section: marks an unverified assertion inline" {
+  # _asserts_incorrectness reads the module-level _VERIFY_ASSERTION_MARKERS
+  # array, so it needs the full-library loader rather than _load_fn.
+  _load_gate3_fns
+  _load_fn _format_issue_section
+  local block="TITLE: Broken thing
+SOURCE: code-reviewer
+LOCATION: src/d.ts:9
+DETAILS: This value is incorrect and must be changed."
+  result=$(_format_issue_section "${block}")
+  [[ "${result}" == *"unverified"* ]]
+}
+
+# --- create_batched_nonblocking_issue (#388) ---
+
+@test "create_batched_nonblocking_issue: files exactly one issue for multiple findings" {
+  _load_fn _parse_issue_fields
+  _load_fn _asserts_incorrectness
+  _load_fn _format_issue_section
+  _load_fn needs_security_label
+  _load_fn is_security_critical
+  _load_fn _repo_has_issues_enabled
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
+
+  PR_NUMBER="77"
+  PR_TITLE="Batched PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local parsed="TITLE: First finding
+SOURCE: Seer
+LOCATION: src/a.ts:1
+DETAILS: Detail one.
+---ISSUE---
+TITLE: Second finding
+SOURCE: code-reviewer
+LOCATION: src/b.ts:2
+DETAILS: Detail two."
+
+  create_batched_nonblocking_issue "${parsed}" "${PENDING_ISSUES_DIR}"
+
+  local creates
+  creates=$(grep -c "issue create" "${GH_CALLS_FILE}" || true)
+  [[ "${creates}" -eq 1 ]]
+}
+
+@test "create_batched_nonblocking_issue: the single issue body contains every finding" {
+  _load_fn _parse_issue_fields
+  _load_fn _asserts_incorrectness
+  _load_fn _format_issue_section
+  _load_fn needs_security_label
+  _load_fn is_security_critical
+  _load_fn _repo_has_issues_enabled
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
+
+  PR_NUMBER="78"
+  PR_TITLE="Batched PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "--body" ]]; then printf '%s' "$2" > "${MOCK_DIR}/body.txt"; fi
+  shift
+done
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local parsed="TITLE: Alpha finding
+SOURCE: Seer
+LOCATION: src/a.ts:1
+DETAILS: Detail one.
+---ISSUE---
+TITLE: Beta finding
+SOURCE: code-reviewer
+LOCATION: src/b.ts:2
+DETAILS: Detail two."
+
+  create_batched_nonblocking_issue "${parsed}" "${PENDING_ISSUES_DIR}"
+
+  # Assert against the --body argument specifically, not the whole gh call
+  # line: a whole-line grep would also pass if the strings only appeared in
+  # --title or --label, which is a weaker contract than intended (#388).
+  grep -q "Alpha finding" "${MOCK_DIR}/body.txt"
+  grep -q "Beta finding" "${MOCK_DIR}/body.txt"
+}
+
+@test "create_batched_nonblocking_issue: applies the security label when any finding is security-critical" {
+  _load_fn _parse_issue_fields
+  _load_fn _asserts_incorrectness
+  _load_fn _format_issue_section
+  _load_fn needs_security_label
+  _load_fn is_security_critical
+  _load_fn _repo_has_issues_enabled
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
+
+  PR_NUMBER="79"
+  PR_TITLE="Batched PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  local parsed="TITLE: Benign finding
+SOURCE: Seer
+LOCATION: src/a.ts:1
+DETAILS: Detail one.
+---ISSUE---
+TITLE: Auth finding
+SOURCE: code-reviewer
+LOCATION: src/auth/jwt.ts:2
+DETAILS: Detail two."
+
+  create_batched_nonblocking_issue "${parsed}" "${PENDING_ISSUES_DIR}"
+
+  grep -q "security" "${GH_CALLS_FILE}"
+}
+
+@test "create_batched_nonblocking_issue: writes a fallback file when gh fails" {
+  _load_fn _parse_issue_fields
+  _load_fn _asserts_incorrectness
+  _load_fn _format_issue_section
+  _load_fn needs_security_label
+  _load_fn is_security_critical
+  _load_fn _repo_has_issues_enabled
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
+
+  PR_NUMBER="80"
+  PR_TITLE="Batched PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/org/repo") echo "true"; exit 0 ;;
+esac
+exit 1
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  create_batched_nonblocking_issue "TITLE: Lost finding
+SOURCE: Seer
+LOCATION: src/a.ts:1
+DETAILS: Detail one." "${PENDING_ISSUES_DIR}"
+
+  # The finding must survive somewhere on disk rather than being dropped.
+  grep -rq "Lost finding" "${PENDING_ISSUES_DIR}"
+}
+
+@test "create_batched_nonblocking_issue: no gh issue create when there are no findings" {
+  _load_fn _parse_issue_fields
+  _load_fn _asserts_incorrectness
+  _load_fn _format_issue_section
+  _load_fn needs_security_label
+  _load_fn is_security_critical
+  _load_fn _repo_has_issues_enabled
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
+
+  PR_NUMBER="81"
+  PR_TITLE="Batched PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending"
+  : >"${GH_CALLS_FILE}"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  create_batched_nonblocking_issue "" "${PENDING_ISSUES_DIR}"
+
+  ! grep -q "issue create" "${GH_CALLS_FILE}"
+}
+
+@test "create_batched_nonblocking_issue: consecutive checklist items do not run together" {
+  _load_fn _parse_issue_fields
+  _load_fn _asserts_incorrectness
+  _load_fn _format_issue_section
+  _load_fn needs_security_label
+  _load_fn is_security_critical
+  _load_fn _repo_has_issues_enabled
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
+
+  PR_NUMBER="82"
+  PR_TITLE="Batched PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  create_batched_nonblocking_issue "TITLE: First
+SOURCE: Seer
+LOCATION: src/a.ts:1
+DETAILS: Detail one ends here.
+---ISSUE---
+TITLE: Second
+SOURCE: Seer
+LOCATION: src/b.ts:2
+DETAILS: Detail two." "${PENDING_ISSUES_DIR}"
+
+  # A detail line must never be immediately followed by the next bullet.
+  ! grep -q 'Detail one ends here\.- \[ \]' "${GH_CALLS_FILE}"
+}
+
+@test "create_batched_nonblocking_issue: non-PR context does not emit 'PR #unknown' (#388)" {
+  _load_fn _parse_issue_fields
+  _load_fn _asserts_incorrectness
+  _load_fn _format_issue_section
+  _load_fn needs_security_label
+  _load_fn is_security_critical
+  _load_fn _repo_has_issues_enabled
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
+
+  # run-review.sh's whole-codebase review calls this with no PR in context.
+  PR_NUMBER=""
+  PR_TITLE=""
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  create_batched_nonblocking_issue "TITLE: Some finding
+SOURCE: pre-push whole-codebase review
+LOCATION: src/a.ts:1
+DETAILS: Detail one." "${PENDING_ISSUES_DIR}"
+
+  ! grep -q "PR #unknown" "${GH_CALLS_FILE}"
+  ! grep -q "unknown" "${GH_CALLS_FILE}"
+}
+
+@test "create_batched_nonblocking_issue: PR context still names the PR in the title" {
+  _load_fn _parse_issue_fields
+  _load_fn _asserts_incorrectness
+  _load_fn _format_issue_section
+  _load_fn needs_security_label
+  _load_fn is_security_critical
+  _load_fn _repo_has_issues_enabled
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
+
+  PR_NUMBER="91"
+  PR_TITLE="Some PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending"
+
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "$@" >> "${GH_CALLS_FILE}"
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  create_batched_nonblocking_issue "TITLE: Some finding
+SOURCE: code-reviewer
+LOCATION: src/a.ts:1
+DETAILS: Detail one." "${PENDING_ISSUES_DIR}"
+
+  grep -q "from PR #91" "${GH_CALLS_FILE}"
+}
+
+@test "_dedup_location_path: strips a line number followed by a parenthetical (#387)" {
+  _load_fn _dedup_location_path
+
+  # #376/#377 were the same defect filed twice: dedup compares paths before
+  # titles, and this form failed to parse down to a bare path, so the two
+  # findings were never compared.
+  run _dedup_location_path "scripts/hook-block-git-worktree.sh:114 (path_in_scope)"
+  [[ "${output}" == "scripts/hook-block-git-worktree.sh" ]]
+}
+
+@test "_dedup_location_path: existing forms still parse correctly (#387)" {
+  _load_fn _dedup_location_path
+
+  # Each case echoes actual-vs-expected on failure: bare [[ ]] in a bats body
+  # reports only "exit status 1", which does not say which form broke.
+  local form
+  for form in \
+    "scripts/a.sh:302" \
+    "scripts/a.sh:10-20" \
+    "scripts/a.sh" \
+    "scripts/a.sh:10-20 (some_fn)" \
+    "scripts/a.sh:10 (fn(x))" \
+    "scripts/a.sh:20 (closes #387)"; do
+    run _dedup_location_path "${form}"
+    [[ "${output}" == "scripts/a.sh" ]] || {
+      echo "form: ${form}"
+      echo "  expected: scripts/a.sh"
+      echo "  got:      ${output}"
+      return 1
+    }
+  done
+}
+
+@test "_dedup_location_path: an unclosed parenthetical still reduces to a path (#387)" {
+  _load_fn _dedup_location_path
+
+  # Reviewer-authored LOCATION text is not guaranteed balanced. Without a
+  # fallback the line number survives, which is the same failure mode #387
+  # fixed for the closed-paren form.
+  run _dedup_location_path "scripts/a.sh:10 (unclosed"
+  [[ "${output}" == "scripts/a.sh" ]] || {
+    echo "  expected: scripts/a.sh"
+    echo "  got:      ${output}"
+    return 1
+  }
 }
