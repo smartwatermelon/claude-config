@@ -1913,3 +1913,29 @@ DETAILS: Detail one." "${PENDING_ISSUES_DIR}"
 
   grep -q "from PR #91" "${GH_CALLS_FILE}"
 }
+
+@test "_dedup_location_path: strips a line number followed by a parenthetical (#387)" {
+  _load_fn _dedup_location_path
+
+  # #376/#377 were the same defect filed twice: dedup compares paths before
+  # titles, and this form failed to parse down to a bare path, so the two
+  # findings were never compared.
+  run _dedup_location_path "scripts/hook-block-git-worktree.sh:114 (path_in_scope)"
+  [[ "${output}" == "scripts/hook-block-git-worktree.sh" ]]
+}
+
+@test "_dedup_location_path: existing forms still parse correctly (#387)" {
+  _load_fn _dedup_location_path
+
+  run _dedup_location_path "scripts/a.sh:302"
+  [[ "${output}" == "scripts/a.sh" ]]
+
+  run _dedup_location_path "scripts/a.sh:10-20"
+  [[ "${output}" == "scripts/a.sh" ]]
+
+  run _dedup_location_path "scripts/a.sh"
+  [[ "${output}" == "scripts/a.sh" ]]
+
+  run _dedup_location_path "scripts/a.sh:10-20 (some_fn)"
+  [[ "${output}" == "scripts/a.sh" ]]
+}

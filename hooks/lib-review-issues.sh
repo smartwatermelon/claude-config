@@ -510,7 +510,12 @@ _dedup_location_path() {
   local location="$1"
   # Strip a trailing ":<digits>" or ":<digits>-<digits>" suffix.
   local path_only="${location}"
-  path_only="$(printf '%s' "${path_only}" | sed -E 's/:[0-9]+(-[0-9]+)?[[:space:]]*$//')"
+  # An optional trailing parenthetical (a function or symbol name) is common
+  # in reviewer-authored LOCATION fields. Without it the anchor never fires,
+  # the path never reduces to a bare path, and dedup -- which matches on path
+  # before comparing titles -- never gets to compare. #376/#377 were the same
+  # defect filed twice for exactly this reason. See #387.
+  path_only="$(printf '%s' "${path_only}" | sed -E 's/:[0-9]+(-[0-9]+)?([[:space:]]*\(.*\))?[[:space:]]*$//')"
   path_only="${path_only#"${path_only%%[![:space:]]*}"}"
   path_only="${path_only%"${path_only##*[![:space:]]}"}"
 
