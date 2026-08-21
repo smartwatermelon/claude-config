@@ -462,11 +462,17 @@ NOT merge, rebase, push, or delete anything, and do NOT remove any worktree.`,
   queue = nextQueue
 }
 
-// If we broke out on the cap, whatever is still queued was never worked. Report
+// Whatever is still queued on ANY non-converged stop was never worked. Report
 // it explicitly — a silent drop here would read as "everything got done".
-const unworked = stopReason === 'capped' ? queue : []
+//
+// retryQueue matters for `diverging` and `no_progress`: both break above the
+// `retryQueue = []` reset, so items the verifier rejected and re-queued that
+// round are still sitting there and would otherwise be dropped. On `capped`
+// and `queue_explosion` retryQueue is already empty or already folded into
+// `queue`, and the spread is a harmless no-op. See #364.
+const unworked = stopReason === 'converged' ? [] : [...queue, ...retryQueue]
 if (unworked.length) {
-  log(`CAP REACHED after ${round} round(s): ${unworked.length} follow-up(s) left unworked`)
+  log(`STOPPED (${stopReason}) after ${round} round(s): ${unworked.length} item(s) left unworked`)
 }
 
 return {

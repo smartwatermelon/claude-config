@@ -341,6 +341,14 @@ inp="$(make_input "bash -c ${dq}git worktree add .claude/worktrees/ok${dq}")"
 check "quoted path: scoped creation via bash -c double-quoted is allowed" 0 "${inp}"
 inp="$(make_input "bash -c ${sq}git worktree add /tmp/evil${sq}")"
 check "quoted path: unscoped creation via bash -c is still blocked" 2 "${inp}"
+# A path ending in BOTH quote characters has both stripped. Quotes are not in
+# the metacharacter reject list, so this was accepted before the #377 strip
+# too -- behaviour is unchanged, and scope is still what decides. Pinned so
+# the sequence-of-two-strips is a documented choice, not an accident.
+inp="$(make_input "git worktree add .claude/worktrees/ok${sq}${dq}")"
+check "quoted path: trailing quote pair on a scoped path stays allowed" 0 "${inp}"
+inp="$(make_input "git worktree add /tmp/evil${sq}${dq}")"
+check "quoted path: trailing quote pair on an unscoped path stays blocked" 2 "${inp}"
 inp="$(make_input "command bash -c ${dq}git worktree add /tmp/evil${dq}")"
 check "invocation: command bash -c still blocks" 2 "${inp}"
 # KNOWN GAP, pinned as CURRENT behavior: a wrapper whose last non-flag word is
