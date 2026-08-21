@@ -310,6 +310,20 @@ inp="$(make_input "sh -c ${sq}git worktree add /tmp/evil${sq}")"
 check "invocation: sh -c still blocks despite the mention carve-out" 2 "${inp}"
 inp="$(make_input "bash -c ${dq}git worktree add /tmp/evil${dq}")"
 check "invocation: bash -c double-quoted still blocks" 2 "${inp}"
+inp="$(make_input "eval ${dq}git worktree add /tmp/evil${dq}")"
+check "invocation: eval double-quoted still blocks" 2 "${inp}"
+# Wrappers that leave a shell adjacent to the quote must still block -- these
+# are the forms that actually occur.
+inp="$(make_input "sudo bash -c ${dq}git worktree add /tmp/evil${dq}")"
+check "invocation: sudo bash -c still blocks" 2 "${inp}"
+inp="$(make_input "command bash -c ${dq}git worktree add /tmp/evil${dq}")"
+check "invocation: command bash -c still blocks" 2 "${inp}"
+# KNOWN GAP, pinned as CURRENT behavior: a wrapper whose last non-flag word is
+# not itself an executor (`pyenv exec`) is read as a mention and skipped. See
+# the KNOWN LIMITATION note above _executes_quoted_string for why closing this
+# would re-break the echo/grep false positive.
+inp="$(make_input "pyenv exec ${dq}git worktree add /tmp/evil${dq}")"
+check "KNOWN GAP: non-executor wrapper word is read as a mention" 0 "${inp}"
 
 # --- PERMANENTLY OPEN gaps, asserted as CURRENT behavior, not desired ---
 # Documented in the KNOWN LIMITATION block in the hook header. A PreToolUse

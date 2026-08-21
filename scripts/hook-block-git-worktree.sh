@@ -278,14 +278,30 @@ mapfile -t matches < <(printf '%s\n' "${cmd}" | grep -oE "${worktree_re}" || tru
 # occurrence into a real invocation; anything else that merely carries the
 # phrase as text does not.
 #
-# This is an allowlist, so an unrecognized command keeps the quoted occurrence
-# under inspection: a new executor that nobody listed here fails CLOSED (still
-# blocked), never open. The cost is that an unlisted printer stays a false
-# positive, which is the safe direction for this trade.
+# KNOWN LIMITATION -- this carve-out fails OPEN, not closed.
+#
+# The lookback takes the last non-flag word before the quote. When that word is
+# an unrecognized command the occurrence is treated as a MENTION and skipped, so
+# `pyenv exec "git worktree add /tmp/evil"` passes: the deciding word is `exec`,
+# not `pyenv`. Ordinary wrappers are unaffected, because they leave a shell
+# adjacent to the quote -- `sudo bash -c`, `env bash -c`, `xargs ... bash -c`
+# and `command bash -c` were all checked and still block.
+#
+# Widening this to fail closed would re-break the false positive it exists to
+# fix: `echo`, `grep` and `printf` are precisely "unrecognized commands before a
+# quoted string". Both cannot be satisfied by a lookback of this kind, and
+# separating them needs real tokenization -- the same boundary the header's
+# KNOWN LIMITATION block already describes. Naming the executors is the smaller
+# error, since a missed exotic wrapper is one more instance of a gap class this
+# hook already documents rather than a new kind of hole.
 _executes_quoted_string() {
   case "$1" in
     # *sh covers sh/bash/zsh/ksh/dash and any path-qualified form.
-    *sh | eval | *xargs | *env) return 0 ;;
+    # `env` is exact (plus a path form): a bare *env glob would also catch
+    # pyenv/rbenv/direnv/goenv, which do not execute their argument as a shell
+    # string. Over-matching there is safe (it keeps the block) but inaccurate,
+    # so name what is actually meant.
+    *sh | eval | xargs | */xargs | env | */env) return 0 ;;
     *) return 1 ;;
   esac
 }
