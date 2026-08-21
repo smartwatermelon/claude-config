@@ -133,3 +133,18 @@ ISSUE: tool 1.2.3 does not exist
 SEVERITY: BLOCKING")
   [ "$(parse_verdict "${out}")" = "PASS" ]
 }
+
+@test "promotion handles arbitrary verdict casing and both keyword lengths" {
+  local out
+  for v in "VERDICT: fAiL" "VERDICT: rEvIsE" "verdict: revise - see below"; do
+    out=$(downgrade_version_unfamiliarity_findings "${v}
+ISSUE: tool 1.2.3 does not exist
+SEVERITY: BLOCKING")
+    [ "$(parse_verdict "${out}")" = "PASS" ]
+  done
+  # REVISE is 6 chars and FAIL is 4; the tail must survive either way.
+  out=$(downgrade_version_unfamiliarity_findings "VERDICT: REVISE - see below
+ISSUE: tool 1.2.3 does not exist
+SEVERITY: BLOCKING")
+  [ "$(printf '%s\n' "${out}" | head -1)" = "VERDICT: PASS - see below" ]
+}

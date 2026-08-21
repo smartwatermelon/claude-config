@@ -305,14 +305,16 @@ downgrade_version_unfamiliarity_findings() {
     _result=$(printf '%s\n' "${_result}" | awk '
       BEGIN { done = 0 }
       !done && toupper($0) ~ /^VERDICT:[[:space:]]*(FAIL|REVISE)/ {
-        # Rebuild rather than sub(): awk sub() is case-sensitive, so a
-        # lowercase "verdict: revise" would match the toupper() guard and
-        # then survive the substitution unchanged. parse_verdict is
-        # case-insensitive, so that would still block the commit.
+        # Rebuild rather than sub(): awk sub() is case-sensitive, so any
+        # casing the toupper() guard admits ("verdict: revise", "fAiL")
+        # would survive a substitution unchanged. parse_verdict is
+        # case-insensitive, so that would still block the commit. Split on
+        # the uppercased copy and keep the original tail verbatim.
         rest = $0
         sub(/^[^:]*:[[:space:]]*/, "", rest)
-        sub(/^(FAIL|REVISE|fail|revise|Fail|Revise)/, "PASS", rest)
-        print "VERDICT: " rest
+        upper = toupper(rest)
+        keep = (upper ~ /^REVISE/) ? substr(rest, 7) : substr(rest, 5)
+        print "VERDICT: PASS" keep
         done = 1
         next
       }
