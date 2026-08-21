@@ -1927,15 +1927,36 @@ DETAILS: Detail one." "${PENDING_ISSUES_DIR}"
 @test "_dedup_location_path: existing forms still parse correctly (#387)" {
   _load_fn _dedup_location_path
 
-  run _dedup_location_path "scripts/a.sh:302"
-  [[ "${output}" == "scripts/a.sh" ]]
+  # Each case echoes actual-vs-expected on failure: bare [[ ]] in a bats body
+  # reports only "exit status 1", which does not say which form broke.
+  local form
+  for form in \
+    "scripts/a.sh:302" \
+    "scripts/a.sh:10-20" \
+    "scripts/a.sh" \
+    "scripts/a.sh:10-20 (some_fn)" \
+    "scripts/a.sh:10 (fn(x))" \
+    "scripts/a.sh:20 (closes #387)"; do
+    run _dedup_location_path "${form}"
+    [[ "${output}" == "scripts/a.sh" ]] || {
+      echo "form: ${form}"
+      echo "  expected: scripts/a.sh"
+      echo "  got:      ${output}"
+      return 1
+    }
+  done
+}
 
-  run _dedup_location_path "scripts/a.sh:10-20"
-  [[ "${output}" == "scripts/a.sh" ]]
+@test "_dedup_location_path: an unclosed parenthetical still reduces to a path (#387)" {
+  _load_fn _dedup_location_path
 
-  run _dedup_location_path "scripts/a.sh"
-  [[ "${output}" == "scripts/a.sh" ]]
-
-  run _dedup_location_path "scripts/a.sh:10-20 (some_fn)"
-  [[ "${output}" == "scripts/a.sh" ]]
+  # Reviewer-authored LOCATION text is not guaranteed balanced. Without a
+  # fallback the line number survives, which is the same failure mode #387
+  # fixed for the closed-paren form.
+  run _dedup_location_path "scripts/a.sh:10 (unclosed"
+  [[ "${output}" == "scripts/a.sh" ]] || {
+    echo "  expected: scripts/a.sh"
+    echo "  got:      ${output}"
+    return 1
+  }
 }

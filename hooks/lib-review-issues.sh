@@ -515,7 +515,10 @@ _dedup_location_path() {
   # the path never reduces to a bare path, and dedup -- which matches on path
   # before comparing titles -- never gets to compare. #376/#377 were the same
   # defect filed twice for exactly this reason. See #387.
-  path_only="$(printf '%s' "${path_only}" | sed -E 's/:[0-9]+(-[0-9]+)?([[:space:]]*\(.*\))?[[:space:]]*$//')"
+  # The closing paren is optional: reviewer-authored text is not guaranteed
+  # balanced, and an unclosed parenthetical would otherwise keep the line
+  # number attached -- the same failure this fix exists to remove.
+  path_only="$(printf '%s' "${path_only}" | sed -E 's/:[0-9]+(-[0-9]+)?([[:space:]]*\(.*\)?)?[[:space:]]*$//')"
   path_only="${path_only#"${path_only%%[![:space:]]*}"}"
   path_only="${path_only%"${path_only##*[![:space:]]}"}"
 
