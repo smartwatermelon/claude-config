@@ -2018,6 +2018,9 @@ SOURCE: code-reviewer
 LOCATION: src/a.ts:1
 DETAILS: This value is incorrect and must change." "${PENDING_ISSUES_DIR}"
 
+  # Order-sensitive by design: production builds this as "${labels},unverified"
+  # with labels starting at "tech-debt". If that construction changes, update
+  # this rather than loosening it -- the point is that the label FIRES.
   grep -q "tech-debt,unverified" "${MOCK_DIR}/label.txt" || {
     echo "unverified label did not fire; markers likely not loaded"
     echo "  label: $(cat "${MOCK_DIR}/label.txt" 2>/dev/null)"
