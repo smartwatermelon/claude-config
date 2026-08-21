@@ -54,6 +54,13 @@
 #   fix belongs in agent orchestration (ownership metadata per worktree), not
 #   in a regex hook that cannot tell one agent's path from another's.
 #
+#   What IS detected (#374): an out-of-scope `remove` is allowed but logged to
+#   ~/.claude/blocked-commands.log under an `AUDIT GIT WORKTREE REMOVE` prefix,
+#   so the post-mortem has a trail instead of silence. This is deliberately
+#   observe-only -- it must never block, or it reintroduces the un-cleanable
+#   pre-ban worktrees described above. It does not tell whose worktree it was;
+#   that still needs ownership metadata.
+#
 #   Why the ban was relaxed at all: "work directly on a feature branch instead"
 #   assumed one worker per checkout. Subagent-driven execution is now the
 #   documented default in CLAUDE.md, and a branch is not isolation when two
@@ -163,14 +170,18 @@ path_in_scope() {
   return 1
 }
 
-# Pull the target path out of a creation invocation's argument list.
+# Pull the target path out of a subcommand's argument list.
 #
-# Creation accepts flags before the path (`-b <branch>`, `-B <branch>`,
+# Both callers accept flags before the path (`-b <branch>`, `-B <branch>`,
 # `--detach`, `--force`, ...), so the path is NOT reliably the first argument.
 # Walk the tokens, consuming flags (and the value of those flags that take one),
 # and return the first bare operand -- that is the path. A trailing <commit-ish>
 # may follow it, which we ignore.
-extract_add_path() {
+#
+# Correct for both `add <path>` and `remove [--force] <worktree>`: --force is
+# valueless, so the valueless-flag arm skips it and the path is still the first
+# bare operand.
+extract_path_operand() {
   local -a tokens=("$@")
   local i=0 tok
   while ((i < ${#tokens[@]})); do
@@ -191,8 +202,38 @@ extract_add_path() {
         ;;
     esac
   done
-  # No operand found.
+  # No operand found. Callers diverge on what that means, deliberately:
+  # `add` treats an empty result as "creation with no explicit path" and
+  # BLOCKS it (a path that cannot be shown in scope is not allowed); `remove`
+  # treats it as "nothing to inspect" and skips the audit, since a removal with
+  # no operand is rejected by git itself. Returning empty rather than failing
+  # keeps that policy choice at the call site.
   return 0
+}
+
+# Observe-only counterpart to block(): records an event and RETURNS. Used for
+# `remove` targeting a path outside the sanctioned scope, which stays allowed
+# on purpose (see the ACCEPTED TRADE-OFF note in the header) but leaves no
+# trace otherwise. A distinct prefix keeps it out of anything counting
+# "BLOCKED GIT WORKTREE" -- this is an audit record, not a refusal.
+# Every failure path here is swallowed. Under `set -e` an unwritable log (no
+# ~/.claude on first run, full disk, bad permissions) would exit non-zero, and
+# a non-zero exit from a PreToolUse hook BLOCKS the command -- turning a missing
+# audit line into a refused removal, the exact outcome the header forbids
+# (#398). Losing the record is bad; losing the removal is worse.
+#
+# Takes the offending command explicitly rather than reading the script-level
+# ${cmd}, so the function is callable from anywhere and shellcheck can see the
+# dependency. block() still reads ${cmd} directly; that predates this and its
+# four call sites are out of scope here (#397).
+warn_out_of_scope_remove() {
+  local target="${1}" offending_cmd="${2}"
+  printf '%s AUDIT GIT WORKTREE REMOVE (out of scope: %s): %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${target}" "${offending_cmd}" \
+    >>"${HOME}/.claude/blocked-commands.log" || true
+  printf '⚠️  NOTE: removing a worktree outside %s/ (%s)\n' "${WORKTREE_SCOPE}" "${target}" >&2
+  printf '   Allowed, and logged for audit. If this was a peer agent'"'"'s worktree,\n' >&2
+  printf '   its uncommitted work is gone -- see %s/.claude/blocked-commands.log\n' "${HOME}" >&2
 }
 
 block() {
@@ -405,13 +446,24 @@ for match in "${matches[@]}"; do
     # scoping here would restore the un-cleanable-worktree bug dotfiles#200
     # fixed. The cost is that an agent can remove a peer agent's worktree; see
     # the ACCEPTED TRADE-OFF note in the header before narrowing this.
-    remove | prune)
+    # `remove` is still ALWAYS allowed -- the audit call cannot block. It only
+    # leaves a trace when the target is outside scope, which is the peer-agent
+    # clobbering case the header calls a real consequence (#374). `prune` takes
+    # no path operand, so there is nothing to inspect.
+    remove)
+      target="$(extract_path_operand "${tokens[@]:1}")"
+      if [[ -n "${target}" ]] && ! path_in_scope "${target}"; then
+        warn_out_of_scope_remove "${target}" "${cmd}"
+      fi
+      continue
+      ;;
+    prune)
       continue
       ;;
     # Creation: permitted only when the target path is provably inside the
     # sanctioned scope.
     add)
-      target="$(extract_add_path "${tokens[@]:1}")"
+      target="$(extract_path_operand "${tokens[@]:1}")"
       if path_in_scope "${target}"; then
         continue
       fi
