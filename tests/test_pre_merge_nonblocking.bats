@@ -1480,3 +1480,30 @@ END_ISSUE"
   ! _asserts_incorrectness "" "The entry is not present in the allowlist."
   ! _asserts_incorrectness "" "The helper cannot be found on PATH."
 }
+
+@test "gate3: behavior-mechanism claims are flagged (projectinsomnia #124/#128/#131/#132/#133/#137)" {
+  _load_gate3_fns
+
+  # Six findings in one session asserted how a tool or runtime BEHAVES,
+  # from memory, and every one was false. None used Group 1 phrasing, so
+  # none were labelled -- each cost a human a one-line command to disprove.
+  _asserts_incorrectness "" "The commit message claims node receives the name via argv, but line 135 never extracts process.argv[1]."
+  _asserts_incorrectness "" "if: failure() is scoped to the preceding step, so a failing audit will be skipped and the log is dropped."
+  _asserts_incorrectness "" "GNU grep -w treats / as a word character, so @netlify/dev will produce false negatives."
+  _asserts_incorrectness "" "The jq filter returns an empty array, causing the script to silently succeed."
+  _asserts_incorrectness "" "The current released major is v4 — this action has no v7 release."
+  _asserts_incorrectness "" "Those sections only render when credentials are configured; otherwise the page does not run that path."
+}
+
+@test "gate3: style and structure findings stay UNflagged" {
+  _load_gate3_fns
+
+  # Group 3 must not catch findings that make no factual claim about
+  # external state -- those legitimately carry no VERIFIED: field.
+  ! _asserts_incorrectness "" "The function is long and would read better split into two helpers."
+  ! _asserts_incorrectness "" "Consider extracting this duplicated block into a shared helper."
+  ! _asserts_incorrectness "" "This variable name is ambiguous; rename for clarity."
+  ! _asserts_incorrectness "" "The comment density here is lower than the surrounding file."
+  ! _asserts_incorrectness "" "Test coverage for the error path is missing."
+  ! _asserts_incorrectness "" "This adds a second source of truth for the same list."
+}
