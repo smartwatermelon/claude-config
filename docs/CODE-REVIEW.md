@@ -38,6 +38,7 @@
 - [ ] DRY — no unnecessary duplication
 - [ ] Appropriate level of abstraction
 - [ ] **Diagnostic granularity**: distinct failure modes produce distinct error messages (missing dependency ≠ missing file ≠ parse error ≠ value mismatch). Don't let `|| true` or empty-default fallbacks collapse several failure modes into one misleading message. See §Recurring CI Findings → "Logged patterns" for the example-driven rule.
+- [ ] **Comment minimalism**: comments are limited to what isn't obvious from the code. A comment that only restates what the code already says should be flagged and removed.
 
 ---
 
@@ -137,6 +138,45 @@ If review still fails to converge after these mechanisms are in place,
 that is itself worth a fresh issue — check `smartwatermelon/claude-config`
 issues for "Reviewer disagreement:"-titled entries first, since the
 arbiter-logging in mechanism 3 may already have captured the pattern.
+
+---
+
+## Version-Pin Unfamiliarity Is Not a Blocking Finding
+
+A reviewer model's training data has a cutoff. A manifest pin (any file, any
+ecosystem) for a tool/package version released after that cutoff reads to the
+reviewer as "this version doesn't exist" or "I don't recognize this" — a false
+BLOCKING FAIL on code that was pinned deliberately and already tested (Protocol
+3 requires tests pass before a diff reaches review, so "tests passed" is not
+re-verified here — it's inherited).
+
+**The rule:** `hooks/run-review.sh`'s `downgrade_version_unfamiliarity_findings`
+rewrites a BLOCKING finding to WARNING when its text matches unfamiliarity
+language ("does not exist," "no such version," "unfamiliar," "don't recognize")
+and does **not** match known-bad language (CVE, vulnerability, deprecated,
+yanked, breaking change, security advisory). A finding matching both is never
+downgraded — a substantive security or compatibility claim always wins over an
+unfamiliarity pattern. This is deliberately not ecosystem-aware (no
+package.json-vs-go.mod special-casing) and does not query any package registry;
+when the pinned tool has a local binary on PATH, its `--version` output is
+logged alongside the downgrade as corroborating evidence, but a missing local
+binary does not block the downgrade.
+
+A block is classified as a whole, from its `ISSUE:` line to the next one, so
+`DETAILS:` text counts toward the finding it belongs to. When a downgrade
+leaves no `SEVERITY: BLOCKING` anywhere in the output, the leading `VERDICT:`
+line is promoted `FAIL`/`REVISE` → `PASS` as well; `parse_verdict` reads only
+the `VERDICT:` line, so relabeling severities without that step would still
+block the commit. A finding that survives alongside the version pin — an
+unrelated blocking bug — keeps the verdict at FAIL.
+
+Downgraded findings stay visible — logged to `REVIEW_LOG` and relabeled
+`SEVERITY: WARNING` in the reviewer output, never deleted — same visibility
+standard as reviewer-disagreement arbitration above.
+
+Applies to the pre-commit review path only (whole-diff and chunked per-file);
+full-diff and codebase pre-push modes are unaffected, since a version pin is a
+per-file manifest fact, not a cross-file integration concern.
 
 ---
 
