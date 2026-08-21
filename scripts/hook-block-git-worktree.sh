@@ -219,13 +219,24 @@ block() {
 # Handled: `$(...)` command substitution (the `(` alternative catches it),
 # `` `...` `` command substitution (the backtick alternative, which also
 # terminates the captured argument list so the closing backtick is not
-# swallowed into the path token), `env`/`command`/`sudo`-prefixed git, and
-# absolute/relative-path invocation such as `/usr/bin/git`.
+# swallowed into the path token), `env`/`command`/`sudo`-prefixed git,
+# absolute/relative-path invocation such as `/usr/bin/git`, and git preceded by
+# an opening quote of any kind -- `'`, `\"`, or ANSI-C `$'...'`.
+#
+# The quote alternatives close a class that was silently open: `bash -c 'git
+# worktree add /tmp/evil'`, the `\"` form, and `eval $'...'` all placed git
+# after a quote rather than after a separator, so none matched and every one
+# skipped path_in_scope() entirely. Heredocs were never part of this class --
+# `grep -oE` matches per line, so a heredoc body's `git` sits at line start and
+# the `^` alternative already caught it. Enumerating heredocs as a bypass would
+# have been wrong.
 #
 # NOT handled, and NOT closeable at this layer:
 #
 #   * aliases and shell functions that resolve to git
 #   * obfuscation via variables, e.g. G=git; $G worktree add /tmp/evil
+#   * any construction that spells `git` without the literal four characters,
+#     e.g. concatenation or parameter expansion producing the name at runtime
 #
 # Both require knowing what a name resolves to at runtime. A PreToolUse hook
 # receives the raw, unexpanded command string and never sees the shell that
@@ -250,7 +261,7 @@ block() {
 # substitution (SC2016), and disable directives are not permitted here.
 bt=$(printf '\140')
 readonly bt
-worktree_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|[[:space:]]then|[[:space:]]do)[[:space:]]*((env|command|sudo)[[:space:]]+)*([^[:space:]|;&(){${bt}]*/)?git[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&${bt}[:space:]]*[[:space:]]+)?)*worktree([[:space:]]+[^|;&){${bt}]*)?"
+worktree_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do)[[:space:]]*((env|command|sudo)[[:space:]]+)*([^[:space:]|;&(){${bt}]*/)?git[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&${bt}[:space:]]*[[:space:]]+)?)*worktree([[:space:]]+[^|;&){${bt}]*)?"
 
 mapfile -t matches < <(printf '%s\n' "${cmd}" | grep -oE "${worktree_re}" || true)
 
@@ -262,6 +273,12 @@ for match in "${matches[@]}"; do
   read -r -a tokens <<<"${args}" || true
 
   subcmd="${tokens[0]-}"
+  # A quote-prefixed occurrence carries its closing quote into the last token,
+  # so `bash -c 'git worktree list'` arrives as `list'`. Strip one trailing
+  # quote so the subcommand compares equal. The path is untouched --
+  # path_in_scope() strips a matched pair itself.
+  subcmd="${subcmd%\'}"
+  subcmd="${subcmd%\"}"
 
   case "${subcmd}" in
     # Read-only / inspection: this occurrence is fine, keep checking others.
