@@ -299,7 +299,25 @@ downgrade_version_unfamiliarity_findings() {
   if [[ "${_downgraded}" == "yes" ]] \
     && ! printf '%s\n' "${_result}" | grep -qiE 'SEVERITY:[[:space:]]*BLOCKING'; then
     log_warn "All BLOCKING findings were version-pin unfamiliarity; promoting VERDICT to PASS"
-    _result=$(printf '%s\n' "${_result}" | sed -E '1,/^VERDICT:/ s/^(VERDICT:[[:space:]]*)(FAIL|REVISE)/\1PASS/I')
+    # awk, not `sed '1,/^VERDICT:/'`: that range ends at the SECOND match, so
+    # it would rewrite a trailing VERDICT line too, and BSD sed ignores the
+    # `0,/re/` form that would otherwise fix it. Rewrite the first line only.
+    _result=$(printf '%s\n' "${_result}" | awk '
+      BEGIN { done = 0 }
+      !done && toupper($0) ~ /^VERDICT:[[:space:]]*(FAIL|REVISE)/ {
+        # Rebuild rather than sub(): awk sub() is case-sensitive, so a
+        # lowercase "verdict: revise" would match the toupper() guard and
+        # then survive the substitution unchanged. parse_verdict is
+        # case-insensitive, so that would still block the commit.
+        rest = $0
+        sub(/^[^:]*:[[:space:]]*/, "", rest)
+        sub(/^(FAIL|REVISE|fail|revise|Fail|Revise)/, "PASS", rest)
+        print "VERDICT: " rest
+        done = 1
+        next
+      }
+      { print }
+    ')
   fi
 
   printf '%s\n' "${_result}"

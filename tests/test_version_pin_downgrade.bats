@@ -101,3 +101,35 @@ SEVERITY: BLOCKING")
   twice=$(downgrade_version_unfamiliarity_findings "${once}")
   [ "${once}" = "${twice}" ]
 }
+
+# --- Verdict-promotion regression cases (found in adversarial review) ---
+
+@test "promotion rewrites only the first VERDICT line, not a trailing one" {
+  # `sed '1,/^VERDICT:/'` looks correct but its range ends at the SECOND
+  # match, so it rewrote a trailing VERDICT line too.
+  local out
+  out=$(downgrade_version_unfamiliarity_findings "VERDICT: FAIL
+ISSUE: tool 1.2.3 does not exist
+SEVERITY: BLOCKING
+VERDICT: FAIL")
+  [ "$(printf '%s\n' "${out}" | head -1)" = "VERDICT: PASS" ]
+  [ "$(printf '%s\n' "${out}" | tail -1)" = "VERDICT: FAIL" ]
+}
+
+@test "promotion preserves trailing text on the verdict line" {
+  local out
+  out=$(downgrade_version_unfamiliarity_findings "VERDICT: FAIL (1 issue)
+ISSUE: tool 1.2.3 does not exist
+SEVERITY: BLOCKING")
+  [ "$(printf '%s\n' "${out}" | head -1)" = "VERDICT: PASS (1 issue)" ]
+}
+
+@test "promotion handles a lowercase verdict, matching parse_verdict" {
+  # parse_verdict is case-insensitive, so a lowercase REVISE left unrewritten
+  # would still normalize to FAIL and block the commit.
+  local out
+  out=$(downgrade_version_unfamiliarity_findings "verdict: revise
+ISSUE: tool 1.2.3 does not exist
+SEVERITY: BLOCKING")
+  [ "$(parse_verdict "${out}")" = "PASS" ]
+}
