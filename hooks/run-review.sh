@@ -192,6 +192,142 @@ parse_verdict() {
   fi
 }
 
+# --- Version-pin-unfamiliarity downgrade ---
+# Rationale and rules: docs/CODE-REVIEW.md
+# §Version-Pin Unfamiliarity Is Not a Blocking Finding
+#
+# Reviewer models' training data has a cutoff; a manifest pin for a tool
+# version newer than that cutoff reads to the reviewer as "this version
+# doesn't exist" or "I don't recognize this" — a false BLOCKING FAIL on
+# code that was tested and pinned deliberately. Treat that specific
+# objection as invalid and downgrade it to WARNING, without per-ecosystem
+# manifest parsing and without a separate test-evidence check (tests-passed
+# is already assumed by Protocol 3 by the time a diff reaches review).
+#
+# What this function does NOT do, deliberately (YAGNI):
+#   - It does not verify the pin against a package registry.
+#   - It does not distinguish package.json from go.mod from Gemfile, etc.
+#   - It does not trust the reviewer's own "I don't recognize this" claim
+#     at face value — it re-classifies the DETAILS/ISSUE text itself, so
+#     a reviewer that mislabels a real CVE finding as "unfamiliar" still
+#     gets caught by the known-bad pattern below.
+#
+# $1 = raw reviewer output (VERDICT/ISSUE/SEVERITY/LOCATION/DETAILS blocks)
+# Prints the same text with qualifying BLOCKING lines rewritten to WARNING.
+# If that leaves no BLOCKING severity anywhere, the leading VERDICT: FAIL /
+# REVISE is rewritten to PASS as well — parse_verdict reads only the VERDICT
+# line, so without this the downgrade would relabel the issue while still
+# blocking the commit, which is the opposite of the intent.
+# Emits one log_warn per downgrade (stderr) so it stays visible, matching
+# how arbitration disagreements are logged elsewhere in this file.
+downgrade_version_unfamiliarity_findings() {
+  local _output="$1"
+  local -a _out_lines=()
+  local -a _block=()
+  local _line _block_text _is_blocking _tool_hint _result
+  local _tool_version _issue_title
+  local _downgraded="no"
+
+  # Language that indicates the reviewer's sole objection is "I don't
+  # recognize this version" (unfamiliarity), as opposed to a substantive
+  # claim about the version being bad. Case-insensitive.
+  local _unfamiliar_re='does not exist|doesn.?t exist|no such version|not aware of|unfamiliar|do not recognize|don.?t recognize|unrecognized version|not a (real|valid|known) version|nonexistent version'
+
+  # Language that indicates a substantive, non-familiarity objection.
+  # If this matches anywhere in the block, the block is NEVER downgraded,
+  # even if unfamiliarity language also appears — a known-bad claim wins.
+  # The dot in `supply.chain` is an intentional wildcard, not an unescaped
+  # literal: it covers "supply chain", "supply-chain", and "supply_chain".
+  # Do not "correct" it to `supply\.chain`.
+  local _knownbad_re='CVE-|CVE[[:space:]]|vulnerab|RCE|exploit|deprecat|yanked|breaking change|incompatib|security advisory|malicious|supply.chain'
+
+  # Walk the output one ISSUE:-delimited block at a time. Each block runs
+  # from an "ISSUE:" line up to (but not including) the next "ISSUE:" line
+  # or end of input. Blocks are classified as a whole so DETAILS: text on
+  # a later line still counts toward the block that owns it.
+  _flush_block() {
+    if [[ ${#_block[@]} -eq 0 ]]; then
+      return 0
+    fi
+    _block_text=$(printf '%s\n' "${_block[@]}")
+    _is_blocking=$(printf '%s\n' "${_block_text}" | grep -qiE 'SEVERITY:[[:space:]]*BLOCKING' && echo yes || echo no)
+    if [[ "${_is_blocking}" == "yes" ]] \
+      && printf '%s\n' "${_block_text}" | grep -qiE "${_unfamiliar_re}" \
+      && ! printf '%s\n' "${_block_text}" | grep -qiE "${_knownbad_re}"; then
+      # Best-effort local corroboration: if a tool name is present and
+      # invokable, log its installed version alongside the downgrade for
+      # a human to sanity-check later. Not required to downgrade — an
+      # absent local binary (an npm/pip package, say) is not a blocker.
+      # grep -E has no lookahead, so match "<name> <version>" whole and strip
+      # the version half with sed rather than trying to assert past it.
+      _tool_hint=$(printf '%s\n' "${_block_text}" \
+        | grep -oE '[a-zA-Z][a-zA-Z0-9_.-]{1,30}[[:space:]]+v?[0-9]+\.[0-9]' \
+        | head -1 \
+        | sed -E 's/[[:space:]]+v?[0-9]+\.[0-9].*$//' || true)
+      if [[ -n "${_tool_hint}" ]] && command -v "${_tool_hint}" >/dev/null 2>&1; then
+        _tool_version=$("${_tool_hint}" --version 2>/dev/null || true)
+        _tool_version=$(printf '%s\n' "${_tool_version}" | head -1)
+        [[ -n "${_tool_version}" ]] || _tool_version="unknown"
+        log_warn "version-pin downgrade: local '${_tool_hint} --version' -> ${_tool_version}"
+      fi
+      _issue_title=$(printf '%s\n' "${_block_text}" | grep -im1 '^ISSUE:' || true)
+      [[ -n "${_issue_title}" ]] || _issue_title="(untitled issue)"
+      log_warn "Downgrading BLOCKING -> WARNING (version-pin unfamiliarity, not a known-bad claim): ${_issue_title}"
+      _downgraded="yes"
+      _block_text=$(printf '%s\n' "${_block_text}" | sed -E 's/^(SEVERITY:[[:space:]]*)BLOCKING/\1WARNING/I')
+    fi
+    _out_lines+=("${_block_text}")
+    _block=()
+  }
+
+  while IFS= read -r _line; do
+    if [[ "${_line}" =~ ^ISSUE: ]]; then
+      _flush_block
+    fi
+    _block+=("${_line}")
+  done <<<"${_output}"
+  _flush_block
+
+  unset -f _flush_block
+
+  if [[ ${#_out_lines[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  _result=$(printf '%s\n' "${_out_lines[@]}")
+
+  # Only promote the verdict when a downgrade actually happened AND nothing
+  # blocking survives. A reviewer that raised an unrelated BLOCKING issue
+  # alongside the version pin still fails, as it should.
+  if [[ "${_downgraded}" == "yes" ]] \
+    && ! printf '%s\n' "${_result}" | grep -qiE 'SEVERITY:[[:space:]]*BLOCKING'; then
+    log_warn "All BLOCKING findings were version-pin unfamiliarity; promoting VERDICT to PASS"
+    # awk, not `sed '1,/^VERDICT:/'`: that range ends at the SECOND match, so
+    # it would rewrite a trailing VERDICT line too, and BSD sed ignores the
+    # `0,/re/` form that would otherwise fix it. Rewrite the first line only.
+    _result=$(printf '%s\n' "${_result}" | awk '
+      BEGIN { done = 0 }
+      !done && toupper($0) ~ /^VERDICT:[[:space:]]*(FAIL|REVISE)/ {
+        # Rebuild rather than sub(): awk sub() is case-sensitive, so any
+        # casing the toupper() guard admits ("verdict: revise", "fAiL")
+        # would survive a substitution unchanged. parse_verdict is
+        # case-insensitive, so that would still block the commit. Split on
+        # the uppercased copy and keep the original tail verbatim.
+        rest = $0
+        sub(/^[^:]*:[[:space:]]*/, "", rest)
+        upper = toupper(rest)
+        keep = (upper ~ /^REVISE/) ? substr(rest, 7) : substr(rest, 5)
+        print "VERDICT: PASS" keep
+        done = 1
+        next
+      }
+      { print }
+    ')
+  fi
+
+  printf '%s\n' "${_result}"
+}
+
 # --- Shared issue library (for --mode=codebase non-blocking issues) ---
 _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib-review-issues.sh
@@ -683,6 +819,7 @@ Focus on:
 2. Security: Hardcoded secrets, injection vulnerabilities, auth issues
 3. Error Handling: Silent failures, missing error cases
 4. Completeness: Edge cases, incomplete implementations
+5. Comments: limited to what isn't obvious from the code — flag comments that only restate what the code already says
 
 CRITICAL: Respond with this exact format:
 
@@ -759,6 +896,10 @@ ${file_diff}
       ((skipped_files += 1))
       continue
     fi
+
+    # Same version-pin-unfamiliarity downgrade as the whole-diff path, applied
+    # per-file so chunked review doesn't diverge in behavior from small diffs.
+    _rout=$(downgrade_version_unfamiliarity_findings "${_rout}")
 
     _chunk_verdict=$(parse_verdict "${_rout}")
     if [[ "${_chunk_verdict}" == "FAIL" || "${_chunk_verdict}" == "REVISE" ]]; then
@@ -1417,6 +1558,7 @@ Focus on:
 2. Security: Hardcoded secrets, injection vulnerabilities, auth issues
 3. Error Handling: Silent failures, missing error cases
 4. Completeness: Edge cases, incomplete implementations
+5. Comments: limited to what isn't obvious from the code — flag comments that only restate what the code already says
 
 CRITICAL: Respond with this exact format:
 
@@ -1494,6 +1636,14 @@ fi
 [[ -n "${CODE_REVIEWER_OUTPUT}" ]] || CODE_REVIEWER_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
 if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
   [[ -n "${ADVERSARIAL_OUTPUT}" ]] || ADVERSARIAL_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
+fi
+
+# Version-pin-unfamiliarity downgrade: rewrite qualifying BLOCKING findings
+# to WARNING before verdict parsing, so a downgraded issue no longer flips
+# the verdict to FAIL. Applied to both reviewers' raw output.
+CODE_REVIEWER_OUTPUT=$(downgrade_version_unfamiliarity_findings "${CODE_REVIEWER_OUTPUT}")
+if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
+  ADVERSARIAL_OUTPUT=$(downgrade_version_unfamiliarity_findings "${ADVERSARIAL_OUTPUT}")
 fi
 
 # Parse verdict from code-reviewer output
