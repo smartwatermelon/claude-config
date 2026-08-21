@@ -14,6 +14,15 @@
 FUNCTIONS_SH="${HOME}/.config/bash/functions.sh"
 
 setup() {
+  # The wrapper's review-script location is an exported override
+  # (_gh_wrapper_review_script). If the developer's interactive shell exported
+  # it -- and sourcing gh-wrapper.sh does exactly that -- bats inherits the
+  # value, and it wins over the sandboxed HOME below. The mock hook would then
+  # be ignored in favour of the real one, which fails for reasons unrelated to
+  # anything under test. Unset it so HOME is genuinely the only input.
+  # See smartwatermelon/dotfiles#222 and #360.
+  unset _gh_wrapper_review_script
+
   MOCK_DIR="$(mktemp -d)"
   export MOCK_DIR
   export PATH="${MOCK_DIR}:${PATH}"
