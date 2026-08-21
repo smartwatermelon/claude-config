@@ -215,12 +215,14 @@ extract_path_operand() {
 # on purpose (see the ACCEPTED TRADE-OFF note in the header) but leaves no
 # trace otherwise. A distinct prefix keeps it out of anything counting
 # "BLOCKED GIT WORKTREE" -- this is an audit record, not a refusal.
-# Reads ${cmd} from the enclosing scope, matching block() below. Both are
-# defined only for use inside the command-scanning loop where ${cmd} is set.
+# Takes the offending command explicitly rather than reading the script-level
+# ${cmd}, so the function is callable from anywhere and shellcheck can see the
+# dependency. block() still reads ${cmd} directly; that predates this and its
+# four call sites are out of scope here (#397).
 warn_out_of_scope_remove() {
-  local target="${1}"
+  local target="${1}" offending_cmd="${2}"
   printf '%s AUDIT GIT WORKTREE REMOVE (out of scope: %s): %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${target}" "${cmd}" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${target}" "${offending_cmd}" \
     >>"${HOME}/.claude/blocked-commands.log"
   printf '⚠️  NOTE: removing a worktree outside %s/ (%s)\n' "${WORKTREE_SCOPE}" "${target}" >&2
   printf '   Allowed, and logged for audit. If this was a peer agent'"'"'s worktree,\n' >&2
@@ -444,7 +446,7 @@ for match in "${matches[@]}"; do
     remove)
       target="$(extract_path_operand "${tokens[@]:1}")"
       if [[ -n "${target}" ]] && ! path_in_scope "${target}"; then
-        warn_out_of_scope_remove "${target}"
+        warn_out_of_scope_remove "${target}" "${cmd}"
       fi
       continue
       ;;
