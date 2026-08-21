@@ -274,7 +274,76 @@ worktree_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]
 
 mapfile -t matches < <(printf '%s\n' "${cmd}" | grep -oE "${worktree_re}" || true)
 
+# Commands that EXECUTE a quoted string argument. Only these turn a quoted
+# occurrence into a real invocation; anything else that merely carries the
+# phrase as text does not.
+#
+# KNOWN LIMITATION -- this carve-out fails OPEN, not closed.
+#
+# The lookback takes the last non-flag word before the quote. When that word is
+# an unrecognized command the occurrence is treated as a MENTION and skipped, so
+# `pyenv exec "git worktree add /tmp/evil"` passes: the deciding word is `exec`,
+# not `pyenv`. Ordinary wrappers are unaffected, because they leave a shell
+# adjacent to the quote -- `sudo bash -c`, `env bash -c`, `xargs ... bash -c`
+# and `command bash -c` were all checked and still block.
+#
+# Widening this to fail closed would re-break the false positive it exists to
+# fix: `echo`, `grep` and `printf` are precisely "unrecognized commands before a
+# quoted string". Both cannot be satisfied by a lookback of this kind, and
+# separating them needs real tokenization -- the same boundary the header's
+# KNOWN LIMITATION block already describes. Naming the executors is the smaller
+# error, since a missed exotic wrapper is one more instance of a gap class this
+# hook already documents rather than a new kind of hole.
+_executes_quoted_string() {
+  case "$1" in
+    # *sh covers sh/bash/zsh/ksh/dash and any path-qualified form.
+    # `env` is exact (plus a path form): a bare *env glob would also catch
+    # pyenv/rbenv/direnv/goenv, which do not execute their argument as a shell
+    # string. Over-matching there is safe (it keeps the block) but inaccurate,
+    # so name what is actually meant.
+    *sh | eval | xargs | */xargs | env | */env) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 for match in "${matches[@]}"; do
+  # Skip a quoted MENTION of the phrase rather than an invocation of it.
+  #
+  # Adding the quote characters to the separator alternation (so that
+  # `bash -c 'git worktree add ...'` gets inspected) also made a quoted string
+  # merely CONTAINING the phrase match. `echo "git worktree add /tmp/x"` and
+  # `grep -r "git worktree add" docs/` were blocked despite executing nothing,
+  # which made writing docs and tests about this hook impossible.
+  #
+  # The captured match is identical in both cases -- quote, phrase, quote --
+  # so the match alone cannot decide. What differs is the command PRECEDING
+  # the quote: `bash -c` and `eval` run the string, `echo` and `grep` do not.
+  # Look back at the text before this occurrence and take the last word.
+  if [[ "${match:0:1}" == "'" || "${match:0:1}" == '"' ]]; then
+    prefix="${cmd%%"${match}"*}"
+    # Trailing whitespace off, then the final word of what came before.
+    prefix="${prefix%"${prefix##*[![:space:]]}"}"
+    # Walk back over flags: `bash -c 'X'` puts `-c` immediately before the
+    # quote, not `bash`, so testing only the last word misses every real
+    # executor invocation.
+    # ANSI-C quoting puts a bare `$` immediately before the quote
+    # (`bash -c $'...'`), which would otherwise read as the preceding word and
+    # match no executor. Drop a trailing sigil so the real command is found.
+    prefix="${prefix%$}"
+    prefix="${prefix%"${prefix##*[![:space:]]}"}"
+    read -r -a _pre_tokens <<<"${prefix}" || true
+    preceding=""
+    for ((_i = ${#_pre_tokens[@]} - 1; _i >= 0; _i--)); do
+      if [[ "${_pre_tokens[_i]}" != -* ]]; then
+        preceding="${_pre_tokens[_i]}"
+        break
+      fi
+    done
+    if [[ -n "${preceding}" ]] && ! _executes_quoted_string "${preceding}"; then
+      continue
+    fi
+  fi
+
   # Isolate the argument list that follows the `worktree` keyword in this
   # specific occurrence, then split it into tokens.
   args="${match#*worktree}"
