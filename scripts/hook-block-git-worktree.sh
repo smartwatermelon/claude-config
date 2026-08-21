@@ -215,6 +215,12 @@ extract_path_operand() {
 # on purpose (see the ACCEPTED TRADE-OFF note in the header) but leaves no
 # trace otherwise. A distinct prefix keeps it out of anything counting
 # "BLOCKED GIT WORKTREE" -- this is an audit record, not a refusal.
+# Every failure path here is swallowed. Under `set -e` an unwritable log (no
+# ~/.claude on first run, full disk, bad permissions) would exit non-zero, and
+# a non-zero exit from a PreToolUse hook BLOCKS the command -- turning a missing
+# audit line into a refused removal, the exact outcome the header forbids
+# (#398). Losing the record is bad; losing the removal is worse.
+#
 # Takes the offending command explicitly rather than reading the script-level
 # ${cmd}, so the function is callable from anywhere and shellcheck can see the
 # dependency. block() still reads ${cmd} directly; that predates this and its
@@ -223,7 +229,7 @@ warn_out_of_scope_remove() {
   local target="${1}" offending_cmd="${2}"
   printf '%s AUDIT GIT WORKTREE REMOVE (out of scope: %s): %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${target}" "${offending_cmd}" \
-    >>"${HOME}/.claude/blocked-commands.log"
+    >>"${HOME}/.claude/blocked-commands.log" || true
   printf '⚠️  NOTE: removing a worktree outside %s/ (%s)\n' "${WORKTREE_SCOPE}" "${target}" >&2
   printf '   Allowed, and logged for audit. If this was a peer agent'"'"'s worktree,\n' >&2
   printf '   its uncommitted work is gone -- see %s/.claude/blocked-commands.log\n' "${HOME}" >&2

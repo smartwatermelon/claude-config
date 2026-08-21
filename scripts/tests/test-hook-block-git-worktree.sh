@@ -411,6 +411,27 @@ check_audit "prune takes no path, so it is never audited" no "${inp}"
 inp="$(make_input 'git worktree prune --expire 3.days.ago')"
 check_audit "prune --expire operand is not mistaken for a worktree path" no "${inp}"
 
+# #398: an unwritable log must NOT block the removal. check_audit cannot cover
+# this -- it creates ${HOME}/.claude, so the log is always writable under it.
+# A non-zero exit from a PreToolUse hook blocks the command, so a failed audit
+# write would refuse a removal the policy requires be allowed.
+check_unwritable_log_allows() {
+  local desc="${1}" input="${2}" tmphome actual=0
+  tmphome="$(mktemp -d)" # deliberately WITHOUT .claude/, as on first run
+  printf '%s\n' "${input}" | HOME="${tmphome}" "${HOOK}" >/dev/null 2>&1 || actual=$?
+  rm -rf "${tmphome}"
+  if [[ "${actual}" -eq 0 ]]; then
+    echo "  PASS: ${desc}"
+    ((pass += 1))
+  else
+    echo "  FAIL: ${desc} (exit ${actual}, want 0 -- audit failure must not block)"
+    ((fail += 1))
+  fi
+}
+
+inp="$(make_input 'git worktree remove /tmp/peer-agent-wt')"
+check_unwritable_log_allows "unwritable audit log still allows the remove" "${inp}"
+
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]
