@@ -848,6 +848,11 @@ IMPORTANT RULES for NON_BLOCKING_ISSUE:
   either (a) run the command that checks it and record the command plus its
   observed output in a VERIFIED: field, or (b) soften the claim into a question
   instead of an assertion. Never assert a checkable fact you did not check.
+- HOW A TOOL OR RUNTIME BEHAVES IS EXTERNAL STATE. "argv[1] is the script
+  path", "if: failure() only covers the previous step", "grep -w splits on
+  /", "that flag does not exist", "an empty object passes" — all checkable,
+  usually by one command. Six such findings in one session were asserted from
+  memory and every one was false. Run the one-liner, or ask the question.
 - VERIFIED: may span multiple lines and must come last in the block, after
   DETAILS. Omit it entirely when the finding makes no factual claim about
   external state (style, structure, maintainability concerns need no command).
