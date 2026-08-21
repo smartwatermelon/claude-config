@@ -745,6 +745,11 @@ _VERIFY_ASSERTION_MARKERS=(
   "silently ignore"
   "silently fail"
   "silently succeed"
+  # These two are broad on purpose. "this guard avoids false positives in
+  # the rate limiter" does flag -- but that sentence IS a claim about how
+  # something behaves, which is the target. The gate only labels and
+  # annotates; it never suppresses. Asking a behavioral claim to show its
+  # check is the intended outcome.
   "false positive"
   "false negative"
   "no such flag"
