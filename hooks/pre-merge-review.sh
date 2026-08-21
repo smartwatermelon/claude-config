@@ -930,7 +930,9 @@ ANALYSIS_TEXT=$(echo "${FULL_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAU
     log_error "  1. Re-run the merge - the analysis often completes on a retry."
     log_error "  2. If it times out repeatedly, raise the ceiling explicitly:"
     log_error "       git config --global review.preMergeTimeout $((TIMEOUT_SECONDS * 2))"
-    log_error "     That value is honored verbatim and disables size-based scaling."
+    log_error "     That value is honored verbatim and disables both size-based"
+    log_error "     scaling and the ${TIMEOUT_CEILING_SECONDS}s ceiling, so the suggestion above can"
+    log_error "     exceed the ceiling. Set it deliberately, not just to silence this."
   else
     log_error "Claude CLI failed (exit code: ${EXIT_CODE})"
     log_error "${ANALYSIS_TEXT}"

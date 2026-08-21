@@ -1974,3 +1974,57 @@ DETAILS: Detail one." "${PENDING_ISSUES_DIR}"
     return 1
   }
 }
+
+@test "create_batched_nonblocking_issue: unverified label actually fires (#391)" {
+  # Uses _load_gate3_fns, NOT _load_fn _asserts_incorrectness: the latter
+  # extracts the function without _VERIFY_ASSERTION_MARKERS, so the marker
+  # match silently returns false and the unverified path is never exercised.
+  # Without this test the label could regress to never firing and every other
+  # batched test would still pass. Same vacuous-green trap as #356.
+  _load_gate3_fns
+  _load_fn _parse_issue_fields
+  _load_fn _format_issue_section
+  _load_fn needs_security_label
+  _load_fn is_security_critical
+  _load_fn _repo_has_issues_enabled
+  _load_fn _write_pending_issue_file
+  _load_fn create_batched_nonblocking_issue
+
+  PR_NUMBER="95"
+  PR_TITLE="Label PR"
+  REPO_OWNER="org"
+  REPO_NAME="repo"
+  GH_CALLS_FILE="${MOCK_DIR}/gh_calls"
+  PENDING_ISSUES_DIR="${MOCK_DIR}/pending"
+
+  # Capture --label and --body to their own files: `echo "$@"` flattens every
+  # argument onto one line, so a grep for "issue create" stops at the first
+  # newline inside the body and never sees the label.
+  cat >"${MOCK_DIR}/gh" <<'EOF'
+#!/usr/bin/env bash
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --label) printf '%s' "$2" > "${MOCK_DIR}/label.txt" ;;
+    --body) printf '%s' "$2" > "${MOCK_DIR}/body.txt" ;;
+  esac
+  shift
+done
+exit 0
+EOF
+  chmod +x "${MOCK_DIR}/gh"
+
+  create_batched_nonblocking_issue "TITLE: The pinned SHA is incorrect
+SOURCE: code-reviewer
+LOCATION: src/a.ts:1
+DETAILS: This value is incorrect and must change." "${PENDING_ISSUES_DIR}"
+
+  # Order-sensitive by design: production builds this as "${labels},unverified"
+  # with labels starting at "tech-debt". If that construction changes, update
+  # this rather than loosening it -- the point is that the label FIRES.
+  grep -q "tech-debt,unverified" "${MOCK_DIR}/label.txt" || {
+    echo "unverified label did not fire; markers likely not loaded"
+    echo "  label: $(cat "${MOCK_DIR}/label.txt" 2>/dev/null)"
+    return 1
+  }
+  grep -q "unverified claim" "${MOCK_DIR}/body.txt"
+}
