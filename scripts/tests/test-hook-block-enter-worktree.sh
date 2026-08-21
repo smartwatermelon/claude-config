@@ -91,6 +91,27 @@ too_long="$(printf 'a%.0s' {1..101})"
 inp="$(make_input "${too_long}")"
 check "name over 100-char limit" 2 "${inp}"
 
+# An unwritable audit log must not change the VERDICT. These hooks run under
+# `set -euo pipefail`, so an unguarded append exits non-zero on its own and the
+# script never reaches its intended `exit 2` -- degrading the documented
+# PreToolUse block code to a generic error. Same defect class as #398.
+check_blocks_with_unwritable_log() {
+  local desc="${1}" input="${2}" tmphome actual=0
+  tmphome="$(mktemp -d)" # deliberately WITHOUT .claude/, as on first run
+  printf '%s\n' "${input}" | HOME="${tmphome}" "${HOOK}" >/dev/null 2>&1 || actual=$?
+  rm -rf "${tmphome}"
+  if [[ "${actual}" -eq 2 ]]; then
+    echo "  PASS: ${desc}"
+    ((pass += 1))
+  else
+    echo "  FAIL: ${desc} (exit ${actual}, want 2 -- log failure must not change the code)"
+    ((fail += 1))
+  fi
+}
+
+inp="$(make_input '../escape')"
+check_blocks_with_unwritable_log "unwritable log still exits 2" "${inp}"
+
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]

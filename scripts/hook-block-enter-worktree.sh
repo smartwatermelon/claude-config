@@ -38,7 +38,7 @@ name=$(printf '%s\n' "${input}" | jq -r '.tool_input.name // empty')
 deny() {
   local reason="${1}"
   printf '%s BLOCKED ENTER_WORKTREE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${input}" \
-    >>"${HOME}/.claude/blocked-commands.log"
+    >>"${HOME}/.claude/blocked-commands.log" || true
   printf '🛑 BLOCKED: %s\n' "${reason}" >&2
   printf '\n' >&2
   printf 'Worktree creation is permitted (dotfiles#200), but the worktree name\n' >&2
