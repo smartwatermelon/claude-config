@@ -239,7 +239,7 @@ warn_out_of_scope_remove() {
 block() {
   local reason="${1}"
   printf '%s BLOCKED GIT WORKTREE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" \
-    >>"${HOME}/.claude/blocked-commands.log"
+    >>"${HOME}/.claude/blocked-commands.log" || true
   printf '🛑 BLOCKED: %s\n' "${reason}" >&2
   printf '\n' >&2
   printf 'Worktree policy (dotfiles#200):\n' >&2
