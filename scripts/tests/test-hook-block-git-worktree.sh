@@ -240,6 +240,39 @@ check "backtick substitution: scoped creation allowed" 0 "${inp}"
 inp="$(make_input "echo ${backtick}git worktree list${backtick}")"
 check "backtick substitution: read-only subcommand allowed" 0 "${inp}"
 
+# --- Quote-prefixed git (was a silently open gap; now closed) ---
+# `git` placed after an opening quote rather than a separator matched none of
+# the alternation, so path_in_scope() never ran. Covers single, double, and
+# ANSI-C quoting; `eval` is included because it is the common vehicle.
+sq="'"
+dq='"'
+inp="$(make_input "bash -c ${sq}git worktree add /tmp/evil${sq}")"
+check "quote prefix: single-quoted unscoped creation blocked" 2 "${inp}"
+inp="$(make_input "bash -c ${dq}git worktree add /tmp/evil${dq}")"
+check "quote prefix: double-quoted unscoped creation blocked" 2 "${inp}"
+inp="$(make_input "bash -c ${dollar}${sq}git worktree add /tmp/evil${sq}")"
+check "quote prefix: ANSI-C quoted unscoped creation blocked" 2 "${inp}"
+inp="$(make_input "eval ${sq}git worktree add /tmp/evil${sq}")"
+check "quote prefix: eval-wrapped unscoped creation blocked" 2 "${inp}"
+inp="$(make_input "bash -c ${sq}git worktree move /tmp/a /tmp/b${sq}")"
+check "quote prefix: administrative subcommand blocked" 2 "${inp}"
+# Scoped targets must still pass, and a quoted path must not be contaminated by
+# its own quotes -- otherwise legitimate quoted creation would be rejected.
+inp="$(make_input "bash -c ${sq}git worktree add .claude/worktrees/ok${sq}")"
+check "quote prefix: scoped creation allowed" 0 "${inp}"
+inp="$(make_input "git worktree add ${dq}.claude/worktrees/ok${dq}")"
+check "quote prefix: quoted scoped path still allowed" 0 "${inp}"
+inp="$(make_input "bash -c ${sq}git worktree list${sq}")"
+check "quote prefix: read-only subcommand allowed" 0 "${inp}"
+
+# --- Heredocs: already blocked, asserted so nobody "fixes" a non-gap ---
+# grep -oE matches per line, so a heredoc body's `git` sits at line start and
+# the `^` alternative catches it. Issue #349 claimed heredocs were a bypass;
+# they are not. Pinned so that claim cannot be reintroduced as a change.
+heredoc_cmd=$(printf 'cat <<EOF\ngit %s add /tmp/evil\nEOF' 'worktree')
+inp="$(make_input "${heredoc_cmd}")"
+check "heredoc body is matched at line start (not a bypass)" 2 "${inp}"
+
 # --- PERMANENTLY OPEN gaps, asserted as CURRENT behavior, not desired ---
 # Documented in the KNOWN LIMITATION block in the hook header. A PreToolUse
 # hook sees the raw, unexpanded command string with no access to the executing
