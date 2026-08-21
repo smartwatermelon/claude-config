@@ -316,6 +316,17 @@ check "invocation: eval double-quoted still blocks" 2 "${inp}"
 # are the forms that actually occur.
 inp="$(make_input "sudo bash -c ${dq}git worktree add /tmp/evil${dq}")"
 check "invocation: sudo bash -c still blocks" 2 "${inp}"
+
+# Repeated-literal attribution (#383). When the SAME quoted phrase appears
+# more than once, each occurrence must be judged by the command preceding
+# THAT occurrence. Judging every occurrence by the first one lets a real
+# executor hide behind a leading harmless mention.
+inp="$(make_input "echo ${dq}git worktree add /tmp/evil${dq} && bash -c ${dq}git worktree add /tmp/evil${dq}")"
+check "repeated literal: executor at the second occurrence still blocks" 2 "${inp}"
+inp="$(make_input "bash -c ${dq}git worktree add /tmp/evil${dq} && echo ${dq}git worktree add /tmp/evil${dq}")"
+check "repeated literal: executor at the first occurrence still blocks" 2 "${inp}"
+inp="$(make_input "echo ${dq}git worktree add /tmp/evil${dq} && grep -r ${dq}git worktree add /tmp/evil${dq} docs/")"
+check "repeated literal: two mentions of the same literal stay allowed" 0 "${inp}"
 inp="$(make_input "command bash -c ${dq}git worktree add /tmp/evil${dq}")"
 check "invocation: command bash -c still blocks" 2 "${inp}"
 # KNOWN GAP, pinned as CURRENT behavior: a wrapper whose last non-flag word is
