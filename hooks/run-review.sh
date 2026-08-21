@@ -236,6 +236,9 @@ downgrade_version_unfamiliarity_findings() {
   # Language that indicates a substantive, non-familiarity objection.
   # If this matches anywhere in the block, the block is NEVER downgraded,
   # even if unfamiliarity language also appears — a known-bad claim wins.
+  # The dot in `supply.chain` is an intentional wildcard, not an unescaped
+  # literal: it covers "supply chain", "supply-chain", and "supply_chain".
+  # Do not "correct" it to `supply\.chain`.
   local _knownbad_re='CVE-|CVE[[:space:]]|vulnerab|RCE|exploit|deprecat|yanked|breaking change|incompatib|security advisory|malicious|supply.chain'
 
   # Walk the output one ISSUE:-delimited block at a time. Each block runs

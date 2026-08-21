@@ -148,3 +148,17 @@ ISSUE: tool 1.2.3 does not exist
 SEVERITY: BLOCKING")
   [ "$(printf '%s\n' "${out}" | head -1)" = "VERDICT: PASS - see below" ]
 }
+
+@test "supply-chain claims block regardless of separator" {
+  # The dot in the `supply.chain` pattern is an intentional wildcard; this
+  # pins the variants it must keep catching if anyone escapes it.
+  local out sep
+  for sep in " " "-" "_"; do
+    out=$(downgrade_version_unfamiliarity_findings "VERDICT: FAIL
+ISSUE: tool 1.2.3 does not exist
+SEVERITY: BLOCKING
+DETAILS: possible supply${sep}chain compromise")
+    [[ "${out}" == *"SEVERITY: BLOCKING"* ]]
+    [ "$(parse_verdict "${out}")" = "FAIL" ]
+  done
+}
