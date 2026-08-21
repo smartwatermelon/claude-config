@@ -379,10 +379,13 @@ check_audit() {
   mkdir -p "${tmphome}/.claude"
   logfile="${tmphome}/.claude/blocked-commands.log"
   printf '%s\n' "${input}" | HOME="${tmphome}" "${HOOK}" >/dev/null 2>&1 || actual=$?
-  # Assert the command text too, not just the prefix: an audit line that lost
-  # its interpolation still says AUDIT and is useless for the post-mortem.
-  if [[ -s "${logfile}" ]] && grep -q 'AUDIT GIT WORKTREE REMOVE' "${logfile}" \
-    && grep -q 'git worktree remove' "${logfile}"; then
+  # One anchored pattern over a single line, not two independent greps: separate
+  # greps are satisfied by a prefix on one line and a command on another, so a
+  # bug that split the record apart would still pass. Match the whole shape --
+  # timestamp, prefix, scope path, then the command.
+  if [[ -s "${logfile}" ]] && grep -qE \
+    '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+Z AUDIT GIT WORKTREE REMOVE \(out of scope: [^)]+\): .*git worktree remove' \
+    "${logfile}"; then
     logged=yes
   fi
   rm -rf "${tmphome}"
