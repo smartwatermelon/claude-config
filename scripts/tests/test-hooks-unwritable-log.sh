@@ -91,6 +91,12 @@ check hook-block-merge-locks-write.sh \
   "merge-locks-write: blocks with exit 2" \
   file_path "/Users/x/.claude/merge-locks/pr-1.lock"
 
+# EnterWorktree carries a `name`, not a command. An invalid slug reaches deny(),
+# which writes to the log and then exits 2 -- same shape as the five above.
+check hook-block-enter-worktree.sh \
+  "enter-worktree: blocks with exit 2" \
+  name "invalid name with spaces"
+
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]
