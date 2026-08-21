@@ -103,8 +103,17 @@ path_in_scope() {
   # Reject unexpanded shell constructs. We cannot resolve these statically,
   # so they can never be proven in-scope. Covers $VAR, ${VAR}, $(cmd),
   # backticks, ~ expansion, and glob characters.
+  #
+  # A backslash is rejected for a related but distinct reason: the argument list
+  # is split with `read -r -a`, which does NOT honor backslash escaping. A path
+  # written `.claude/worktrees/my\ evil` therefore arrives as two tokens, and only
+  # the first (`.claude/worktrees/my`) reaches this function -- which approves it,
+  # while the shell goes on to create `.claude/worktrees/my evil`. The hook would
+  # be approving a path that is not the one created. Since the escape cannot be
+  # honored here, a path carrying a backslash is refused rather than
+  # approximated.
   case "${path}" in
-    *'$'* | *'`'* | *'~'* | *'*'* | *'?'* | *'['*) return 1 ;;
+    *'$'* | *'`'* | *'~'* | *'*'* | *'?'* | *'['* | *\\*) return 1 ;;
     # No unexpanded shell construct found; continue validating below.
     *) ;;
   esac
