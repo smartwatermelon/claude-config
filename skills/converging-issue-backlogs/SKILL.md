@@ -191,7 +191,19 @@ about half.
 above: pipelined fix->verify chains, worktree isolation, verdict-driven re-queue
 and quarantine, cumulative dedup, severity triage, and all five stop conditions.
 
-Invoke with `Workflow({scriptPath: '<this dir>/issue-convergence-loop.js', args})`:
+Normally you do not invoke this directly — reading this skill is the entry
+point, and the loop structure above is the deliverable. The script is for
+programmatic or embedded use, when you want the harness to run the rounds:
+
+```
+Workflow({
+  scriptPath: '~/.claude/skills/converging-issue-backlogs/issue-convergence-loop.js',
+  args,
+})
+```
+
+Skills are symlinked into `~/.claude`, so that path resolves whether you are
+working in the `claude-config` checkout or anywhere else.
 
 | arg | purpose |
 |---|---|
