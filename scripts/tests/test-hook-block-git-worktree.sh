@@ -369,6 +369,72 @@ check "PERMANENT GAP: variable-obfuscated git is not detected" 0 "${inp}"
 inp="$(make_input 'wt worktree add /tmp/evil')"
 check "PERMANENT GAP: alias/function resolving to git is not detected" 0 "${inp}"
 
+# --- #374: out-of-scope `remove` is ALLOWED but audited ---
+# Exit-code assertions cannot express this: the whole point is that exit stays
+# 0. These run the hook under a throwaway HOME and assert on the log instead.
+check_audit() {
+  local desc="${1}" expect_logged="${2}" input="${3}"
+  local tmphome logfile actual=0 logged=no
+  tmphome="$(mktemp -d)"
+  mkdir -p "${tmphome}/.claude"
+  logfile="${tmphome}/.claude/blocked-commands.log"
+  printf '%s\n' "${input}" | HOME="${tmphome}" "${HOOK}" >/dev/null 2>&1 || actual=$?
+  # One anchored pattern over a single line, not two independent greps: separate
+  # greps are satisfied by a prefix on one line and a command on another, so a
+  # bug that split the record apart would still pass. Match the whole shape --
+  # timestamp, prefix, scope path, then the command.
+  if [[ -s "${logfile}" ]] && grep -qE \
+    '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z AUDIT GIT WORKTREE REMOVE \(out of scope: [^)]+\): .*git worktree remove' \
+    "${logfile}"; then
+    logged=yes
+  fi
+  rm -rf "${tmphome}"
+  if [[ "${actual}" -eq 0 && "${logged}" == "${expect_logged}" ]]; then
+    echo "  PASS: ${desc}"
+    ((pass += 1))
+  else
+    echo "  FAIL: ${desc} (exit ${actual} want 0; logged=${logged} want ${expect_logged})"
+    ((fail += 1))
+  fi
+}
+
+inp="$(make_input 'git worktree remove /tmp/peer-agent-wt')"
+check_audit "remove outside scope is allowed AND audited" yes "${inp}"
+inp="$(make_input 'git worktree remove --force /tmp/peer-agent-wt')"
+check_audit "remove --force outside scope is allowed AND audited" yes "${inp}"
+inp="$(make_input 'git worktree remove .claude/worktrees/mine')"
+check_audit "remove inside scope is allowed and NOT audited" no "${inp}"
+inp="$(make_input 'git worktree prune')"
+check_audit "prune takes no path, so it is never audited" no "${inp}"
+# Bare `prune` cannot distinguish correct routing from a broken audit -- it has
+# no operand, so the -n guard short-circuits either way. `prune --expire <time>`
+# does have a trailing operand, so it is audited as a bogus path if `prune` is
+# ever folded back into the `remove` branch. This is the assertion that fails
+# on that regression; the bare-prune one above does not.
+inp="$(make_input 'git worktree prune --expire 3.days.ago')"
+check_audit "prune --expire operand is not mistaken for a worktree path" no "${inp}"
+
+# #398: an unwritable log must NOT block the removal. check_audit cannot cover
+# this -- it creates ${HOME}/.claude, so the log is always writable under it.
+# A non-zero exit from a PreToolUse hook blocks the command, so a failed audit
+# write would refuse a removal the policy requires be allowed.
+check_unwritable_log_allows() {
+  local desc="${1}" input="${2}" tmphome actual=0
+  tmphome="$(mktemp -d)" # deliberately WITHOUT .claude/, as on first run
+  printf '%s\n' "${input}" | HOME="${tmphome}" "${HOOK}" >/dev/null 2>&1 || actual=$?
+  rm -rf "${tmphome}"
+  if [[ "${actual}" -eq 0 ]]; then
+    echo "  PASS: ${desc}"
+    ((pass += 1))
+  else
+    echo "  FAIL: ${desc} (exit ${actual}, want 0 -- audit failure must not block)"
+    ((fail += 1))
+  fi
+}
+
+inp="$(make_input 'git worktree remove /tmp/peer-agent-wt')"
+check_unwritable_log_allows "unwritable audit log still allows the remove" "${inp}"
+
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]
