@@ -1434,7 +1434,7 @@ rm -f "${TEST26_LOG}"
 
 exit_t26=0
 cd "${REPO_DIR}"
-REVIEW_LOG="${TEST26_LOG}" CLAUDE_CLI="${MOCK26_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t26=$?
+REVIEW_LOG="${TEST26_LOG}" CLAUDE_CLI="${MOCK26_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t26=$?
 cd - >/dev/null
 
 assert_eq \
@@ -1474,7 +1474,7 @@ rm -f "${TEST27_LOG}"
 
 exit_t27=0
 cd "${REPO_DIR}"
-REVIEW_LOG="${TEST27_LOG}" CLAUDE_CLI="${MOCK27_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t27=$?
+REVIEW_LOG="${TEST27_LOG}" CLAUDE_CLI="${MOCK27_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t27=$?
 cd - >/dev/null
 
 assert_eq \
@@ -1520,7 +1520,7 @@ TEST28_LOG="${TMPDIR_TEST}/test28-review.log"
 rm -f "${TEST28_LOG}"
 
 cd "${REPO_DIR}"
-REVIEW_LOG="${TEST28_LOG}" CLAUDE_CLI="${MOCK28A_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+REVIEW_LOG="${TEST28_LOG}" CLAUDE_CLI="${MOCK28A_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
 cd - >/dev/null
 
 # Second commit on the same branch+file-set. If round-history wasn't
@@ -1631,7 +1631,7 @@ TEST29_LOG="${TMPDIR_TEST}/test29-review.log"
 rm -f "${TEST29_LOG}"
 
 cd "${REPO_DIR}"
-REVIEW_LOG="${TEST29_LOG}" CLAUDE_CLI="${MOCK29_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+REVIEW_LOG="${TEST29_LOG}" CLAUDE_CLI="${MOCK29_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
 cd - >/dev/null
 # Note: we can't use a "did adversarial-reviewer's mock run live" marker here --
 # the arbiter step (triggered by this same disagreement) always makes its own
