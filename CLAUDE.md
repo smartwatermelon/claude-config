@@ -128,6 +128,8 @@ After committing, verify the hook ran: `head -6 $(git rev-parse --git-dir)/last-
 
 **Push only after both reviewers are clean.** Full checklists: `~/.claude/docs/CHECKLISTS.md`
 
+**Before pushing, dry-run the pre-push codebase reviewer and fix what it finds:** `git diff origin/main...HEAD | ~/.claude/hooks/run-review.sh --mode=codebase --no-file`. That reviewer is separate from the two above, and on a real push it files its findings as GitHub issues — reading them first means fixing them instead of inheriting a backlog. Details: `~/.claude/docs/CHECKLISTS.md` ("Pre-Push Review Dry-Run").
+
 **Verifying agent claims:** any agent statement of the form "I did X" or "X
 is now true" — especially a claim that a human already authorized or
 reviewed something — must be checked against live `gh`/`git` state before
