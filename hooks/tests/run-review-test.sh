@@ -3,6 +3,10 @@
 # Run from any directory: bash ~/.claude/hooks/tests/run-review-test.sh
 #
 # Tests cover:
+# The assertion total in the summary line is computed from PASS+FAIL, not
+# hardcoded: the literal drifted twice, and a `grep -c assert_` proxy is
+# wrong too (it counts the two helper definitions as call sites).
+#
 #   1. set -e propagation: transient Claude CLI failure must produce log output beyond bare exit_code
 #   2. Chunked review log: reviewer output must appear in REVIEW_LOG when chunked path runs
 #   3. Chunked review with 0/N files reviewed is fail-closed (issue #200); 3b: partial skip still passes
@@ -27,9 +31,10 @@
 #   22. CODE_REVIEWER_AGENT default resolves to the installed agent ID (issue #209)
 #   23. review.adversarialModel overrides adversarial-reviewer's model independently
 #       of review.model / REVIEW_MODE (issue #235)
-#   30-33. Reviewer disagreements: PASS logs locally and files no issue; FAIL files
-#       one issue with no verbatim reviewer output; (repo, branch) dedup; an
-#       unwritable log path never fails the run (claude-config#332)
+#   30-33. Reviewer disagreements: every disagreement logs locally and NOTHING is
+#       ever filed as a GitHub issue (claude-config#418, which removed the
+#       arbiter-FAIL filing that #332 had narrowed); verbatim reviewer output
+#       stays in the local log; an unwritable log path never fails the run
 #   34-36. --no-file / REVIEW_NO_FILE=1 dry-run prints non-blocking findings
 #       instead of filing them, and the flag is opt-in (#415)
 
@@ -1429,7 +1434,7 @@ rm -f "${TEST26_LOG}"
 
 exit_t26=0
 cd "${REPO_DIR}"
-REVIEW_LOG="${TEST26_LOG}" CLAUDE_CLI="${MOCK26_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t26=$?
+REVIEW_LOG="${TEST26_LOG}" CLAUDE_CLI="${MOCK26_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t26=$?
 cd - >/dev/null
 
 assert_eq \
@@ -1469,7 +1474,7 @@ rm -f "${TEST27_LOG}"
 
 exit_t27=0
 cd "${REPO_DIR}"
-REVIEW_LOG="${TEST27_LOG}" CLAUDE_CLI="${MOCK27_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t27=$?
+REVIEW_LOG="${TEST27_LOG}" CLAUDE_CLI="${MOCK27_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t27=$?
 cd - >/dev/null
 
 assert_eq \
@@ -1515,7 +1520,7 @@ TEST28_LOG="${TMPDIR_TEST}/test28-review.log"
 rm -f "${TEST28_LOG}"
 
 cd "${REPO_DIR}"
-REVIEW_LOG="${TEST28_LOG}" CLAUDE_CLI="${MOCK28A_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+REVIEW_LOG="${TEST28_LOG}" CLAUDE_CLI="${MOCK28A_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
 cd - >/dev/null
 
 # Second commit on the same branch+file-set. If round-history wasn't
@@ -1626,7 +1631,7 @@ TEST29_LOG="${TMPDIR_TEST}/test29-review.log"
 rm -f "${TEST29_LOG}"
 
 cd "${REPO_DIR}"
-REVIEW_LOG="${TEST29_LOG}" CLAUDE_CLI="${MOCK29_DIR}/claude" GH_ISSUE_FILING_DISABLED=1 bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+REVIEW_LOG="${TEST29_LOG}" CLAUDE_CLI="${MOCK29_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
 cd - >/dev/null
 # Note: we can't use a "did adversarial-reviewer's mock run live" marker here --
 # the arbiter step (triggered by this same disagreement) always makes its own
@@ -1738,7 +1743,7 @@ assert_eq \
 # source leak)
 # =========================================================
 echo ""
-echo "=== Test 31: arbiter FAIL files one issue, with no verbatim reviewer output ==="
+echo "=== Test 31: arbiter FAIL files no issue; the local log keeps everything ==="
 
 setup_repo
 stage_small_change
@@ -1772,44 +1777,48 @@ PATH="${MOCK31_GH}:${PATH}" REVIEW_LOG="${TEST31_LOG}" DISAGREEMENT_LOG="${TEST3
   CLAUDE_CLI="${MOCK31_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
 cd - >/dev/null
 
-test31_calls="$(grep -c 'issue-create' "${MOCK31_GH}/gh_calls.txt" 2>/dev/null || echo "0")"
+# An arbiter FAIL used to file one issue into smartwatermelon/claude-config.
+# It no longer files anything (claude-config#418): across five real filings
+# not one produced work in this repo, and the local log is strictly richer.
+test31_calls="$({ grep -c 'issue-create' "${MOCK31_GH}/gh_calls.txt" || true; } 2>/dev/null)"
 assert_eq \
-  "arbiter FAIL files exactly one GitHub issue" \
-  "1" \
+  "arbiter FAIL files NO GitHub issue (claude-config#418)" \
+  "0" \
   "${test31_calls}"
 
-test31_body="$(cat "${MOCK31_GH}/gh_bodies.txt" 2>/dev/null || echo "")"
+test31_dis="$(cat "${TEST31_DIS}" 2>/dev/null || echo "")"
 
 assert_contains \
-  "filed issue names the repo/branch actually under review" \
-  "**Branch under review:**" \
-  "${test31_body}"
+  "local log records an arbiter FAIL disagreement" \
+  "arbiter_verdict: FAIL" \
+  "${test31_dis}"
 
 assert_contains \
-  "filed issue points at the local log path instead of pasting reviewer output" \
-  "${TEST31_DIS}" \
-  "${test31_body}"
-
-assert_contains \
-  "filed issue still carries the arbiter's own reasoning (our tooling's summary)" \
+  "local log keeps the arbiter's reasoning" \
   "SENTINEL_ARBITER_REASONING" \
-  "${test31_body}"
+  "${test31_dis}"
 
-test31_leaked="no"
-echo "${test31_body}" | grep -qF "SENTINEL_CR_VERBATIM" && test31_leaked="yes"
-echo "${test31_body}" | grep -qF "SENTINEL_AR_VERBATIM" && test31_leaked="yes"
-assert_eq \
-  "filed issue does NOT embed verbatim reviewer output (cross-org source leak, claude-config#332)" \
-  "no" \
-  "${test31_leaked}"
+# Verbatim reviewer output is the reason filing was risky (cross-org source
+# leak, claude-config#332). It stays in the local log, which never leaves the
+# machine — so both sentinels MUST be present here.
+assert_contains \
+  "local log keeps code-reviewer output verbatim" \
+  "SENTINEL_CR_VERBATIM" \
+  "${test31_dis}"
+
+assert_contains \
+  "local log keeps adversarial-reviewer output verbatim" \
+  "SENTINEL_AR_VERBATIM" \
+  "${test31_dis}"
 
 # =========================================================
-# TEST 32: the same (repo, branch) files at most one issue no matter how many
-# times the disagreement recurs (claude-config#332 — #323/#324/#325 were one
-# branch re-filing on every push)
+# TEST 32: a recurring disagreement on the same branch files nothing and logs
+# every time. This used to assert (repo, branch) dedup capping filing at one
+# issue; with filing removed (claude-config#418) the dedup key is gone, so the
+# property under test is now "repeats never file, and logging is not gated".
 # =========================================================
 echo ""
-echo "=== Test 32: dedup on (repo, branch) — a long-running branch files once ==="
+echo "=== Test 32: repeated disagreements file nothing and log every time ==="
 
 MOCK32_GH="${TMPDIR_TEST}/gh32"
 make_mock_gh "${MOCK32_GH}"
@@ -1844,17 +1853,25 @@ DETAILS: code-reviewer is correct."
   cd - >/dev/null
 done
 
-test32_calls="$(grep -c 'issue-create' "${MOCK32_GH}/gh_calls.txt" 2>/dev/null || echo "0")"
+test32_calls="$({ grep -c 'issue-create' "${MOCK32_GH}/gh_calls.txt" || true; } 2>/dev/null)"
 assert_eq \
-  "same (repo, branch) files at most one issue across two runs (claude-config#332)" \
-  "1" \
+  "a recurring disagreement files no issue on any run (claude-config#418)" \
+  "0" \
   "${test32_calls}"
 
-test32_records="$(grep -c '=== REVIEWER DISAGREEMENT' "${TEST32_DIS}" 2>/dev/null || echo "0")"
+test32_records="$({ grep -c '=== REVIEWER DISAGREEMENT' "${TEST32_DIS}" || true; } 2>/dev/null)"
 assert_eq \
-  "both runs still appended a local disagreement record (dedup gates filing, not logging)" \
+  "every run appends a local disagreement record (logging was never gated)" \
   "2" \
   "${test32_records}"
+
+# The dedup marker existed only to cap filing. With no filing it must never be
+# written, or an old log would grow inert bookkeeping lines forever.
+test32_markers="$({ grep -c 'filed-issue-for:' "${TEST32_DIS}" || true; } 2>/dev/null)"
+assert_eq \
+  "no dedup bookkeeping is written now that nothing files" \
+  "0" \
+  "${test32_markers}"
 
 # =========================================================
 # TEST 33: an unwritable disagreement-log path must not fail the run
@@ -1963,7 +1980,7 @@ assert_contains \
 assert_eq \
   "--no-file files no GitHub issue (zero gh issue create calls)" \
   "0" \
-  "$(grep -c 'issue-create' "${MOCK34_GH}/gh_calls.txt" 2>/dev/null | head -1)"
+  "$({ grep -c 'issue-create' "${MOCK34_GH}/gh_calls.txt" || true; } 2>/dev/null)"
 
 # =========================================================
 # TEST 35: REVIEW_NO_FILE=1 env var is equivalent to --no-file
@@ -2016,7 +2033,7 @@ assert_contains \
 assert_eq \
   "REVIEW_NO_FILE=1 files no GitHub issue" \
   "0" \
-  "$(grep -c 'issue-create' "${MOCK35_GH}/gh_calls.txt" 2>/dev/null | head -1)"
+  "$({ grep -c 'issue-create' "${MOCK35_GH}/gh_calls.txt" || true; } 2>/dev/null)"
 
 # =========================================================
 # TEST 36: default (no flag) still files — the flag must be opt-in
@@ -2064,14 +2081,14 @@ cd - >/dev/null
 assert_eq \
   "without --no-file, gh issue create is still invoked (flag is opt-in)" \
   "1" \
-  "$(grep -c 'issue-create' "${MOCK36_GH}/gh_calls.txt" 2>/dev/null | head -1)"
+  "$({ grep -c 'issue-create' "${MOCK36_GH}/gh_calls.txt" || true; } 2>/dev/null)"
 
 # =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 70 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of $((PASS + FAIL)) assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then

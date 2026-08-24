@@ -131,13 +131,21 @@ progress (dev-env#35):
 3. **Arbitration**: when code-reviewer's BLOCKING FAIL disagrees with a
    clean adversarial-reviewer PASS, a third arbiter call (Sonnet) decides
    which is correct instead of code-reviewer's verdict winning by default.
-   Every arbitration is logged as a GitHub issue in claude-config
-   regardless of outcome, to surface disagreement patterns over time.
+   Every arbitration — whatever the verdict — appends a full verbatim
+   record of all three reviewers to `.git/reviewer-disagreements.log` in
+   the repo being reviewed. **Nothing is filed as a GitHub issue.**
+
+   Arbitrations used to file into `smartwatermelon/claude-config` on an
+   arbiter FAIL. That was removed in claude-config#418: across five real
+   filings, not one produced work in this repo — an arbiter FAIL turned out
+   to mean "the reviewers disagreed and one was right", not "the tooling
+   needs attention", and four of the five were about other repos entirely.
 
 If review still fails to converge after these mechanisms are in place,
-that is itself worth a fresh issue — check `smartwatermelon/claude-config`
-issues for "Reviewer disagreement:"-titled entries first, since the
-arbiter-logging in mechanism 3 may already have captured the pattern.
+that is itself worth a fresh issue. Read
+`.git/reviewer-disagreements.log` first — it holds every arbitration for
+this repo, including the reviewers' verbatim output, which no issue ever
+carried.
 
 ---
 
