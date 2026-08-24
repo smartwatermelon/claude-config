@@ -2066,7 +2066,7 @@ assert_eq \
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 70 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 69 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
