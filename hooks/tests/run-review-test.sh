@@ -3,6 +3,10 @@
 # Run from any directory: bash ~/.claude/hooks/tests/run-review-test.sh
 #
 # Tests cover:
+# The assertion total in the summary line is computed from PASS+FAIL, not
+# hardcoded: the literal drifted twice, and a `grep -c assert_` proxy is
+# wrong too (it counts the two helper definitions as call sites).
+#
 #   1. set -e propagation: transient Claude CLI failure must produce log output beyond bare exit_code
 #   2. Chunked review log: reviewer output must appear in REVIEW_LOG when chunked path runs
 #   3. Chunked review with 0/N files reviewed is fail-closed (issue #200); 3b: partial skip still passes
@@ -2084,7 +2088,7 @@ assert_eq \
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 71 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of $((PASS + FAIL)) assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then
