@@ -71,6 +71,21 @@ TIMEOUT_SECONDS=$(git config --get --type=int review.timeout 2>/dev/null || echo
 # require gh auth or hit the real GitHub API.
 GH_ISSUE_FILING_DISABLED="${GH_ISSUE_FILING_DISABLED:-}"
 
+# Dry-run: run the review exactly as a real run, but print non-blocking
+# findings to stdout instead of filing them. Set by --no-file or by
+# REVIEW_NO_FILE=1 in the environment.
+#
+# This exists so reading findings before they become issues does not require
+# stubbing `gh` from outside on PATH. A blanket gh stub also breaks the
+# reviewer's own environment probes (_repo_has_issues_enabled, repo-owner
+# detection), so a stubbed run is not guaranteed to be the same review as a
+# real one; this flag suppresses only the filing step. See #415.
+#
+# Distinct from GH_ISSUE_FILING_DISABLED, which is a test-only hatch that
+# covers the reviewer-disagreement issue path (claude-config#332) and is
+# read by file_reviewer_disagreement_issue, not by the non-blocking path.
+REVIEW_NO_FILE="${REVIEW_NO_FILE:-}"
+
 # Progressive review configuration (with git config overrides)
 REVIEW_MAX_LINES=$(git config --get --type=int review.maxLines 2>/dev/null || echo "1000")
 REVIEW_SKIP_THRESHOLD=$(git config --get --type=int review.skipThreshold 2>/dev/null || echo "2500")
@@ -89,6 +104,7 @@ while [[ $# -gt 0 ]]; do
     --mode=full-diff) REVIEW_MODE="full-diff" ;;
     --mode=codebase) REVIEW_MODE="codebase" ;;
     --mode=*) echo "Unknown mode: $1" >&2; exit 1 ;;
+    --no-file) REVIEW_NO_FILE=1 ;;
     --message-file=*) MESSAGE_FILE="${1#*=}" ;;
     --message-file)
       # Space-form: consume value as $2, then shift past it. We do NOT inner-

@@ -368,6 +368,43 @@ post_nonblocking_as_pr_comment() {
   fi
 }
 
+# Dry-run output for create_nonblocking_issues: print the findings that WOULD
+# have been filed, in the same NON_BLOCKING_ISSUE: / END_ISSUE block format the
+# reviewer emits and parse_nonblocking_issues consumes. Reprinting in the wire
+# format (rather than a prose summary) keeps the dry-run greppable with the
+# same one-liners a real run's stderr is, and keeps the round trip honest: what
+# is printed is what parsed, not what the model happened to say.
+#
+# Goes to stdout, not stderr: the caller's own review narration is on stderr,
+# so `--no-file > findings.txt` yields findings alone. See #415.
+_print_nonblocking_dryrun() {
+  local parsed="$1"
+  local block="" line
+
+  # Strip ALL trailing newlines, not just one. Each block arrives with two:
+  # parse_nonblocking_issues' awk accumulates `block = block $0 "\n"` and then
+  # `print block` appends another, and the read loop below adds a third. A
+  # single `${b%$'\n'}` leaves a blank line before END_ISSUE, which reparses
+  # into the DETAILS field and breaks the round trip.
+  _pnd_emit() {
+    local b="$1"
+    [[ -n "${b//[[:space:]]/}" ]] || return 0
+    while [[ "${b}" == *$'\n' ]]; do b="${b%$'\n'}"; done
+    printf 'NON_BLOCKING_ISSUE:\n%s\nEND_ISSUE\n\n' "${b}"
+  }
+
+  while IFS= read -r line; do
+    if [[ "${line}" == "---ISSUE---" ]]; then
+      _pnd_emit "${block}"
+      block=""
+    else
+      block+="${line}"$'\n'
+    fi
+  done <<<"${parsed}"
+  _pnd_emit "${block}"
+  unset -f _pnd_emit
+}
+
 # Create GitHub issues from parsed NON_BLOCKING_ISSUE blocks.
 # Best-effort: failures write a fallback file and print a warning.
 # Filing mode depends on repo + authorship — see file header.
@@ -376,15 +413,35 @@ create_nonblocking_issues() {
   local analysis_text="$1"
   local pending_dir="${PENDING_ISSUES_DIR:-${HOME}/.claude/pending-issues}"
 
+  local parsed
+  parsed=$(parse_nonblocking_issues "${analysis_text}")
+  [[ -n "${parsed}" ]] || return 0
+
+  # Dry-run (#415): print what would be filed and file nothing.
+  #
+  # Placed before the repo-info guard below, not after it. That guard exists
+  # because REPO_OWNER/REPO_NAME are required to file — but a dry-run does not
+  # file, so the findings are still worth printing when repo detection comes up
+  # empty (a checkout with no remote, a detached probe). Returning early there
+  # would make the dry-run silently print nothing in exactly the case where the
+  # human has no filed issue to read instead.
+  #
+  # Placed before the corporate/personal routing split for the opposite reason:
+  # ONE guard then covers every downstream write — `gh issue create` on both
+  # the batched and per-finding paths, `gh pr comment` on the corporate path,
+  # and the `gh label create` calls below, which mutate the repo's label set
+  # even when no issue is ultimately created.
+  if [[ -n "${REVIEW_NO_FILE:-}" ]]; then
+    log_warn "Dry-run (--no-file / REVIEW_NO_FILE): findings printed, not filed"
+    _print_nonblocking_dryrun "${parsed}"
+    return 0
+  fi
+
   # Guard: repo info required for gh issue create and fallback URL
   if [[ -z "${REPO_OWNER:-}" || -z "${REPO_NAME:-}" ]]; then
     log_warn "Skipping non-blocking issue creation: repo info unavailable"
     return 0
   fi
-
-  local parsed
-  parsed=$(parse_nonblocking_issues "${analysis_text}")
-  [[ -n "${parsed}" ]] || return 0
 
   if is_corporate_repo && ! is_self_authored; then
     post_nonblocking_as_pr_comment "${parsed}" "${pending_dir}"
