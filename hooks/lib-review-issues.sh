@@ -207,6 +207,15 @@ _parse_issue_fields() {
 # Prints the path of the file it wrote. Returns 1 (printing nothing) if the
 # directory or file couldn't be written, so callers can fail loudly instead
 # of logging a "Saved to: " message with an empty path.
+#
+# The file records REPO_OWNER/REPO_NAME as a `**Repo:**` line. Without it a
+# fallback file names only a repo-relative Location like `install.sh:196`,
+# which is ambiguous across every repo that has that path — draining 47 such
+# files required inferring each target from content, and 6 of them could not
+# be resolved at all (smartwatermelon/dotfiles#231). The values are already
+# module-level inputs used throughout this file, so recording them costs
+# nothing at write time and is the only point where the answer is known for
+# certain.
 _write_pending_issue_file() {
   local title="$1"
   local body="$2"
@@ -223,7 +232,15 @@ _write_pending_issue_file() {
     slug_index=$((slug_index + 1))
     fallback_file="${pending_dir}/${file_prefix}-${slug}-${slug_index}.md"
   done
-  printf "%s\n" "${body}" >"${fallback_file}" || return 1
+  # Prepend the target repo. `unknown/unknown` rather than an omitted line:
+  # a drain can then distinguish "written before this was recorded" from
+  # "written when the repo genuinely wasn't resolvable", and a grep for the
+  # header finds every file either way.
+  local repo_slug="${REPO_OWNER:-unknown}/${REPO_NAME:-unknown}"
+  {
+    printf '**Repo:** %s\n\n' "${repo_slug}"
+    printf "%s\n" "${body}"
+  } >"${fallback_file}" || return 1
   echo "${fallback_file}"
 }
 
