@@ -30,6 +30,8 @@
 #   30-33. Reviewer disagreements: PASS logs locally and files no issue; FAIL files
 #       one issue with no verbatim reviewer output; (repo, branch) dedup; an
 #       unwritable log path never fails the run (claude-config#332)
+#   34-36. --no-file / REVIEW_NO_FILE=1 dry-run prints non-blocking findings
+#       instead of filing them, and the flag is opt-in (#415)
 
 set -euo pipefail
 
@@ -1897,11 +1899,174 @@ assert_eq \
   "${exit_t33}"
 
 # =========================================================
+# TEST 34: --no-file dry-run prints non-blocking findings instead of filing
+#
+# Without this flag the only way to read findings before they became issues
+# was a PATH stub that broke every gh call, including the reviewer's own
+# environment probes. The flag must suppress filing while leaving the rest of
+# the run intact. See #415.
+# =========================================================
+echo ""
+echo "=== Test 34: --no-file prints non-blocking findings and files nothing ==="
+
+setup_repo
+stage_small_change
+cd "${REPO_DIR}"
+git add foo.sh
+git commit -q -m "stage a change" --no-verify
+cd - >/dev/null
+
+MOCK34_DIR="${TMPDIR_TEST}/mock34"
+make_mock_claude "${MOCK34_DIR}" 0 "VERDICT: PASS
+
+No blocking issues found.
+
+NON_BLOCKING_ISSUE:
+TITLE: Pre-existing quoting weakness
+SOURCE: code-reviewer
+LOCATION: foo.sh:2
+DETAILS: Unquoted expansion on line two.
+Second line of details.
+END_ISSUE"
+
+MOCK34_GH="${TMPDIR_TEST}/gh34"
+make_mock_gh "${MOCK34_GH}"
+TEST34_LOG="${TMPDIR_TEST}/test34-review.log"
+rm -f "${TEST34_LOG}"
+
+exit_t34=0
+cd "${REPO_DIR}"
+# REPO_OWNER/REPO_NAME are supplied so this exercises the real filing path
+# being suppressed, not the repo-info-unavailable early return (which would
+# file nothing regardless and prove nothing about the flag).
+stdout_t34=$(git diff main~1 main | PATH="${MOCK34_GH}:${PATH}" \
+  REVIEW_LOG="${TEST34_LOG}" CLAUDE_CLI="${MOCK34_DIR}/claude" \
+  REPO_OWNER="smartwatermelon" REPO_NAME="claude-config" \
+  bash "${SUBJECT}" --mode=codebase --no-file 2>/dev/null) || exit_t34=$?
+cd - >/dev/null
+
+assert_eq \
+  "--no-file dry-run still exits 0 on a passing review" \
+  "0" \
+  "${exit_t34}"
+
+assert_contains \
+  "--no-file prints the finding to stdout in NON_BLOCKING_ISSUE block format" \
+  "TITLE: Pre-existing quoting weakness" \
+  "${stdout_t34}"
+
+assert_contains \
+  "--no-file printed block is terminated so it can be reparsed" \
+  "END_ISSUE" \
+  "${stdout_t34}"
+
+assert_eq \
+  "--no-file files no GitHub issue (zero gh issue create calls)" \
+  "0" \
+  "$(grep -c 'issue-create' "${MOCK34_GH}/gh_calls.txt" 2>/dev/null | head -1)"
+
+# =========================================================
+# TEST 35: REVIEW_NO_FILE=1 env var is equivalent to --no-file
+# =========================================================
+echo ""
+echo "=== Test 35: REVIEW_NO_FILE=1 suppresses filing like --no-file ==="
+
+MOCK35_GH="${TMPDIR_TEST}/gh35"
+make_mock_gh "${MOCK35_GH}"
+TEST35_LOG="${TMPDIR_TEST}/test35-review.log"
+rm -f "${TEST35_LOG}"
+
+# Reusing Test 34's diff would be a cache hit, so advance the tree first.
+cd "${REPO_DIR}"
+echo "echo second change" >>foo.sh
+git add foo.sh
+git commit -q -m "second change" --no-verify
+cd - >/dev/null
+
+MOCK35_DIR="${TMPDIR_TEST}/mock35"
+make_mock_claude "${MOCK35_DIR}" 0 "VERDICT: PASS
+
+No blocking issues found.
+
+NON_BLOCKING_ISSUE:
+TITLE: Env var path finding
+SOURCE: code-reviewer
+LOCATION: foo.sh:3
+DETAILS: Reached via REVIEW_NO_FILE.
+END_ISSUE"
+
+exit_t35=0
+cd "${REPO_DIR}"
+stdout_t35=$(git diff main~1 main | PATH="${MOCK35_GH}:${PATH}" \
+  REVIEW_LOG="${TEST35_LOG}" CLAUDE_CLI="${MOCK35_DIR}/claude" REVIEW_NO_FILE=1 \
+  REPO_OWNER="smartwatermelon" REPO_NAME="claude-config" \
+  bash "${SUBJECT}" --mode=codebase 2>/dev/null) || exit_t35=$?
+cd - >/dev/null
+
+assert_contains \
+  "REVIEW_NO_FILE=1 prints the finding to stdout" \
+  "TITLE: Env var path finding" \
+  "${stdout_t35}"
+
+assert_eq \
+  "REVIEW_NO_FILE=1 files no GitHub issue" \
+  "0" \
+  "$(grep -c 'issue-create' "${MOCK35_GH}/gh_calls.txt" 2>/dev/null | head -1)"
+
+# =========================================================
+# TEST 36: default (no flag) still files — the flag must be opt-in
+#
+# Guards against the dry-run guard being placed so early, or keyed so
+# loosely, that it suppresses filing unconditionally.
+# =========================================================
+echo ""
+echo "=== Test 36: without --no-file, findings are still filed ==="
+
+MOCK36_GH="${TMPDIR_TEST}/gh36"
+make_mock_gh "${MOCK36_GH}"
+TEST36_LOG="${TMPDIR_TEST}/test36-review.log"
+rm -f "${TEST36_LOG}"
+
+cd "${REPO_DIR}"
+echo "echo third change" >>foo.sh
+git add foo.sh
+git commit -q -m "third change" --no-verify
+cd - >/dev/null
+
+MOCK36_DIR="${TMPDIR_TEST}/mock36"
+make_mock_claude "${MOCK36_DIR}" 0 "VERDICT: PASS
+
+No blocking issues found.
+
+NON_BLOCKING_ISSUE:
+TITLE: Should be filed
+SOURCE: code-reviewer
+LOCATION: foo.sh:4
+DETAILS: Control case for the dry-run flag.
+END_ISSUE"
+
+cd "${REPO_DIR}"
+# The fixture repo has no origin remote, so run-review.sh cannot derive
+# REPO_OWNER/REPO_NAME and create_nonblocking_issues would bail before
+# reaching the filing path. Supply them directly (the script honours a
+# preset value) so this control case exercises filing for real.
+git diff main~1 main | PATH="${MOCK36_GH}:${PATH}" \
+  REVIEW_LOG="${TEST36_LOG}" CLAUDE_CLI="${MOCK36_DIR}/claude" \
+  REPO_OWNER="smartwatermelon" REPO_NAME="claude-config" \
+  bash "${SUBJECT}" --mode=codebase >/dev/null 2>&1 || true
+cd - >/dev/null
+
+assert_eq \
+  "without --no-file, gh issue create is still invoked (flag is opt-in)" \
+  "1" \
+  "$(grep -c 'issue-create' "${MOCK36_GH}/gh_calls.txt" 2>/dev/null | head -1)"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 62 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 70 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then

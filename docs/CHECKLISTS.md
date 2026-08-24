@@ -78,28 +78,36 @@ finding as a GitHub issue**. Learning about findings after the push means
 inheriting them as a backlog; running the same reviewer first means fixing
 them.
 
-Run the reviewer the hook would run, with `gh` stubbed out so it cannot file:
+Run the reviewer the hook would run, with `--no-file` so it prints findings
+instead of filing them:
 
 ```bash
-mkdir -p /tmp/dryrev/bin
-printf '#!/bin/sh\nexit 1\n' > /tmp/dryrev/bin/gh
-chmod +x /tmp/dryrev/bin/gh
+git diff origin/main...HEAD > /tmp/dryrev-diff.txt
+~/.claude/hooks/run-review.sh --mode=codebase --no-file \
+  < /tmp/dryrev-diff.txt > /tmp/dryrev-out.txt 2>/tmp/dryrev-err.txt
 
-git diff origin/main...HEAD > /tmp/dryrev/diff.txt
-PATH="/tmp/dryrev/bin:$PATH" ~/.claude/hooks/run-review.sh --mode=codebase \
-  < /tmp/dryrev/diff.txt > /tmp/dryrev/out.txt 2>&1
-
-grep -c 'NON_BLOCKING_ISSUE:' /tmp/dryrev/out.txt   # 0 means nothing will be filed
-sed -n '/NON_BLOCKING_ISSUE:/,/END_ISSUE/p' /tmp/dryrev/out.txt
+grep -c 'NON_BLOCKING_ISSUE:' /tmp/dryrev-out.txt   # 0 means nothing will be filed
+cat /tmp/dryrev-out.txt
 ```
 
 Fix what it reports, commit, re-run until the count is 0, then push.
 
-**Why the stub:** filing is gated on the output containing
-`NON_BLOCKING_ISSUE:`, and `gh` failing makes the filing step fall back to a
-local file under `~/.claude/pending-issues/` instead of creating an issue. If
-that write also fails the findings are dropped with a warning — but you are
-reading them from `out.txt` anyway, which is the point of the dry-run.
+`REVIEW_NO_FILE=1` in the environment does the same thing, for cases where the
+reviewer is invoked indirectly and you cannot add a flag.
+
+**What `--no-file` does:** findings print to stdout in the same
+`NON_BLOCKING_ISSUE:` / `END_ISSUE` block format the reviewer emits, and no
+issue is filed. Review narration stays on stderr, so redirecting stdout gives
+you the findings alone. The rest of the run is unchanged: the reviewer's
+environment probes still run, so a dry-run is the same review a real push
+would get.
+
+**Why not the old `gh` stub:** the previous procedure put a failing `gh` on
+PATH. That worked, but it broke *every* `gh` call — including the reviewer's
+own environment probes (`_repo_has_issues_enabled`, repo-owner detection) —
+so a stubbed run was not guaranteed to be the same review as a real one. It
+also could not be enforced or detected, because the suppression lived outside
+the tool. See #415.
 
 **Bonus:** the review cache is keyed on the diff hash, so a clean dry-run makes
 the real push a cache hit — it reports "Codebase review cached: identical diff
