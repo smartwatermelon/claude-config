@@ -209,6 +209,11 @@ Before declaring work done, output the full Completion Verification template fro
 
 - **Plan execution defaults to subagent-driven.** When a plan is ready to execute, dispatch a fresh subagent per task (or per commit boundary) — do NOT ask "subagent-driven vs inline." The decision is pre-made. Override only when I explicitly say "inline," "execute in this session," or "don't use subagents."
 - Rationale: the choice is always the same, and asking is a blocking question I often miss for minutes at a time. Defaulting eliminates wasted wall-clock time.
+- **Parallel subagents get their own worktree.** When dispatching more than one agent at a time, pass `isolation: "worktree"` (or have them use `.claude/worktrees/`). A shared checkout is NOT isolation: `git checkout -b` swaps the branch out from under a concurrent agent mid-edit, and each agent sees its peers' uncommitted files. Worktree creation is allowed policy (dotfiles#200, 2026-08-19) — the hook validates the name and permits it.
+- **Communicate in ASD-STE100 (Simplified Technical English) where practical.** This is a preference, not a protocol — do not fail a session over it, and do not restate or re-edit prose that is already sent. Applies to chat replies only. Commit messages, PR titles and bodies, GitHub issues, code comments, and repo docs keep their existing conventions and voice.
+  - In practice: one meaning per word, one topic per sentence, active voice, present tense where possible. Keep sentences short (aim for 20 words or fewer in procedures, 25 in descriptions). Use the simple approved word, not a synonym ("use", not "utilize"; "start", not "initiate"; "before", not "prior to"). Avoid noun clusters longer than three words. Do not drop articles.
+  - Technical terms, command names, file paths, flags, and quoted tool output are exempt — write them exactly as they are.
+  - Where STE and accuracy conflict, accuracy wins. Do not simplify a statement into something untrue or vague.
 
 ---
 
