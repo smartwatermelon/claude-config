@@ -2003,6 +2003,11 @@ stdout_t35=$(git diff main~1 main | PATH="${MOCK35_GH}:${PATH}" \
   bash "${SUBJECT}" --mode=codebase 2>/dev/null) || exit_t35=$?
 cd - >/dev/null
 
+assert_eq \
+  "REVIEW_NO_FILE=1 dry-run still exits 0 on a passing review" \
+  "0" \
+  "${exit_t35}"
+
 assert_contains \
   "REVIEW_NO_FILE=1 prints the finding to stdout" \
   "TITLE: Env var path finding" \
@@ -2066,7 +2071,7 @@ assert_eq \
 # =========================================================
 echo ""
 echo "======================================="
-echo "Results: ${PASS} passed, ${FAIL} failed (of 69 assertions)"
+echo "Results: ${PASS} passed, ${FAIL} failed (of 70 assertions)"
 echo "======================================="
 
 if [[ "${FAIL}" -gt 0 ]]; then

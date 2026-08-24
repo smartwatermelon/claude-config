@@ -432,7 +432,7 @@ create_nonblocking_issues() {
   # and the `gh label create` calls below, which mutate the repo's label set
   # even when no issue is ultimately created.
   if [[ -n "${REVIEW_NO_FILE:-}" ]]; then
-    log_warn "Dry-run (--no-file): findings printed, not filed"
+    log_warn "Dry-run (--no-file / REVIEW_NO_FILE): findings printed, not filed"
     _print_nonblocking_dryrun "${parsed}"
     return 0
   fi
