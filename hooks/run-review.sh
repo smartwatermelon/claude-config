@@ -66,11 +66,6 @@ unset CDPATH
 CLAUDE_CLI="${CLAUDE_CLI:-${HOME}/.local/bin/claude}"
 TIMEOUT_SECONDS=$(git config --get --type=int review.timeout 2>/dev/null || echo "120")
 
-# Test-only escape hatch: skip gh issue filing entirely. Production runs
-# never set this; hooks/tests/run-review-test.sh sets it so tests don't
-# require gh auth or hit the real GitHub API.
-GH_ISSUE_FILING_DISABLED="${GH_ISSUE_FILING_DISABLED:-}"
-
 # Dry-run: run the review exactly as a real run, but print non-blocking
 # findings to stdout instead of filing them. Set by --no-file or by
 # REVIEW_NO_FILE=1 in the environment.
@@ -80,10 +75,6 @@ GH_ISSUE_FILING_DISABLED="${GH_ISSUE_FILING_DISABLED:-}"
 # reviewer's own environment probes (_repo_has_issues_enabled, repo-owner
 # detection), so a stubbed run is not guaranteed to be the same review as a
 # real one; this flag suppresses only the filing step. See #415.
-#
-# Distinct from GH_ISSUE_FILING_DISABLED, which is a test-only hatch that
-# covers the reviewer-disagreement issue path (claude-config#332) and is
-# read by file_reviewer_disagreement_issue, not by the non-blocking path.
 REVIEW_NO_FILE="${REVIEW_NO_FILE:-}"
 
 # Progressive review configuration (with git config overrides)
@@ -522,19 +513,13 @@ file_reviewer_disagreement_issue() {
   local ts
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
 
-  # Dedup key: one line per (repo, branch) that has already produced an issue.
-  # Read back from the local log before deciding to file again.
-  local dedup_marker="filed-issue-for: ${repo_slug} ${branch}"
-  local already_filed="no"
-  if [[ -n "${DISAGREEMENT_LOG}" && -r "${DISAGREEMENT_LOG}" ]]; then
-    if grep -qxF -- "${dedup_marker}" "${DISAGREEMENT_LOG}" 2>/dev/null; then
-      already_filed="yes"
-    fi
-  fi
-
-  # --- 1. Local log: the default record, written on every disagreement ---
-  # This runs even when GH_ISSUE_FILING_DISABLED is set: that is a filing
-  # guard, not a logging guard.
+  # The local log is the whole record. There is no dedup key any more: it
+  # existed only to stop one branch re-filing an issue on every push, and no
+  # issue is filed. Existing `filed-issue-for:` lines in old logs are inert.
+  #
+  # Appended on EVERY disagreement, whatever the arbiter verdict — a PASS
+  # disagreement is as diagnostically useful as a FAIL, and neither is
+  # published anywhere.
   if [[ -n "${DISAGREEMENT_LOG}" ]]; then
     {
       printf -- '=== REVIEWER DISAGREEMENT %s ===\n' "${ts}"
@@ -550,66 +535,31 @@ file_reviewer_disagreement_issue() {
     } >>"${DISAGREEMENT_LOG}" 2>/dev/null || true
   fi
 
-  # --- 2. GitHub issue: only for arbiter FAIL, and only once per (repo, branch) ---
-  [[ "${arbiter_verdict}" == "FAIL" ]] || return 0
-  [[ "${already_filed}" == "no" ]] || return 0
-  [[ -z "${GH_ISSUE_FILING_DISABLED}" ]] || return 0
-  command -v gh >/dev/null 2>&1 || return 0
-
-  local title="Reviewer disagreement upheld by arbiter in ${repo_slug} (branch ${branch})"
-
-  # The issue body is built in a tempfile and handed to `gh --body-file`,
-  # NOT captured from a heredoc into a variable. ${arbiter_output} is
-  # MODEL-AUTHORED: if the arbiter ever emitted a line consisting of exactly
-  # the heredoc delimiter, a `body=$(cat <<EOF ...)` capture would terminate
-  # early and file a silently truncated issue (claude-config#342). Writing
-  # to a file keeps model text off the delimiter-collision path entirely
-  # while preserving the ${var} expansion the body needs.
+  # --- 2. No GitHub issue is filed. ---
+  # This used to file into smartwatermelon/claude-config whenever the arbiter
+  # returned FAIL, on the premise that an arbiter FAIL is a fact about the
+  # TOOLING. Five filings later (claude-config#358/#363/#378/#390/#414) that
+  # premise did not hold: not one produced work in this repo.
   #
-  # Not `local`: the EXIT trap references this by name as the backstop for
-  # SIGINT / errexit. The explicit rm below is the normal-path cleanup.
-  _issue_body=$(mktemp "${TMPDIR:-/tmp}/run-review-issue-body.XXXXXX") || return 0
-  cat >"${_issue_body}" <<EOF
-## Reviewer disagreement, arbiter verdict FAIL (auto-logged by run-review.sh)
-
-code-reviewer returned a BLOCKING FAIL, adversarial-reviewer returned PASS,
-and the arbiter upheld code-reviewer. Filed here — in the reviewer
-infrastructure's own repo — because an arbiter FAIL is a fact about the
-TOOLING, not about the code that happened to be under review.
-
-**Repo under review:** ${repo_slug}
-**Branch under review:** ${branch}
-**Commit:** ${commit}
-**Arbiter model:** ${ARBITER_MODEL:-unknown}
-**Arbiter verdict:** ${arbiter_verdict}
-**Local log (full verbatim reviewer output):** \`${DISAGREEMENT_LOG}\`
-
-### Arbiter reasoning
-\`\`\`
-${arbiter_output}
-\`\`\`
-
----
-code-reviewer and adversarial-reviewer output is deliberately NOT reproduced
-here: it quotes source from the repo under review, which may belong to a
-different org (claude-config#332). Read it from the local log path above on
-the machine that ran the review.
-
-Deduped on (repo under review, branch) — one branch files at most one issue.
-See smartwatermelon/dev-env#35 and claude-config#332.
-EOF
-
-  if gh issue create --repo "smartwatermelon/claude-config" \
-    --title "${title}" \
-    --body-file "${_issue_body}" \
-    --label "tech-debt" \
-    >/dev/null 2>&1; then
-    # Record the dedup marker only on a confirmed successful file, so a
-    # transient gh failure doesn't permanently suppress the issue.
-    [[ -n "${DISAGREEMENT_LOG}" ]] && printf -- '%s\n' "${dedup_marker}" >>"${DISAGREEMENT_LOG}" 2>/dev/null
-  fi
-  { rm -f "${_issue_body}" || true; }
-  _issue_body=""
+  # A FAIL means only "the arbiter sided with code-reviewer". In practice that
+  # resolved to one of two things, neither a tooling defect:
+  #   * The arbiter was right (#390, #414) — the system working as designed.
+  #     The finding then belongs to the repo under review, which is usually
+  #     not this one: four of the five were about other repos.
+  #   * The arbiter was wrong (#358, which hallucinated a variable as
+  #     undefined that was defined in the same file). Worth knowing, but the
+  #     filed issue reads as a code ticket, so the actual signal is invisible
+  #     until a human checks the upstream source.
+  #
+  # This is the second narrowing of this gate. claude-config#332 removed
+  # filing-on-every-disagreement because it "fired on the healthy case"; that
+  # change kept the same verdict-keyed shape and kept filing the other half of
+  # the healthy case. See claude-config#418 for the evidence.
+  #
+  # The local log written above remains the record. It is strictly richer than
+  # the issue ever was — full verbatim output from all three reviewers, on
+  # every disagreement rather than only FAIL — and it stays with the repo it
+  # describes, which is also why it carries no cross-org source-leak risk.
   return 0
 }
 
@@ -1032,7 +982,7 @@ _global_log="${HOME}/.claude/last-review-result.log"
 } >"${_global_log}" || true
 
 _ec=0 # captured by EXIT trap; declared here so shellcheck sees the assignment
-trap '_ec=$?; rm -rf "${_chunk_results:-}" 2>/dev/null; rm -f "${_cr_out:-}" "${_ar_out:-}" "${DIFF_TMPFILE:-}" "${_codebase_err:-}" "${_issue_body:-}" 2>/dev/null; [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >> "${REVIEW_LOG}" || true' EXIT
+trap '_ec=$?; rm -rf "${_chunk_results:-}" 2>/dev/null; rm -f "${_cr_out:-}" "${_ar_out:-}" "${DIFF_TMPFILE:-}" "${_codebase_err:-}" 2>/dev/null; [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >> "${REVIEW_LOG}" || true' EXIT
 
 if [[ -z "${DIFF}" ]]; then
   log_warn "No staged changes to review"
