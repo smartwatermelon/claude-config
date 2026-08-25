@@ -1030,6 +1030,52 @@ if [[ "${REVIEW_MODE}" == "commit" ]] && [[ "${_current_branch}" == sync/* ]]; t
 fi
 unset _current_branch
 
+# --- Check for documentation-only / lockfile-only changes (commit mode only) ---
+# These short-circuits compare staged-index file names against skip-eligible
+# patterns. In --mode=full-diff and --mode=codebase the real diff source is
+# stdin (piped main...HEAD), NOT the staged index; the staged index may be
+# markdown-only while the branch's piped diff contains code. Skipping based
+# on the wrong source silently bypasses the full-branch review those modes
+# are designed for. Commit-mode DIFF is piped from `git diff --cached` so
+# staged index aligns with the review input — the short-circuits are safe
+# only there. Issue #131.
+#
+# MUST stay ABOVE the size dispatch below. A generated file is exempt from
+# review regardless of how large it is, so sizing it up first can only ever
+# block a commit that would have produced zero findings. A regenerated
+# lockfile is one indivisible file, so "split into smaller commits" is not
+# available to the human, and `review.skipThreshold` only reroutes it into a
+# chunked review that fails on the oversized chunk. Issue #427.
+#
+# Derive CHANGED_FILES outside the guard so it's defined (empty) in other
+# modes; the two checks below are both no-ops when unset.
+CHANGED_FILES=""
+if [[ "${REVIEW_MODE}" == "commit" ]]; then
+  CHANGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
+fi
+
+# Skip code review for markdown files - they're handled by markdownlint
+if [[ -n "${CHANGED_FILES}" ]]; then
+  # Check if ALL changed files are markdown
+  NON_MD_FILES=$(echo "${CHANGED_FILES}" | grep -vE '\.md$' || echo "")
+  if [[ -z "${NON_MD_FILES}" ]]; then
+    log_info "Markdown-only changes detected - skipping code review (handled by markdownlint)"
+    printf 'skipped: markdown-only\n' >>"${REVIEW_LOG}" || true
+    exit 0
+  fi
+fi
+
+# Skip code review for lockfiles - they're generated files
+if [[ -n "${CHANGED_FILES}" ]]; then
+  # Check if ALL changed files are lockfiles
+  NON_LOCK_FILES=$(echo "${CHANGED_FILES}" | grep -vE '(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Gemfile\.lock|Cargo\.lock|composer\.lock)$' || echo "")
+  if [[ -z "${NON_LOCK_FILES}" ]]; then
+    log_info "Lockfile-only changes detected - skipping code review (generated files)"
+    printf 'skipped: lockfile-only\n' >>"${REVIEW_LOG}" || true
+    exit 0
+  fi
+fi
+
 # Progressive review strategy based on diff size
 DIFF_LINES=$(echo "${DIFF}" | wc -l | tr -d ' ')
 
@@ -1084,9 +1130,10 @@ fi
 # script has no access to the submodule's own history, so codebase-mode review
 # can only ever restate "contents not inspectable" as a non-blocking issue on
 # every bump (see claude-config#192). Operates on DIFF content directly (not
-# file names), so — unlike the markdown/lockfile skips below — it's safe to
-# apply in every mode, including full-diff/codebase where DIFF is piped from
-# main...HEAD rather than the staged index.
+# file names), so — unlike the markdown/lockfile skips above, which are
+# commit-mode only — it's safe to apply in every mode, including
+# full-diff/codebase where DIFF is piped from main...HEAD rather than the
+# staged index.
 SUBMODULE_ONLY_LINES=$(echo "${DIFF}" | grep -E '^[+-][^+-]' | grep -vE '^[+-]Subproject commit [0-9a-f]{40}$' || true)
 if [[ -z "${SUBMODULE_ONLY_LINES}" ]]; then
   log_info "Submodule-pointer-only changes detected - skipping review (contents not inspectable)"
@@ -1095,44 +1142,6 @@ if [[ -z "${SUBMODULE_ONLY_LINES}" ]]; then
 fi
 unset SUBMODULE_ONLY_LINES
 
-# --- Check for documentation-only / lockfile-only changes (commit mode only) ---
-# These short-circuits compare staged-index file names against skip-eligible
-# patterns. In --mode=full-diff and --mode=codebase the real diff source is
-# stdin (piped main...HEAD), NOT the staged index; the staged index may be
-# markdown-only while the branch's piped diff contains code. Skipping based
-# on the wrong source silently bypasses the full-branch review those modes
-# are designed for. Commit-mode DIFF is piped from `git diff --cached` so
-# staged index aligns with the review input — the short-circuits are safe
-# only there. Issue #131.
-#
-# Derive CHANGED_FILES outside the guard so it's defined (empty) in other
-# modes; the two checks below are both no-ops when unset.
-CHANGED_FILES=""
-if [[ "${REVIEW_MODE}" == "commit" ]]; then
-  CHANGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
-fi
-
-# Skip code review for markdown files - they're handled by markdownlint
-if [[ -n "${CHANGED_FILES}" ]]; then
-  # Check if ALL changed files are markdown
-  NON_MD_FILES=$(echo "${CHANGED_FILES}" | grep -vE '\.md$' || echo "")
-  if [[ -z "${NON_MD_FILES}" ]]; then
-    log_info "Markdown-only changes detected - skipping code review (handled by markdownlint)"
-    printf 'skipped: markdown-only\n' >>"${REVIEW_LOG}" || true
-    exit 0
-  fi
-fi
-
-# Skip code review for lockfiles - they're generated files
-if [[ -n "${CHANGED_FILES}" ]]; then
-  # Check if ALL changed files are lockfiles
-  NON_LOCK_FILES=$(echo "${CHANGED_FILES}" | grep -vE '(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Gemfile\.lock|Cargo\.lock|composer\.lock)$' || echo "")
-  if [[ -z "${NON_LOCK_FILES}" ]]; then
-    log_info "Lockfile-only changes detected - skipping code review (generated files)"
-    printf 'skipped: lockfile-only\n' >>"${REVIEW_LOG}" || true
-    exit 0
-  fi
-fi
 
 # --- Full-diff mode (pre-push cross-file review) ---
 if [[ "${REVIEW_MODE}" == "full-diff" ]]; then
@@ -1305,25 +1314,42 @@ VERIFIED: <optional; see VERIFIABLE CLAIMS below>
 END_ISSUE
 
 VERIFIABLE CLAIMS (mandatory):
-If a finding asserts that something is incorrect, wrong, broken, nonexistent,
-or will fail — and that assertion is about EXTERNAL STATE you can actually
-check (what a commit SHA resolves to, what a file contains, what a version
-tag points at, how a tool or shell construct actually behaves) — you must do
-ONE of these two things:
-  1. Run the command that checks it, and record the command and its observed
-     output in a VERIFIED: field on the block. Example:
-       VERIFIED: gh api repos/actions/checkout/git/ref/tags/v7.0.1 -q .object.sha
-       -> 3d3c42e5aac5ba805825da76410c181273ba90b1 (tag exists, SHA matches)
-  2. If you cannot run the check, SOFTEN the claim into a question rather
-     than an assertion — write \"is this SHA on the v4 line?\" instead of
-     \"this SHA belongs to the v4 line, not v7.0.1\".
+YOUR ONLY TOOLS ARE Read, Grep, AND Glob. You cannot run commands. You have no
+shell, no Bash, no gh, no test runner. Nothing you write in a VERIFIED: field
+was executed, and you must never imply otherwise.
 
-HOW A TOOL OR RUNTIME BEHAVES COUNTS AS EXTERNAL STATE. Claims like \"argv[1]
-is the script path\", \"if: failure() only covers the previous step\", \"grep -w
-splits on /\", \"this flag does not exist\", or \"an empty object passes\" are
-all checkable, usually by one command. Six such findings in a single session
-were asserted from memory and every one was false. Run the one-liner, or ask
-the question instead of making the assertion.
+This splits every factual claim into two kinds, and they have DIFFERENT rules.
+
+KIND A — claims about repository contents. What a file contains, whether a
+symbol is defined, whether a name is referenced anywhere else, what a config
+value is set to. Read/Grep/Glob settle these. For a Kind A claim you must
+actually open the file or run the search before asserting it, and record what
+you looked at in a VERIFIED: field. Example:
+  VERIFIED: Grep \"REVIEW_MAX_LINES=\" hooks/run-review.sh -> line 81, default 1000
+Cite the tool and what it returned, not a command you did not run.
+
+KIND B — claims about how a tool, shell construct, or runtime BEHAVES. \"printf
+appends another newline here\", \"$( ) keeps the trailing newline\", \"argv[1] is
+the script path\", \"if: failure() only covers the previous step\", \"grep -w
+splits on /\", \"this flag does not exist\", \"an empty object passes\". You
+CANNOT check any of these. Reading the source that calls a tool tells you what
+the code does, never what the tool does with it.
+
+FOR EVERY KIND B CLAIM, THE SOFTENED FORM IS MANDATORY, NOT A FALLBACK.
+Phrase it as a question and say what would settle it. Write:
+  \"does printf re-add a trailing newline here — worth checking whether $( )
+   already stripped it?\"
+NOT:
+  \"printf appends another newline, producing a blank line between blocks.\"
+Both sentences point at the same line of code. Only the first is honest about
+what you actually know. A Kind B claim stated as fact is wrong even when the
+underlying suspicion is right, because you are reporting a guess as a
+measurement — and a human then spends a command disproving it.
+
+A Kind B claim is not rescued by confidence, by how standard the behavior
+seems, or by how much surrounding code you read. If your finding's core
+assertion is about runtime behavior, it goes in question form. No exceptions.
+
 Never assert a checkable fact you did not check. Findings that assert
 incorrectness with no VERIFIED: field are filed with an \"unverified\" label
 and a warning banner, because past unverified assertions of exactly this
