@@ -175,6 +175,20 @@ check "git log --grep for the word commit" 0 'git log --grep=fix -- commit '
 check "git rev-list counting commits" 0 'git rev-list --count HEAD -- commit '
 check "git cat-file on a commit object" 0 'git cat-file -t HEAD -- commit '
 
+echo "--- MUST NOT BLOCK: a separator is never eaten as a flag value ---"
+# The bare-token arm of _optval opens with [^-], which admits any non-dash
+# character. The question is whether the engine can therefore consume a real
+# shell separator as though it were a flag's value, running past a genuine
+# command boundary and matching a later `commit` that belongs to a different
+# command. It cannot -- the arm's body excludes | ; & and the backtick -- but
+# that is a claim about runtime matching, so it is pinned rather than argued.
+check "pipe after a flag, commit in the next command" 0 'git log -p | grep commit '
+check "semicolon after a flag, commit in the next command" 0 'git log -p ; echo commit '
+check "ampersand after a flag, commit in the next command" 0 'git log -p & echo commit '
+# The mirror case: a REAL commit after a separator must still block, so the
+# three above cannot be satisfied by simply failing to look past separators.
+check "real commit after a pipeline and a semicolon" 2 'git log -p | true ; git commit -m x'
+
 echo "--- MUST NOT BLOCK: ordinary read-only git commands ---"
 check "git status" 0 'git status'
 check "git rev-parse" 0 'git rev-parse HEAD'
