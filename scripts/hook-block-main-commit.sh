@@ -63,6 +63,12 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # keeps `-C <path> commit` matching without also letting a bare `commit`
 # substring elsewhere in the line satisfy the pattern.
 #
+# That arm covers only options BEFORE the subcommand. Flags that follow it
+# (`commit -am msg`, `commit --amend`) need no handling of their own: the
+# trailing `([[:space:]]|$)` is satisfied by the space that separates `commit`
+# from whatever comes next, so the match ends at the subcommand and the rest
+# of the line is irrelevant.
+#
 # The backtick is spelled via ${bt} rather than inline: a literal backtick
 # inside a single-quoted string reads to shellcheck as an unexpanded command
 # substitution (SC2016), and disable directives are not permitted here.
@@ -71,8 +77,14 @@ readonly bt
 commit_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do)[[:space:]]*((env|command|sudo)[[:space:]]+)*([^[:space:]|;&(){${bt}]*/)?git[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&${bt}[:space:]]*[[:space:]]+)?)*commit([[:space:]]|$)"
 
 # `env FOO=1 git commit` puts an assignment between the wrapper and git, which
-# the wrapper arm above does not consume. Strip leading VAR=VAL assignments
-# after an env wrapper so the invocation still reaches the matcher.
+# the wrapper arm above does not consume. Normalize an `env` wrapper down to
+# the bare keyword so the invocation still reaches the matcher.
+#
+# The VAR=VAL group is `*`, so this also matches an `env` carrying no
+# assignments at all and rewrites it to itself. That no-op is deliberate:
+# `env git commit` needs no stripping, and letting the same branch cover both
+# forms avoids a second pattern. Do not "fix" the `*` to `+` — that would
+# leave the zero-assignment form unnormalized for no gain.
 _scan=$(printf '%s\n' "${cmd}" | sed -E 's/(^|[[:space:]])env[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*/\1env /g')
 
 if printf '%s\n' "${_scan}" | grep -qE "${commit_re}"; then
