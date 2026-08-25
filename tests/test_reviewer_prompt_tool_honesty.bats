@@ -104,6 +104,17 @@ PRE_MERGE="${BATS_TEST_DIRNAME}/../hooks/pre-merge-review.sh"
   grep -q "Do not file the reasoning" "${RUN_REVIEW}"
 }
 
+@test "the review cache key includes the script hash" {
+  # The filing bar lives in prompt text inside this script, so a prompt edit
+  # MUST invalidate cached PASS verdicts. Without SCRIPT_SHA in the key, a
+  # tightened prompt would read an old PASS for an identical diff and never
+  # run. Observed during validation: a stale entry made a deliberately buggy
+  # fixture report PASS, which read as the new prompt suppressing real
+  # findings until the cache was cleared and it correctly blocked.
+  grep -q 'SCRIPT_SHA=$(shasum' "${RUN_REVIEW}"
+  grep -q 'DIFF_HASH=$(printf .*SCRIPT_SHA' "${RUN_REVIEW}"
+}
+
 @test "codebase prompt states that filing nothing is a success" {
   # Without this the reviewer reads an empty list as an incomplete job.
   grep -q "Filing nothing is a good outcome" "${RUN_REVIEW}"
