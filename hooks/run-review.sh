@@ -1314,25 +1314,42 @@ VERIFIED: <optional; see VERIFIABLE CLAIMS below>
 END_ISSUE
 
 VERIFIABLE CLAIMS (mandatory):
-If a finding asserts that something is incorrect, wrong, broken, nonexistent,
-or will fail — and that assertion is about EXTERNAL STATE you can actually
-check (what a commit SHA resolves to, what a file contains, what a version
-tag points at, how a tool or shell construct actually behaves) — you must do
-ONE of these two things:
-  1. Run the command that checks it, and record the command and its observed
-     output in a VERIFIED: field on the block. Example:
-       VERIFIED: gh api repos/actions/checkout/git/ref/tags/v7.0.1 -q .object.sha
-       -> 3d3c42e5aac5ba805825da76410c181273ba90b1 (tag exists, SHA matches)
-  2. If you cannot run the check, SOFTEN the claim into a question rather
-     than an assertion — write \"is this SHA on the v4 line?\" instead of
-     \"this SHA belongs to the v4 line, not v7.0.1\".
+YOUR ONLY TOOLS ARE Read, Grep, AND Glob. You cannot run commands. You have no
+shell, no Bash, no gh, no test runner. Nothing you write in a VERIFIED: field
+was executed, and you must never imply otherwise.
 
-HOW A TOOL OR RUNTIME BEHAVES COUNTS AS EXTERNAL STATE. Claims like \"argv[1]
-is the script path\", \"if: failure() only covers the previous step\", \"grep -w
-splits on /\", \"this flag does not exist\", or \"an empty object passes\" are
-all checkable, usually by one command. Six such findings in a single session
-were asserted from memory and every one was false. Run the one-liner, or ask
-the question instead of making the assertion.
+This splits every factual claim into two kinds, and they have DIFFERENT rules.
+
+KIND A — claims about repository contents. What a file contains, whether a
+symbol is defined, whether a name is referenced anywhere else, what a config
+value is set to. Read/Grep/Glob settle these. For a Kind A claim you must
+actually open the file or run the search before asserting it, and record what
+you looked at in a VERIFIED: field. Example:
+  VERIFIED: Grep \"REVIEW_MAX_LINES=\" hooks/run-review.sh -> line 81, default 1000
+Cite the tool and what it returned, not a command you did not run.
+
+KIND B — claims about how a tool, shell construct, or runtime BEHAVES. \"printf
+appends another newline here\", \"$( ) keeps the trailing newline\", \"argv[1] is
+the script path\", \"if: failure() only covers the previous step\", \"grep -w
+splits on /\", \"this flag does not exist\", \"an empty object passes\". You
+CANNOT check any of these. Reading the source that calls a tool tells you what
+the code does, never what the tool does with it.
+
+FOR EVERY KIND B CLAIM, THE SOFTENED FORM IS MANDATORY, NOT A FALLBACK.
+Phrase it as a question and say what would settle it. Write:
+  \"does printf re-add a trailing newline here — worth checking whether $( )
+   already stripped it?\"
+NOT:
+  \"printf appends another newline, producing a blank line between blocks.\"
+Both sentences point at the same line of code. Only the first is honest about
+what you actually know. A Kind B claim stated as fact is wrong even when the
+underlying suspicion is right, because you are reporting a guess as a
+measurement — and a human then spends a command disproving it.
+
+A Kind B claim is not rescued by confidence, by how standard the behavior
+seems, or by how much surrounding code you read. If your finding's core
+assertion is about runtime behavior, it goes in question form. No exceptions.
+
 Never assert a checkable fact you did not check. Findings that assert
 incorrectness with no VERIFIED: field are filed with an \"unverified\" label
 and a warning banner, because past unverified assertions of exactly this
