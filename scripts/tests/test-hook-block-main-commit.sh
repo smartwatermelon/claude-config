@@ -114,6 +114,11 @@ check_from "git -C <master repo> commit" 2 "${REPO_FEATURE}" \
 echo "--- MUST BLOCK: -C naming a repo that IS on main ---"
 check_from "git -C <main repo> commit, run from feature repo" 2 \
   "${REPO_FEATURE}" "git -C ${REPO_MAIN} commit -m msg"
+# The env-wrapper normalization rewrites the command before the match is taken,
+# and -C is then read back out of that match. Pin the combination so a change
+# to either step cannot silently drop the explicit repo and fall back to cwd.
+check_from "env-wrapped git -C <main repo> commit" 2 \
+  "${REPO_FEATURE}" "env FOO=1 git -C ${REPO_MAIN} commit -m msg"
 
 echo "--- MUST NOT BLOCK: read-only commands containing the word 'commit' ---"
 # The regression cases from #429. None of these commit anything.

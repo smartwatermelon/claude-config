@@ -79,6 +79,14 @@ if printf '%s\n' "${_scan}" | grep -qE "${commit_re}"; then
   # Prefer the repo the command names. Only the -C belonging to the matched
   # git invocation is meaningful, so read it from the match rather than from
   # anywhere in the line.
+  #
+  # COUPLED TO commit_re: this sed needs a space before `-C` to find it, which
+  # holds only because the pattern requires `[[:space:]]*` after the separator
+  # and `[[:space:]]+` after `git`. If the pattern is ever relaxed to accept a
+  # zero-space form (`true&&git -C /p commit`), the match could begin flush
+  # against `-C` and this extraction would come back empty, silently falling
+  # back to the cwd guess for a command that named its repo explicitly. Re-check
+  # this extraction alongside any change to commit_re.
   match=$(printf '%s\n' "${_scan}" | grep -oE "${commit_re}" | head -1)
   git_dir=$(printf '%s\n' "${match}" | sed -En 's/.*[[:space:]]-C[[:space:]]+([^[:space:]]+).*/\1/p')
 
