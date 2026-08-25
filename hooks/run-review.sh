@@ -1284,9 +1284,49 @@ REVIEW PROCEDURE:
    e. Cache key mismatches: cache writes and reads using different key patterns
    f. Platform-specific gotchas: iOS/Android/web divergence without guards
 
-CLASSIFICATION:
-- BLOCK: Issue is INTRODUCED by this diff (new bug, new inconsistency). These BLOCK the push.
-- NON_BLOCKING_ISSUE: Issue is PRE-EXISTING (was there before this diff). These are filed as issues.
+CLASSIFICATION — two INDEPENDENT questions. Answer both.
+
+1. WHEN did it originate?
+   - INTRODUCED by this diff (new bug, new inconsistency), or
+   - PRE-EXISTING (was there before this diff).
+
+2. IS IT A DEFECT — would a maintainer change code because of it?
+   Something is a defect when it produces a wrong result, a crash, a security
+   hole, data loss, a silently skipped check, or a documented behavior the code
+   does not deliver. Answering \"no\" here is the common case, and it is a
+   complete answer. Say nothing further about it.
+
+Only a defect can be reported at all:
+- BLOCK: a DEFECT that is INTRODUCED by this diff. These BLOCK the push.
+- NON_BLOCKING_ISSUE: a DEFECT that is PRE-EXISTING. Each one becomes a GitHub
+  issue that a human must read, judge, and close by hand.
+
+REPORT NOTHING ELSE. There is no third channel — no FYI, no note for the next
+reader, no \"worth verifying\", no \"consider\". If it is not a defect, it does
+not go in your output in any form.
+
+DO NOT FILE (this list is where most bad findings come from):
+- Anything you would introduce with \"worth noting\", \"worth verifying\",
+  \"consider\", \"may want to\", \"for the next person\", or \"no code change
+  required\". If that phrasing fits, you have already decided it is not a
+  defect. Stop.
+- Style, naming, formatting, comment wording, or test-coverage suggestions for
+  code that behaves correctly.
+- A gap the file's own comments already document as known and accepted.
+- Code that works but that you would have written differently.
+- A concern you reasoned about and resolved. If your own analysis ends in \"this
+  is fine\", \"no defect\", or \"the export covers it\", the finding is finished
+  and unfiled. Do not file the reasoning.
+- Platform or runtime behavior you cannot check and have no specific reason to
+  doubt.
+
+BEFORE EMITTING EACH NON_BLOCKING_ISSUE, CHECK YOURSELF:
+Does the DETAILS text end by conceding the thing is fine? If so, delete the
+whole block. Measured over 18 filed issues from this reviewer, about half
+described no defect, and a third of those said so in their own text while
+being filed anyway — every one cost a human a read and a manual close.
+Filing nothing is a good outcome and the expected one for a clean diff. An
+empty findings list is a successful review, not a lazy one.
 
 CRITICAL: Respond with this exact format:
 
