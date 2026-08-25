@@ -147,6 +147,15 @@ check_from "single-quoted -C path with spaces" 2 \
 
 echo "--- MUST NOT BLOCK: read-only commands containing the word 'commit' ---"
 # The regression cases from #429. None of these commit anything.
+#
+# Each appears twice, with and without a trailing space. The trailing space is
+# NOT load-bearing -- verified that both forms behave identically -- but the
+# end-of-string form is the one a person actually types, and it exercises the
+# `$` half of the trailing `([[:space:]]|$)` anchor rather than the
+# `[[:space:]]` half. Keeping both means neither branch of that anchor can
+# regress unnoticed.
+check "git log with 'commit' as the last token" 0 'git log --oneline -- commit'
+check "git show with 'commit' ending the comment" 0 'git show HEAD # explains the commit'
 check "git show with 'commit' in a trailing comment" 0 'git show HEAD # explains the commit '
 check "git log with 'commit' as a pathspec" 0 'git log --oneline -- commit '
 check "git log --format with 'commit' pathspec" 0 'git log --format=%H -1 -- commit '
