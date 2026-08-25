@@ -74,7 +74,9 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # substitution (SC2016), and disable directives are not permitted here.
 bt=$(printf '\140')
 readonly bt
-commit_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do)[[:space:]]*((env|command|sudo)[[:space:]]+)*([^[:space:]|;&(){${bt}]*/)?git[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&${bt}[:space:]]*[[:space:]]+)?)*commit([[:space:]]|$)"
+_optval="(\"[^\"]*\"[[:space:]]+|'[^']*'[[:space:]]+|[^-][^|;&${bt}[:space:]]*[[:space:]]+)?"
+readonly _optval
+commit_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do)[[:space:]]*((env|command|sudo)[[:space:]]+)*([^[:space:]|;&(){${bt}]*/)?git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*commit([[:space:]]|$)"
 
 # `env FOO=1 git commit` puts an assignment between the wrapper and git, which
 # the wrapper arm above does not consume. Normalize an `env` wrapper down to
@@ -99,8 +101,18 @@ if printf '%s\n' "${_scan}" | grep -qE "${commit_re}"; then
   # against `-C` and this extraction would come back empty, silently falling
   # back to the cwd guess for a command that named its repo explicitly. Re-check
   # this extraction alongside any change to commit_re.
+  # A quoted path may contain spaces, so try the quoted forms before falling
+  # back to the bare-token form. Without this, `-C "/path with spaces"` yields
+  # `"/path` and resolution fails to `unknown` -- which does not equal main, so
+  # a real commit to main would be allowed through.
   match=$(printf '%s\n' "${_scan}" | grep -oE "${commit_re}" | head -1)
-  git_dir=$(printf '%s\n' "${match}" | sed -En 's/.*[[:space:]]-C[[:space:]]+([^[:space:]]+).*/\1/p')
+  git_dir=$(printf '%s\n' "${match}" | sed -En 's/.*[[:space:]]-C[[:space:]]+"([^"]*)".*/\1/p')
+  if [[ -z "${git_dir}" ]]; then
+    git_dir=$(printf '%s\n' "${match}" | sed -En "s/.*[[:space:]]-C[[:space:]]+'([^']*)'.*/\\1/p")
+  fi
+  if [[ -z "${git_dir}" ]]; then
+    git_dir=$(printf '%s\n' "${match}" | sed -En 's/.*[[:space:]]-C[[:space:]]+([^[:space:]]+).*/\1/p')
+  fi
 
   if [[ -n "${git_dir}" ]]; then
     branch=$(git -C "${git_dir}" symbolic-ref --short HEAD 2>/dev/null || echo 'unknown')

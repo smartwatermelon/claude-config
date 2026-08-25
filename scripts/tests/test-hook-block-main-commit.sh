@@ -40,6 +40,18 @@ git -C "${REPO_MAIN}" config user.email test@test.com
 git -C "${REPO_MAIN}" config user.name Test
 git -C "${REPO_MAIN}" commit -q --allow-empty -m init
 
+# A repo on main whose path contains spaces, so the quoted `-C` handling is
+# exercised against a real repository rather than a nonexistent path. A path
+# that does not resolve yields branch `unknown`, which never equals main --
+# so a broken extraction would look like a pass here without this fixture.
+REPO_SPACED="$(mktemp -d)/path with spaces"
+mkdir -p "${REPO_SPACED}"
+git -C "${REPO_SPACED}" init -q
+git -C "${REPO_SPACED}" checkout -q -b main
+git -C "${REPO_SPACED}" config user.email test@test.com
+git -C "${REPO_SPACED}" config user.name Test
+git -C "${REPO_SPACED}" commit -q --allow-empty -m "chore: init"
+
 # A third scratch repo on `master`, since the hook guards both default-branch
 # names and only `main` is exercised elsewhere in this suite.
 REPO_MASTER="$(mktemp -d)"
@@ -59,7 +71,7 @@ git -C "${REPO_FEATURE}" config user.name Test
 git -C "${REPO_FEATURE}" commit -q --allow-empty -m init
 
 cleanup() {
-  rm -rf "${REPO_MAIN}" "${REPO_FEATURE}" "${REPO_MASTER}"
+  rm -rf "${REPO_MAIN}" "${REPO_FEATURE}" "${REPO_MASTER}" "$(dirname "${REPO_SPACED}")"
 }
 trap cleanup EXIT
 
@@ -119,6 +131,19 @@ check_from "git -C <main repo> commit, run from feature repo" 2 \
 # to either step cannot silently drop the explicit repo and fall back to cwd.
 check_from "env-wrapped git -C <main repo> commit" 2 \
   "${REPO_FEATURE}" "env FOO=1 git -C ${REPO_MAIN} commit -m msg"
+
+echo "--- MUST BLOCK: quoted values on global options ---"
+# A quoted value may contain spaces, which the bare value-token arm stops at.
+# Both halves matter: the matcher has to reach `commit` past the quoted value,
+# and the -C extraction has to recover the whole quoted path. A path that fails
+# to resolve yields branch `unknown`, which silently does NOT equal main -- so
+# these run against REPO_SPACED, a real repo on main.
+check "double-quoted -c value with a space" 2 'git -c "user.name=First Last" commit -m msg'
+check "single-quoted -c value with a space" 2 "git -c 'user.name=First Last' commit -m msg"
+check_from "double-quoted -C path with spaces" 2 \
+  "${REPO_FEATURE}" "git -C \"${REPO_SPACED}\" commit -m msg"
+check_from "single-quoted -C path with spaces" 2 \
+  "${REPO_FEATURE}" "git -C '${REPO_SPACED}' commit -m msg"
 
 echo "--- MUST NOT BLOCK: read-only commands containing the word 'commit' ---"
 # The regression cases from #429. None of these commit anything.
