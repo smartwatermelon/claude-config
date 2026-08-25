@@ -1030,6 +1030,52 @@ if [[ "${REVIEW_MODE}" == "commit" ]] && [[ "${_current_branch}" == sync/* ]]; t
 fi
 unset _current_branch
 
+# --- Check for documentation-only / lockfile-only changes (commit mode only) ---
+# These short-circuits compare staged-index file names against skip-eligible
+# patterns. In --mode=full-diff and --mode=codebase the real diff source is
+# stdin (piped main...HEAD), NOT the staged index; the staged index may be
+# markdown-only while the branch's piped diff contains code. Skipping based
+# on the wrong source silently bypasses the full-branch review those modes
+# are designed for. Commit-mode DIFF is piped from `git diff --cached` so
+# staged index aligns with the review input — the short-circuits are safe
+# only there. Issue #131.
+#
+# MUST stay ABOVE the size dispatch below. A generated file is exempt from
+# review regardless of how large it is, so sizing it up first can only ever
+# block a commit that would have produced zero findings. A regenerated
+# lockfile is one indivisible file, so "split into smaller commits" is not
+# available to the human, and `review.skipThreshold` only reroutes it into a
+# chunked review that fails on the oversized chunk. Issue #427.
+#
+# Derive CHANGED_FILES outside the guard so it's defined (empty) in other
+# modes; the two checks below are both no-ops when unset.
+CHANGED_FILES=""
+if [[ "${REVIEW_MODE}" == "commit" ]]; then
+  CHANGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
+fi
+
+# Skip code review for markdown files - they're handled by markdownlint
+if [[ -n "${CHANGED_FILES}" ]]; then
+  # Check if ALL changed files are markdown
+  NON_MD_FILES=$(echo "${CHANGED_FILES}" | grep -vE '\.md$' || echo "")
+  if [[ -z "${NON_MD_FILES}" ]]; then
+    log_info "Markdown-only changes detected - skipping code review (handled by markdownlint)"
+    printf 'skipped: markdown-only\n' >>"${REVIEW_LOG}" || true
+    exit 0
+  fi
+fi
+
+# Skip code review for lockfiles - they're generated files
+if [[ -n "${CHANGED_FILES}" ]]; then
+  # Check if ALL changed files are lockfiles
+  NON_LOCK_FILES=$(echo "${CHANGED_FILES}" | grep -vE '(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Gemfile\.lock|Cargo\.lock|composer\.lock)$' || echo "")
+  if [[ -z "${NON_LOCK_FILES}" ]]; then
+    log_info "Lockfile-only changes detected - skipping code review (generated files)"
+    printf 'skipped: lockfile-only\n' >>"${REVIEW_LOG}" || true
+    exit 0
+  fi
+fi
+
 # Progressive review strategy based on diff size
 DIFF_LINES=$(echo "${DIFF}" | wc -l | tr -d ' ')
 
@@ -1086,7 +1132,8 @@ fi
 # every bump (see claude-config#192). Operates on DIFF content directly (not
 # file names), so — unlike the markdown/lockfile skips below — it's safe to
 # apply in every mode, including full-diff/codebase where DIFF is piped from
-# main...HEAD rather than the staged index.
+# main...HEAD rather than the staged index (unlike the markdown/lockfile
+# skips above, which are commit-mode only).
 SUBMODULE_ONLY_LINES=$(echo "${DIFF}" | grep -E '^[+-][^+-]' | grep -vE '^[+-]Subproject commit [0-9a-f]{40}$' || true)
 if [[ -z "${SUBMODULE_ONLY_LINES}" ]]; then
   log_info "Submodule-pointer-only changes detected - skipping review (contents not inspectable)"
@@ -1095,44 +1142,6 @@ if [[ -z "${SUBMODULE_ONLY_LINES}" ]]; then
 fi
 unset SUBMODULE_ONLY_LINES
 
-# --- Check for documentation-only / lockfile-only changes (commit mode only) ---
-# These short-circuits compare staged-index file names against skip-eligible
-# patterns. In --mode=full-diff and --mode=codebase the real diff source is
-# stdin (piped main...HEAD), NOT the staged index; the staged index may be
-# markdown-only while the branch's piped diff contains code. Skipping based
-# on the wrong source silently bypasses the full-branch review those modes
-# are designed for. Commit-mode DIFF is piped from `git diff --cached` so
-# staged index aligns with the review input — the short-circuits are safe
-# only there. Issue #131.
-#
-# Derive CHANGED_FILES outside the guard so it's defined (empty) in other
-# modes; the two checks below are both no-ops when unset.
-CHANGED_FILES=""
-if [[ "${REVIEW_MODE}" == "commit" ]]; then
-  CHANGED_FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
-fi
-
-# Skip code review for markdown files - they're handled by markdownlint
-if [[ -n "${CHANGED_FILES}" ]]; then
-  # Check if ALL changed files are markdown
-  NON_MD_FILES=$(echo "${CHANGED_FILES}" | grep -vE '\.md$' || echo "")
-  if [[ -z "${NON_MD_FILES}" ]]; then
-    log_info "Markdown-only changes detected - skipping code review (handled by markdownlint)"
-    printf 'skipped: markdown-only\n' >>"${REVIEW_LOG}" || true
-    exit 0
-  fi
-fi
-
-# Skip code review for lockfiles - they're generated files
-if [[ -n "${CHANGED_FILES}" ]]; then
-  # Check if ALL changed files are lockfiles
-  NON_LOCK_FILES=$(echo "${CHANGED_FILES}" | grep -vE '(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Gemfile\.lock|Cargo\.lock|composer\.lock)$' || echo "")
-  if [[ -z "${NON_LOCK_FILES}" ]]; then
-    log_info "Lockfile-only changes detected - skipping code review (generated files)"
-    printf 'skipped: lockfile-only\n' >>"${REVIEW_LOG}" || true
-    exit 0
-  fi
-fi
 
 # --- Full-diff mode (pre-push cross-file review) ---
 if [[ "${REVIEW_MODE}" == "full-diff" ]]; then

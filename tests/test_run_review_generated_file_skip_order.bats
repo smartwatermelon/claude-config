@@ -1,0 +1,147 @@
+#!/usr/bin/env bats
+# Tests that the generated-file short-circuits in hooks/run-review.sh run
+# BEFORE the diff-size dispatch.
+#
+# Why this exists: the markdown-only and lockfile-only skips used to sit ~90
+# lines downstream of the size dispatch, so a generated-file commit large
+# enough to trip `review.skipThreshold` was hard-blocked and could never reach
+# the exemption written for it. A regenerated lockfile is one indivisible
+# file, so the error's "split into smaller commits" advice is unavailable, and
+# its other suggestion (raise `review.skipThreshold`) only reroutes the commit
+# into a chunked review that fails on the oversized chunk. Issue #427.
+#
+# The assertions below are ordering tripwires: each stages a generated-file
+# diff LARGER than both thresholds and requires a clean skip. Under the old
+# ordering every one of them blocks instead.
+#
+# Run: bats ~/.claude/tests/test_run_review_generated_file_skip_order.bats
+
+# Resolve the script under test relative to THIS test file, not via
+# ${HOME}/.claude/hooks — that path is a symlink to the main working
+# directory, so in a git worktree it would silently exercise main's copy
+# instead of the branch under test.
+SCRIPT="${BATS_TEST_DIRNAME}/../hooks/run-review.sh"
+
+setup() {
+  TMPDIR_TEST="$(mktemp -d)"
+  export TMPDIR_TEST
+  git -C "${TMPDIR_TEST}" init -q
+  git -C "${TMPDIR_TEST}" checkout -q -b test-branch
+  git -C "${TMPDIR_TEST}" config user.email "test@test.com"
+  git -C "${TMPDIR_TEST}" config user.name "Test"
+  touch "${TMPDIR_TEST}/init.txt"
+  git -C "${TMPDIR_TEST}" add init.txt
+  GIT_CONFIG_GLOBAL=/dev/null git -C "${TMPDIR_TEST}" commit -q -m "initial commit message"
+
+  export EXPECTED_LOG="${TMPDIR_TEST}/.git/last-review-result.log"
+
+  # Mock claude CLI. The --version preflight must NOT consume stdin, or it
+  # drains the diff that run-review.sh later reads via DIFF=$(cat).
+  #
+  # The agent branch emits FAIL deliberately: these tests assert the script
+  # never reaches the reviewer at all. If a skip regresses and the reviewer
+  # does get invoked, the FAIL makes that visible instead of letting an
+  # accidental PASS mask the ordering bug.
+  MOCK_DIR="$(mktemp -d)"
+  export MOCK_DIR
+  export AGENT_INVOKED="${MOCK_DIR}/agent-invoked"
+  cat >"${MOCK_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [[ "\$a" == "--version" ]]; then
+    echo "mock-claude 0.0.1"
+    exit 0
+  fi
+done
+touch "${AGENT_INVOKED}"
+cat > /dev/null
+echo "VERDICT: FAIL"
+echo "reviewer should not have been reached"
+EOF
+  chmod +x "${MOCK_DIR}/claude"
+  export CLAUDE_CLI="${MOCK_DIR}/claude"
+}
+
+teardown() {
+  rm -rf "${TMPDIR_TEST}" "${MOCK_DIR}"
+}
+
+# Write a file with enough lines that the staged diff exceeds the default
+# skipThreshold (2500) — the hard-block branch, the one with no viable
+# remedy for a generated file.
+_write_big_file() {
+  local path="$1" lines="${2:-4000}"
+  local i
+  : >"${TMPDIR_TEST}/${path}"
+  for ((i = 0; i < lines; i += 1)); do
+    printf 'generated line %d\n' "${i}" >>"${TMPDIR_TEST}/${path}"
+  done
+}
+
+_run_review() {
+  local diff
+  diff=$(git -C "${TMPDIR_TEST}" diff --cached)
+  (
+    cd "${TMPDIR_TEST}" || return 1
+    printf '%s\n' "${diff}" \
+      | REVIEW_LOG="${EXPECTED_LOG}" CLAUDE_CLI="${CLAUDE_CLI}" \
+        bash "${SCRIPT}" "$@"
+  )
+}
+
+@test "large lockfile-only diff skips review instead of hard-blocking on size" {
+  _write_big_file "package-lock.json"
+  git -C "${TMPDIR_TEST}" add package-lock.json
+
+  run _run_review
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Lockfile-only changes detected"* ]]
+  grep -q 'skipped: lockfile-only' "${EXPECTED_LOG}"
+}
+
+@test "large markdown-only diff skips review instead of hard-blocking on size" {
+  _write_big_file "README.md"
+  git -C "${TMPDIR_TEST}" add README.md
+
+  run _run_review
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Markdown-only changes detected"* ]]
+  grep -q 'skipped: markdown-only' "${EXPECTED_LOG}"
+}
+
+@test "large generated-file diff never reaches the reviewer agent" {
+  _write_big_file "package-lock.json"
+  git -C "${TMPDIR_TEST}" add package-lock.json
+
+  run _run_review
+  [ "$status" -eq 0 ]
+  [ ! -f "${AGENT_INVOKED}" ]
+}
+
+@test "diff between maxLines and skipThreshold skips rather than chunking" {
+  # Sized into the chunked-review band: above review.maxLines (1000) but
+  # below review.skipThreshold (2500). This is the band the issue's
+  # workaround #2 lands in, where chunked review reports zero findings and
+  # blocks anyway on the oversized chunk.
+  _write_big_file "yarn.lock" 1500
+  git -C "${TMPDIR_TEST}" add yarn.lock
+
+  run _run_review
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Lockfile-only changes detected"* ]]
+  [[ "$output" != *"chunked"* ]]
+}
+
+@test "a large diff mixing code with generated files is still reviewed" {
+  # The skips must remain ALL-or-nothing. Moving them earlier must not let a
+  # code change ride along inside a large generated-file commit unreviewed:
+  # here the size dispatch is still the correct handler.
+  _write_big_file "package-lock.json"
+  echo "def exploit(): pass" >"${TMPDIR_TEST}/app.py"
+  git -C "${TMPDIR_TEST}" add package-lock.json app.py
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"Lockfile-only changes detected"* ]]
+  grep -q 'blocked: diff too large' "${EXPECTED_LOG}"
+}
