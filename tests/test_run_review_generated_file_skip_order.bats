@@ -78,6 +78,12 @@ _write_big_file() {
   done
 }
 
+# The `cd` here is not a git invocation, so the repo's `git -C` convention does
+# not apply: run-review.sh reads the staged index of its OWN working directory,
+# so it must be launched from inside the temp repo. It runs in a subshell so
+# the directory change cannot leak into the parent bats process, and uses
+# `return 1` rather than `exit 1` so one broken test does not tear down the
+# whole suite. Same pattern as tests/test_run_review_message_file.bats.
 _run_review() {
   local diff
   diff=$(git -C "${TMPDIR_TEST}" diff --cached)
