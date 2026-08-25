@@ -132,6 +132,18 @@ check_from "git -C <main repo> commit, run from feature repo" 2 \
 check_from "env-wrapped git -C <main repo> commit" 2 \
   "${REPO_FEATURE}" "env FOO=1 git -C ${REPO_MAIN} commit -m msg"
 
+echo "--- MUST BLOCK: several global options before the subcommand ---"
+# The option arm repeats, and -C may sit anywhere among the flags. Both orders
+# must reach `commit` AND still resolve the branch from the named repo rather
+# than the cwd, so these run from the feature repo: a regression that lost the
+# -C would resolve to feature/work and silently allow the commit.
+check_from "-C before another global option" 2 \
+  "${REPO_FEATURE}" "git -C ${REPO_MAIN} -c user.name=x commit -m msg"
+check_from "-C after another global option" 2 \
+  "${REPO_FEATURE}" "git -c user.name=x -C ${REPO_MAIN} commit -m msg"
+check_from "-C after a valueless global option" 2 \
+  "${REPO_FEATURE}" "git --no-pager -C ${REPO_MAIN} commit -m msg"
+
 echo "--- MUST BLOCK: quoted values on global options ---"
 # A quoted value may contain spaces, which the bare value-token arm stops at.
 # Both halves matter: the matcher has to reach `commit` past the quoted value,
@@ -159,7 +171,7 @@ check "git show with 'commit' ending the comment" 0 'git show HEAD # explains th
 check "git show with 'commit' in a trailing comment" 0 'git show HEAD # explains the commit '
 check "git log with 'commit' as a pathspec" 0 'git log --oneline -- commit '
 check "git log --format with 'commit' pathspec" 0 'git log --format=%H -1 -- commit '
-check "git log --grep for the word commit" 0 'git log --grep= commit '
+check "git log --grep for the word commit" 0 'git log --grep=fix -- commit '
 check "git rev-list counting commits" 0 'git rev-list --count HEAD -- commit '
 check "git cat-file on a commit object" 0 'git cat-file -t HEAD -- commit '
 
