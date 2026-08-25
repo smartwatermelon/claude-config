@@ -1130,10 +1130,10 @@ fi
 # script has no access to the submodule's own history, so codebase-mode review
 # can only ever restate "contents not inspectable" as a non-blocking issue on
 # every bump (see claude-config#192). Operates on DIFF content directly (not
-# file names), so — unlike the markdown/lockfile skips below — it's safe to
-# apply in every mode, including full-diff/codebase where DIFF is piped from
-# main...HEAD rather than the staged index (unlike the markdown/lockfile
-# skips above, which are commit-mode only).
+# file names), so — unlike the markdown/lockfile skips above, which are
+# commit-mode only — it's safe to apply in every mode, including
+# full-diff/codebase where DIFF is piped from main...HEAD rather than the
+# staged index.
 SUBMODULE_ONLY_LINES=$(echo "${DIFF}" | grep -E '^[+-][^+-]' | grep -vE '^[+-]Subproject commit [0-9a-f]{40}$' || true)
 if [[ -z "${SUBMODULE_ONLY_LINES}" ]]; then
   log_info "Submodule-pointer-only changes detected - skipping review (contents not inspectable)"
