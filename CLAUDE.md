@@ -171,6 +171,17 @@ before merge.
   merge on a signal that carries no authority the lock doesn't already supply.
   If CI is green and the lock is valid, proceed to merge.
 - Only allowed merge command: `gh pr merge <number> --squash --delete-branch`.
+- **`Closes #N` fires from the commit message, not just the PR body.** Decide
+  which issues a PR closes *before writing the commit*, because squash-merge
+  prefills the commit body from the original commit message. Removing the
+  keyword from the PR body afterward does not stop the auto-close — the copy
+  in the commit still fires. To undo one, strip it from BOTH (`git commit
+  --amend` plus force-push), or simply reopen the issue after the merge.
+  Verify with `gh issue view <N> --json state` whenever it matters; a non-null
+  `commit_id` on the `closed` event in
+  `gh api repos/OWNER/REPO/issues/<N>/timeline` means the commit message did
+  it. Do not write `Closes #N` for an issue a PR only partly addresses — use
+  "Advances #N" and close it deliberately.
 - Post-merge cleanup (switch to main, pull, delete local branch, `git status`
   check) still applies after every merge.
 
