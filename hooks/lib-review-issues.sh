@@ -574,12 +574,12 @@ _DEDUP_STOPWORDS='this|that|with|from|when|then|than|were|will|would|should|coul
 # Reduce a title to a sorted, unique list of significant lowercase tokens
 # (alphanumeric, 4+ chars, stopwords removed), one per line.
 _dedup_title_tokens() {
-  printf '%s' "$1" |
-    { tr '[:upper:]' '[:lower:]' || true; } |
-    { tr -cs '[:alnum:]' '\n' || true; } |
-    { grep -E '^[[:alnum:]]{4,}$' || true; } |
-    { grep -vxE "${_DEDUP_STOPWORDS}" || true; } |
-    { sort -u || true; }
+  printf '%s' "$1" \
+    | { tr '[:upper:]' '[:lower:]' || true; } \
+    | { tr -cs '[:alnum:]' '\n' || true; } \
+    | { grep -E '^[[:alnum:]]{4,}$' || true; } \
+    | { grep -vxE "${_DEDUP_STOPWORDS}" || true; } \
+    | { sort -u || true; }
 }
 
 # Extract the bare file path from a LOCATION field, dropping any line-number
@@ -919,8 +919,8 @@ _format_issue_section() {
   local marker=""
   if [[ -n "${verified}" ]]; then
     marker=" _(verified: ${verified//$'\n'/ })_"
-  elif declare -F _asserts_incorrectness >/dev/null 2>&1 &&
-    _asserts_incorrectness "${title}" "${details}" 2>/dev/null; then
+  elif declare -F _asserts_incorrectness >/dev/null 2>&1 \
+    && _asserts_incorrectness "${title}" "${details}" 2>/dev/null; then
     marker=" _(unverified claim — check before acting)_"
   fi
 
@@ -969,8 +969,8 @@ create_batched_nonblocking_issue() {
     # Per-finding dedup gate (#328) still applies inside a batch: a finding
     # already tracked by an open issue is dropped from the checklist rather
     # than restated. Fails open, same as the per-issue path.
-    if declare -F _find_duplicate_open_issue >/dev/null 2>&1 &&
-      declare -F _load_open_issues >/dev/null 2>&1; then
+    if declare -F _find_duplicate_open_issue >/dev/null 2>&1 \
+      && declare -F _load_open_issues >/dev/null 2>&1; then
       local _dup
       _dup=$(_find_duplicate_open_issue "${_t}" "${_loc}")
       if [[ -n "${_dup}" ]]; then
@@ -993,8 +993,8 @@ create_batched_nonblocking_issue() {
     # asserts incorrectness without a VERIFIED: command, the issue carries
     # the `unverified` label. Per-item status stays visible inline via
     # _format_issue_section, so the label is a summary, not the only signal.
-    if [[ -z "${_v}" ]] && declare -F _asserts_incorrectness >/dev/null 2>&1 &&
-      _asserts_incorrectness "${_t}" "${_d}" 2>/dev/null; then
+    if [[ -z "${_v}" ]] && declare -F _asserts_incorrectness >/dev/null 2>&1 \
+      && _asserts_incorrectness "${_t}" "${_d}" 2>/dev/null; then
       has_unverified=true
     fi
   }
@@ -1100,8 +1100,8 @@ _process_issue_block() {
   # Dedup gate (#328): skip filing when an OPEN issue already tracks this
   # same finding. Fails open — see _find_duplicate_open_issue.
   local dup="" dup_num dup_url
-  if declare -F _find_duplicate_open_issue >/dev/null 2>&1 &&
-    declare -F _load_open_issues >/dev/null 2>&1; then
+  if declare -F _find_duplicate_open_issue >/dev/null 2>&1 \
+    && declare -F _load_open_issues >/dev/null 2>&1; then
     # Prime the open-issue cache in THIS shell (not inside the command
     # substitution below, where the assignment would be lost to a subshell).
     _load_open_issues
@@ -1136,8 +1136,8 @@ _process_issue_block() {
         body="${_body_with_verification}"
       fi
     fi
-  elif declare -F _asserts_incorrectness >/dev/null 2>&1 &&
-    _asserts_incorrectness "${title}" "${details}" 2>/dev/null; then
+  elif declare -F _asserts_incorrectness >/dev/null 2>&1 \
+    && _asserts_incorrectness "${title}" "${details}" 2>/dev/null; then
     if declare -F _unverified_caveat_body >/dev/null 2>&1; then
       local _body_with_caveat
       if _body_with_caveat=$(_unverified_caveat_body "${body}" 2>/dev/null); then

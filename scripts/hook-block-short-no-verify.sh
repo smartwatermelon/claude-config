@@ -22,8 +22,8 @@ cmd=$(printf '%s\n' "$input" | jq -r '.tool_input.command // empty')
 # Both are currently stopped by hook-check-commit-message.sh instead, which
 # is incidental rather than by design. Widening detection is deliberately
 # not bundled with this false-positive fix; see claude-config#405.
-if printf '%s\n' "$cmd" |
-  grep -qE 'git[[:space:]]+(commit|push)([[:space:]]+[^;&|<>[:space:]]+)*[[:space:]]+-n([[:space:]]|$)'; then
+if printf '%s\n' "$cmd" \
+  | grep -qE 'git[[:space:]]+(commit|push)([[:space:]]+[^;&|<>[:space:]]+)*[[:space:]]+-n([[:space:]]|$)'; then
   echo '🛑 BLOCKED: -n flag (short for --no-verify) is forbidden on git commit/push.' >&2
   exit 2
 fi
