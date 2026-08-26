@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Tests for hook-check-commit-message.sh
+# Tests for hook-check-commit-message.py
 
 set -euo pipefail
 unset CDPATH
 
-HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hook-check-commit-message.sh"
+HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hook-check-commit-message.py"
 pass=0
 fail=0
 

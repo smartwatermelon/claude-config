@@ -19,7 +19,7 @@ cmd=$(printf '%s\n' "$input" | jq -r '.tool_input.command // empty')
 #
 # KNOWN GAP, unchanged here: forms that put the flag BEFORE the subcommand
 # (a -C <path> invocation, or the flag directly after git) are not matched.
-# Both are currently stopped by hook-check-commit-message.sh instead, which
+# Both are currently stopped by hook-check-commit-message.py instead, which
 # is incidental rather than by design. Widening detection is deliberately
 # not bundled with this false-positive fix; see claude-config#405.
 if printf '%s\n' "$cmd" \

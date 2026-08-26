@@ -40,25 +40,14 @@ repos:
         types: [shell]
         pass_filenames: true
         verbose: true
-        # Two exclusions, both verified necessary on 2026-08-26 by running
-        # `pre-commit run --all-files` against this repo:
+        # tests/*.bats are tagged `shell` but are bats, not bash. bats injects
+        # BATS_TEST_DIRNAME, BATS_TMPDIR and friends at runtime, so shellcheck
+        # reports them as SC2154 "referenced but not assigned" — false positives
+        # on every bats file. The bats suites are the tests; they are exercised by
+        # running them, not by linting them as plain shell.
         #
-        # 1. scripts/hook-check-commit-message.sh is Python, not shell. It carries
-        #    a .sh extension for historical reasons and is referenced by that name
-        #    from hook-block-all.sh, hook-block-short-no-verify.sh, and its own
-        #    test. pre-commit's `identify` tags it `shell` from the extension
-        #    alone, so without this exclude shellcheck fails it with SC1071
-        #    ("only supports sh/bash/dash/ksh") on every commit touching it.
-        #    Renaming the file is the real fix; it is left for a change that can
-        #    update all three references at once.
-        #
-        # 2. tests/*.bats are tagged `shell` but are bats, not bash. bats injects
-        #    BATS_TEST_DIRNAME, BATS_TMPDIR and friends at runtime, so shellcheck
-        #    reports them as SC2154 "referenced but not assigned" — false
-        #    positives on every bats file. The bats suites are the tests; they are
-        #    exercised by running them, not by linting them as plain shell.
-        exclude: |
-          (?x)^(
-            scripts/hook-check-commit-message\.sh
-            |.*\.bats
-          )$
+        # A second exclusion for scripts/hook-check-commit-message.sh was removed
+        # when that file was renamed to .py (its real language). `identify` now
+        # tags it `python`, so `types: [shell]` skips it on its own and no
+        # exclusion is needed.
+        exclude: ^.*\.bats$

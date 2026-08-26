@@ -14,7 +14,7 @@ for hook in \
   "${SCRIPT_DIR}/hook-block-no-verify.sh" \
   "${SCRIPT_DIR}/hook-block-short-no-verify.sh" \
   "${SCRIPT_DIR}/hook-block-main-commit.sh" \
-  "${SCRIPT_DIR}/hook-check-commit-message.sh" \
+  "${SCRIPT_DIR}/hook-check-commit-message.py" \
   "${SCRIPT_DIR}/hook-block-merge-lock-authorize.sh" \
   "${SCRIPT_DIR}/hook-block-api-merge.sh" \
   "${SCRIPT_DIR}/hook-block-git-worktree.sh"; do
