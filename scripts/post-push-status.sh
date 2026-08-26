@@ -189,9 +189,9 @@ JQEOF
   )
   local body
   if body=$(gh api graphql \
-        -f query="${query}" \
-        -f owner="${owner}" -f name="${repo}" -F number="${number}" \
-        --jq "${jq_filter}" 2>/dev/null) \
+    -f query="${query}" \
+    -f owner="${owner}" -f name="${repo}" -F number="${number}" \
+    --jq "${jq_filter}" 2>/dev/null) \
     && echo "${body}" | jq -e 'type == "array"' >/dev/null 2>&1; then
     printf '%s\n' "${body}"
   else

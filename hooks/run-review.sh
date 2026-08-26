@@ -83,7 +83,7 @@ REVIEW_SKIP_THRESHOLD=$(git config --get --type=int review.skipThreshold 2>/dev/
 REVIEW_CHUNK_SIZE=$(git config --get --type=int review.chunkSize 2>/dev/null || echo "800")
 
 # --- Mode ---
-REVIEW_MODE="commit"  # default: pre-commit review (code-reviewer + adversarial)
+REVIEW_MODE="commit" # default: pre-commit review (code-reviewer + adversarial)
 # --- Optional commit-message override ---
 # When set, _read_commit_message reads from this path instead of the
 # default per-mode source. Wired by the commit-msg hook so the reviewer
@@ -94,7 +94,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode=full-diff) REVIEW_MODE="full-diff" ;;
     --mode=codebase) REVIEW_MODE="codebase" ;;
-    --mode=*) echo "Unknown mode: $1" >&2; exit 1 ;;
+    --mode=*)
+      echo "Unknown mode: $1" >&2
+      exit 1
+      ;;
     --no-file) REVIEW_NO_FILE=1 ;;
     --message-file=*) MESSAGE_FILE="${1#*=}" ;;
     --message-file)
@@ -125,10 +128,10 @@ fi
 REVIEW_MODEL=$(git config --get review.model 2>/dev/null || echo "")
 if [[ -z "${REVIEW_MODEL}" ]]; then
   case "${REVIEW_MODE}" in
-    commit)   REVIEW_MODEL="claude-haiku-4-5-20251001" ;;
+    commit) REVIEW_MODEL="claude-haiku-4-5-20251001" ;;
     full-diff) REVIEW_MODEL="claude-sonnet-4-6" ;;
     codebase) REVIEW_MODEL="claude-sonnet-4-6" ;;
-    *)        REVIEW_MODEL="" ;;
+    *) REVIEW_MODEL="" ;;
   esac
 fi
 CODE_REVIEWER_MODEL_ARGS=()
@@ -1142,7 +1145,6 @@ if [[ -z "${SUBMODULE_ONLY_LINES}" ]]; then
 fi
 unset SUBMODULE_ONLY_LINES
 
-
 # --- Full-diff mode (pre-push cross-file review) ---
 if [[ "${REVIEW_MODE}" == "full-diff" ]]; then
   log_info "Full-diff review: analyzing complete feature branch diff"
@@ -1369,7 +1371,7 @@ you looked at in a VERIFIED: field. Example:
 Cite the tool and what it returned, not a command you did not run.
 
 KIND B — claims about how a tool, shell construct, or runtime BEHAVES. \"printf
-appends another newline here\", \"$( ) keeps the trailing newline\", \"argv[1] is
+appends another newline here\", \"$() keeps the trailing newline\", \"argv[1] is
 the script path\", \"if: failure() only covers the previous step\", \"grep -w
 splits on /\", \"this flag does not exist\", \"an empty object passes\". You
 CANNOT check any of these. Reading the source that calls a tool tells you what
@@ -1377,7 +1379,7 @@ the code does, never what the tool does with it.
 
 FOR EVERY KIND B CLAIM, THE SOFTENED FORM IS MANDATORY, NOT A FALLBACK.
 Phrase it as a question and say what would settle it. Write:
-  \"does printf re-add a trailing newline here — worth checking whether $( )
+  \"does printf re-add a trailing newline here — worth checking whether $()
    already stripped it?\"
 NOT:
   \"printf appends another newline, producing a blank line between blocks.\"
@@ -1417,7 +1419,7 @@ no factual claim about external state (style, structure, maintainability)."
   unset _codebase_err
 
   codebase_end=$(date +%s)
-  codebase_elapsed=$(( codebase_end - codebase_start ))
+  codebase_elapsed=$((codebase_end - codebase_start))
   log_info "Codebase review completed in ${codebase_elapsed}s"
 
   # Clean up temp file

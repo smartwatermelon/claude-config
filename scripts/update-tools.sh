@@ -29,7 +29,7 @@ KNOWN_RUNTIME_FILE="${REPO_DIR}/scripts/known-runtime.txt"
 
 # ── Formatting helpers ──────────────────────────────────
 _info() { printf '\033[1;34m[INFO]\033[0m  %s\n' "$*"; }
-_ok()   { printf '\033[1;32m[OK]\033[0m    %s\n' "$*"; }
+_ok() { printf '\033[1;32m[OK]\033[0m    %s\n' "$*"; }
 _warn() { printf '\033[1;33m[WARN]\033[0m  %s\n' "$*"; }
 
 # ============================================================================
@@ -92,7 +92,7 @@ if [[ -f "${KNOWN_RUNTIME_FILE}" ]]; then
     _line="${_line#"${_line%%[![:space:]]*}"}"
     _line="${_line%"${_line##*[![:space:]]}"}"
     [[ -n "${_line}" ]] && _KNOWN_RUNTIME+=("${_line}")
-  done < "${KNOWN_RUNTIME_FILE}"
+  done <"${KNOWN_RUNTIME_FILE}"
 else
   _warn "known-runtime.txt not found at ${KNOWN_RUNTIME_FILE}"
 fi
@@ -156,7 +156,7 @@ _append_known_runtime_entry() {
           print
         }
         END { flush_if_needed() }
-      ' "${KNOWN_RUNTIME_FILE}" > "${KNOWN_RUNTIME_FILE}.tmp" \
+      ' "${KNOWN_RUNTIME_FILE}" >"${KNOWN_RUNTIME_FILE}.tmp" \
       && mv "${KNOWN_RUNTIME_FILE}.tmp" "${KNOWN_RUNTIME_FILE}"; then
       return 0
     else
@@ -171,7 +171,7 @@ _append_known_runtime_entry() {
     {
       printf '\n%s\n' "${header}"
       printf '%s\n' "${name}"
-    } >> "${KNOWN_RUNTIME_FILE}" || return 1
+    } >>"${KNOWN_RUNTIME_FILE}" || return 1
   fi
 }
 
@@ -199,12 +199,12 @@ runtime_count=0
 unknown_count=0
 unknown_items=()
 
-for entry in "${DEPLOY_DIR}"/*  "${DEPLOY_DIR}"/.*; do
+for entry in "${DEPLOY_DIR}"/* "${DEPLOY_DIR}"/.*; do
   basename="$(basename "${entry}")"
 
   # Skip . and ..
   case "${basename}" in
-    .|..) continue ;;
+    . | ..) continue ;;
     *) ;;
   esac
 

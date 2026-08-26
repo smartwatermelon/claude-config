@@ -45,16 +45,16 @@ check() {
 echo "=== api-merge command-position tests ==="
 
 # --- must BLOCK: the tool is actually invoked ---
-check "plain REST merge"                2 "gh api -X PUT repos/o/r/${EP}"
-check "REST merge with --method"        2 "gh api repos/o/r/${EP} --method PUT"
-check "chained after &&"                2 "echo x && gh api repos/o/r/${EP}"
-check "chained after a semicolon"       2 "cd /x ; gh api repos/o/r/${EP}"
-check "after a pipe"                    2 "true | gh api repos/o/r/${EP}"
-check "command substitution executes"   2 "echo \$(gh api repos/o/r/${EP})"
+check "plain REST merge" 2 "gh api -X PUT repos/o/r/${EP}"
+check "REST merge with --method" 2 "gh api repos/o/r/${EP} --method PUT"
+check "chained after &&" 2 "echo x && gh api repos/o/r/${EP}"
+check "chained after a semicolon" 2 "cd /x ; gh api repos/o/r/${EP}"
+check "after a pipe" 2 "true | gh api repos/o/r/${EP}"
+check "command substitution executes" 2 "echo \$(gh api repos/o/r/${EP})"
 
 # --- must ALLOW: already-legitimate usage ---
-check "the sanctioned merge path"       0 "gh pr merge 123 --squash --delete-branch"
-check "an unrelated api read"           0 "gh api repos/o/r/pulls/1"
+check "the sanctioned merge path" 0 "gh pr merge 123 --squash --delete-branch"
+check "an unrelated api read" 0 "gh api repos/o/r/pulls/1"
 
 # --- #405 case C: the endpoint appears in QUOTED text, not as a command ---
 check "endpoint written into a fixture file" \
