@@ -323,7 +323,18 @@ block() {
 # substitution (SC2016), and disable directives are not permitted here.
 bt=$(printf '\140')
 readonly bt
-worktree_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do)[[:space:]]*((env|command|sudo)[[:space:]]+)*([^[:space:]|;&(){${bt}]*/)?git[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&${bt}[:space:]]*[[:space:]]+)?)*worktree([[:space:]]+[^|;&){${bt}]*)?"
+# A global option's value may be QUOTED and contain spaces --
+# `git -c "user.name=First Last" worktree add /tmp/evil`. The bare-token
+# alternative stops at the first space, so the pattern then required `worktree`
+# where `Last"` actually sits, did not match, and the command skipped
+# path_in_scope() entirely: unscoped creation went through unblocked. The two
+# quoted alternatives below close that. Note this is an ordinary shape a person
+# writes, not a crafted bypass -- the deliberate bypasses remain as documented
+# above. See claude-config#430, and #429 for the same fix in
+# hook-block-main-commit.sh, from which this pattern was derived.
+_optval="(\"[^\"]*\"[[:space:]]+|'[^']*'[[:space:]]+|[^-][^|;&${bt}[:space:]]*[[:space:]]+)?"
+readonly _optval
+worktree_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do)[[:space:]]*((env|command|sudo)[[:space:]]+)*([^[:space:]|;&(){${bt}]*/)?git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*worktree([[:space:]]+[^|;&){${bt}]*)?"
 
 mapfile -t matches < <(printf '%s\n' "${cmd}" | grep -oE "${worktree_re}" || true)
 

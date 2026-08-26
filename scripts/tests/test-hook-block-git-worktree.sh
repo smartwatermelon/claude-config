@@ -435,6 +435,31 @@ check_unwritable_log_allows() {
 inp="$(make_input 'git worktree remove /tmp/peer-agent-wt')"
 check_unwritable_log_allows "unwritable audit log still allows the remove" "${inp}"
 
+# --- Quoted values on global options (claude-config#430) ---
+#
+# A global option's value may be quoted and contain spaces. The bare-token
+# arm of the option matcher stops at the first space, so the pattern used to
+# look for `worktree` where the tail of the quoted value actually sat, fail to
+# match, and let the command skip path_in_scope() entirely -- unscoped
+# creation went through unblocked.
+#
+# These are the load-bearing direction: the failure mode is SILENT, an
+# unscoped worktree simply gets created and nothing reports it. The in-scope
+# case is pinned alongside them so the fix cannot be "block everything with a
+# quote in it", which would be a regression of its own.
+inp="$(make_input 'git -c "user.name=First Last" worktree add /tmp/evil')"
+check "double-quoted option value, unscoped creation" 2 "${inp}"
+inp="$(make_input "git -c 'user.name=First Last' worktree add /tmp/evil")"
+check "single-quoted option value, unscoped creation" 2 "${inp}"
+inp="$(make_input 'git -c "user.name=First Last" worktree add .claude/worktrees/agent-1')"
+check "double-quoted option value, in-scope creation still allowed" 0 "${inp}"
+inp="$(make_input 'git -c "user.name=First Last" worktree move /tmp/a /tmp/b')"
+check "double-quoted option value, administrative subcommand" 2 "${inp}"
+inp="$(make_input 'git -c "a=1 2" -c "b=3 4" worktree add /tmp/evil')"
+check "two quoted option values, unscoped creation" 2 "${inp}"
+inp="$(make_input 'git -c "user.name=First Last" -C /some/repo worktree add /tmp/evil')"
+check "quoted option value alongside -C, unscoped creation" 2 "${inp}"
+
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]
