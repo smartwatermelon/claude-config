@@ -44,17 +44,17 @@ check() {
 echo "=== short bypass-flag scope tests ==="
 
 # --- must BLOCK: the flag is an argument of the git command ---
-check "flag after the verb"            2 "git commit ${N} -m x"
+check "flag after the verb" 2 "git commit ${N} -m x"
 check "flag at end of the argument run" 2 "git commit -m x ${N}"
-check "push"                            2 "git push ${N} origin main"
-check "chained after another command"   2 "echo hi && git commit ${N} -m x"
-check "chained after a semicolon"       2 "cd /x ; git commit ${N} -m x"
-check "push with an interposed flag"    2 "git push --tags ${N}"
+check "push" 2 "git push ${N} origin main"
+check "chained after another command" 2 "echo hi && git commit ${N} -m x"
+check "chained after a semicolon" 2 "cd /x ; git commit ${N} -m x"
+check "push with an interposed flag" 2 "git push --tags ${N}"
 
 # --- must ALLOW: the flag belongs to something else ---
-check "unrelated tool flag"             0 "jq ${N} --arg a b '{}'"
-check "grep flag, no git at all"        0 "grep ${N} pattern file"
-check "plain commit, no flag"           0 "git commit -m x"
+check "unrelated tool flag" 0 "jq ${N} --arg a b '{}'"
+check "grep flag, no git at all" 0 "grep ${N} pattern file"
+check "plain commit, no flag" 0 "git commit -m x"
 
 # --- #405: the false positive this suite exists for ---
 # The flag appears in PROSE, and a git command appears separately. The old

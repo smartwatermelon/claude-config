@@ -2,7 +2,10 @@
 
 # Re-exec under bash if invoked as "sh install.sh"
 if [ -z "${BASH_VERSION:-}" ]; then
-  exec bash "$0" "$@" || { echo "Error: bash is required but not found in PATH" >&2; exit 1; }
+  exec bash "$0" "$@" || {
+    echo "Error: bash is required but not found in PATH" >&2
+    exit 1
+  }
 fi
 
 set -euo pipefail
@@ -15,9 +18,9 @@ unset CDPATH
 
 # ── Formatting helpers ───────────────────────────────────
 _info() { printf '\033[1;34m[INFO]\033[0m  %s\n' "$*"; }
-_ok()   { printf '\033[1;32m[OK]\033[0m    %s\n' "$*"; }
+_ok() { printf '\033[1;32m[OK]\033[0m    %s\n' "$*"; }
 _warn() { printf '\033[1;33m[WARN]\033[0m  %s\n' "$*"; }
-_err()  { printf '\033[1;31m[ERR]\033[0m   %s\n' "$*" >&2; }
+_err() { printf '\033[1;31m[ERR]\033[0m   %s\n' "$*" >&2; }
 _skip() {
   printf '\033[0;90m[SKIP]\033[0m  %s\n' "$*"
   skipped+=("$*")
@@ -46,8 +49,8 @@ SYNC_ONLY=false
 for arg in "$@"; do
   case "${arg}" in
     --dry-run) DRY_RUN=true ;;
-    --repair)  REPAIR_ONLY=true ;;
-    --sync)    SYNC_ONLY=true ;;
+    --repair) REPAIR_ONLY=true ;;
+    --sync) SYNC_ONLY=true ;;
     --help)
       echo "Usage: install.sh [--dry-run] [--repair] [--sync] [--help]"
       echo ""
@@ -316,51 +319,51 @@ if [[ "${DRY_RUN}" == true ]]; then
   _dry "Would run smoke tests (skipped in dry-run mode)"
 else
 
-# Key files must be symlinks
-for key_file in settings.json CLAUDE.md; do
-  link="${DEPLOY_DIR}/${key_file}"
-  if [[ -L "${link}" ]]; then
-    if [[ -e "${link}" ]]; then
-      _ok "Symlink resolves: ${link}"
-    else
-      _warn "Broken symlink: ${link}"
-      failures+=("broken-symlink:${key_file}")
-    fi
-  elif [[ -e "${link}" ]]; then
-    _warn "Not a symlink (expected symlink): ${link}"
-    failures+=("not-symlink:${key_file}")
-  else
-    _warn "Missing: ${link}"
-    failures+=("missing:${key_file}")
-  fi
-done
-
-# Hook scripts must be symlinks and executable
-for file in "${_TRACKED_FILES[@]}"; do
-  case "${file}" in
-    hooks/*.sh)
-      _is_excluded "${file}" && continue
-      link="${DEPLOY_DIR}/${file}"
-      if [[ -L "${link}" ]]; then
-        if [[ ! -e "${link}" ]]; then
-          _warn "Broken hook symlink: ${link}"
-          failures+=("broken-hook:${file}")
-        elif [[ ! -x "${link}" ]]; then
-          _warn "Hook not executable: ${link}"
-          failures+=("not-executable:${file}")
-        else
-          _ok "Hook symlink OK: ${file}"
-        fi
-      elif [[ -e "${link}" ]]; then
-        _warn "Hook not a symlink: ${link}"
-        failures+=("not-symlink:${file}")
+  # Key files must be symlinks
+  for key_file in settings.json CLAUDE.md; do
+    link="${DEPLOY_DIR}/${key_file}"
+    if [[ -L "${link}" ]]; then
+      if [[ -e "${link}" ]]; then
+        _ok "Symlink resolves: ${link}"
+      else
+        _warn "Broken symlink: ${link}"
+        failures+=("broken-symlink:${key_file}")
       fi
-      ;;
-    *) ;;
-  esac
-done
+    elif [[ -e "${link}" ]]; then
+      _warn "Not a symlink (expected symlink): ${link}"
+      failures+=("not-symlink:${key_file}")
+    else
+      _warn "Missing: ${link}"
+      failures+=("missing:${key_file}")
+    fi
+  done
 
-fi  # end dry-run skip for smoke tests
+  # Hook scripts must be symlinks and executable
+  for file in "${_TRACKED_FILES[@]}"; do
+    case "${file}" in
+      hooks/*.sh)
+        _is_excluded "${file}" && continue
+        link="${DEPLOY_DIR}/${file}"
+        if [[ -L "${link}" ]]; then
+          if [[ ! -e "${link}" ]]; then
+            _warn "Broken hook symlink: ${link}"
+            failures+=("broken-hook:${file}")
+          elif [[ ! -x "${link}" ]]; then
+            _warn "Hook not executable: ${link}"
+            failures+=("not-executable:${file}")
+          else
+            _ok "Hook symlink OK: ${file}"
+          fi
+        elif [[ -e "${link}" ]]; then
+          _warn "Hook not a symlink: ${link}"
+          failures+=("not-symlink:${file}")
+        fi
+        ;;
+      *) ;;
+    esac
+  done
+
+fi # end dry-run skip for smoke tests
 
 # Full symlink health check — verify all non-excluded deploy paths
 if [[ "${DRY_RUN}" == true ]]; then
@@ -479,7 +482,7 @@ else
     fi
   done
 
-fi  # end REPO_DIR != DEPLOY_DIR guard
+fi # end REPO_DIR != DEPLOY_DIR guard
 
 # ============================================================================
 # 9. SUMMARY

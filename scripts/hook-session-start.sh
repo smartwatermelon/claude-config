@@ -31,9 +31,9 @@ PENDING_DIR="${PENDING_ISSUES_DIR:-${HOME}/.claude/pending-issues}"
 # Each stage gets `|| true` so a find failure (unreadable dir) yields 0
 # rather than masking a non-zero status mid-pipeline.
 pending_count=$(
-  { find "${PENDING_DIR}" -maxdepth 1 -name '*.md' -type f -print 2>/dev/null || true; } |
-    { wc -l || true; } |
-    { tr -d ' ' || true; }
+  { find "${PENDING_DIR}" -maxdepth 1 -name '*.md' -type f -print 2>/dev/null || true; } \
+    | { wc -l || true; } \
+    | { tr -d ' ' || true; }
 )
 
 [[ "${pending_count}" -gt 0 ]] || exit 0

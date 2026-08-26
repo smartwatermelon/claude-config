@@ -1,10 +1,64 @@
-# Minimal local pre-commit config for the .claude repo.
-# The global config (~/.config/pre-commit/config.yaml) runs hooks like black, flake8,
-# prettier, and markdownlint via the pre-commit framework, which calls git write-tree
-# inside its staged_files_only context manager. This conflicts with the index.lock held
-# by git commit itself, causing "fatal: Unable to create .git/index.lock: File exists".
+# Repo-local pre-commit config for claude-config.
 #
-# Since none of those formatters apply to this repo's bash scripts, an empty repos list
-# is correct. The AI code review (run-review.sh) runs as a separate step in the same
-# pre-commit hook and is NOT affected by this config.
-repos: []
+# WHY THIS FILE IS NOT EMPTY (it was `repos: []` until 2026-08-26):
+#   The previous version disabled every hook, reasoning that "none of those
+#   formatters apply to this repo's bash scripts". That was wrong: the global
+#   config's shell-lint-fix hook (shellcheck + shfmt via lint-shell.sh) applies
+#   directly, and this repo is almost entirely bash. The net effect was that the
+#   repo hosting the review tooling ran no automatic shellcheck at all, while its
+#   own AI reviewer filed issues for defects (missing traps, `local` misuse,
+#   quoting) that shellcheck catches deterministically and for free.
+#
+# WHY IT IS STILL LOCAL RATHER THAN DELETED:
+#   The global config also runs black, flake8, prettier, markdownlint and
+#   yamllint. Those are not wanted here. A local config is how this repo opts
+#   into the shell hook alone.
+#
+# ON THE index.lock CONFLICT the old comment described:
+#   The failure is real but is NOT caused by running hooks during a commit.
+#   `pre-commit run` uses a staged_files_only context manager that calls
+#   `git write-tree`; that fails only when something else already holds
+#   .git/index.lock. Verified 2026-08-26 in a scratch repo: the stash/restore
+#   path runs cleanly with unstaged changes present, and reproduces the
+#   "fatal: Unable to create ... index.lock: File exists" error only when a
+#   lock file is held artificially. Re-enabling this hook does not reintroduce it.
+#
+# The AI code review (run-review.sh) runs as a separate step in the same git
+# pre-commit hook and is unaffected by this config.
+
+repos:
+  # Shell linting and formatting, via the same global script the fleet uses.
+  # Kept byte-identical to the global config's hook definition
+  # (dotfiles/pre-commit/config.yaml) apart from the exclude below, so the two
+  # cannot drift in behaviour.
+  - repo: local
+    hooks:
+      - id: shell-lint-fix
+        name: Shell Scripts Lint & Auto-Fix with Summary
+        entry: bash -c '$HOME/.config/git/hooks/lint-shell.sh "$@"' --
+        language: system
+        types: [shell]
+        pass_filenames: true
+        verbose: true
+        # Two exclusions, both verified necessary on 2026-08-26 by running
+        # `pre-commit run --all-files` against this repo:
+        #
+        # 1. scripts/hook-check-commit-message.sh is Python, not shell. It carries
+        #    a .sh extension for historical reasons and is referenced by that name
+        #    from hook-block-all.sh, hook-block-short-no-verify.sh, and its own
+        #    test. pre-commit's `identify` tags it `shell` from the extension
+        #    alone, so without this exclude shellcheck fails it with SC1071
+        #    ("only supports sh/bash/dash/ksh") on every commit touching it.
+        #    Renaming the file is the real fix; it is left for a change that can
+        #    update all three references at once.
+        #
+        # 2. tests/*.bats are tagged `shell` but are bats, not bash. bats injects
+        #    BATS_TEST_DIRNAME, BATS_TMPDIR and friends at runtime, so shellcheck
+        #    reports them as SC2154 "referenced but not assigned" — false
+        #    positives on every bats file. The bats suites are the tests; they are
+        #    exercised by running them, not by linting them as plain shell.
+        exclude: |
+          (?x)^(
+            scripts/hook-check-commit-message\.sh
+            |.*\.bats
+          )$
