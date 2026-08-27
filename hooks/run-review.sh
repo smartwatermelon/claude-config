@@ -212,9 +212,15 @@ parse_verdict() {
 # Deliberately a substring match, matching the previous behavior: prose such as
 # "this is not a SEVERITY: BLOCKING issue" still matches. That fails closed
 # (blocks a commit that might have passed), which is the safe direction for a
-# gate, and it is unchanged from the literal grep this replaces. Note that
-# "SEVERITY: NON_BLOCKING_ISSUE" does not match: `_` is stripped, and the
-# pattern requires BLOCKING to follow the colon directly.
+# gate, and it is unchanged from the literal grep this replaces.
+#
+# "SEVERITY: NON_BLOCKING_ISSUE" does not match, but only because `_` is
+# stripped to leave NONBLOCKING and the pattern requires BLOCKING to follow
+# the colon directly. That is a consequence of two transforms, not an explicit
+# exclusion: a future severity token spelled without underscores (a bare
+# "NON BLOCKING") would match and wrongly block. Add an explicit exclusion
+# here if such a token is ever introduced; tests/test_has_blocking_severity.bats
+# pins the current behavior.
 has_blocking_severity() {
   printf '%s\n' "$1" | tr -d '*`_' | grep -qiE 'SEVERITY:[[:space:]]*BLOCKING'
 }
