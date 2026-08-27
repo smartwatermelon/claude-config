@@ -40,6 +40,13 @@
 #   37-39. Severity gates tolerate markdown emphasis, case, and spacing, so a
 #       bolded or lowercased BLOCKING no longer slips the gate; a WARNING-only
 #       FAIL still does not block
+#   40-47. Structured output is the decision channel (claude-config#443): a
+#       schema-constrained boolean decides, with #442's prose matcher as the
+#       fallback when the reviewer did not answer one. Test 42 is the fail-open
+#       guard — an absent structured_output must NOT read as "no blocking
+#       issues"; 43/44 reject null and the string "false"; 45 keeps a timeout
+#       non-blocking (#172); 46 degrades to prose for an older CLI; 47 keeps
+#       the transport marker out of human-facing output
 
 set -euo pipefail
 
@@ -72,6 +79,20 @@ assert_contains() {
     echo "        in log (first 10 lines):"
     echo "${haystack}" | head -10 | sed 's/^/          /'
     ((FAIL += 1))
+  fi
+}
+
+assert_not_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if echo "${haystack}" | grep -qF -- "${needle}"; then
+    echo "  FAIL: ${desc}"
+    echo "        expected NOT to find: ${needle}"
+    echo "        in log (first 10 lines):"
+    echo "${haystack}" | head -10 | sed 's/^/          /'
+    ((FAIL += 1))
+  else
+    echo "  PASS: ${desc}"
+    ((PASS += 1))
   fi
 }
 
@@ -138,17 +159,65 @@ stage_large_change() {
 # configured to exit nonzero would still pass preflight (preflight tolerates
 # non-124 exits) but a mock that sleeps — like Test 5's inline sleep mock —
 # would hit the 5s timeout and kill the whole test run.
+# run-review.sh invokes the CLI with --output-format json --json-schema
+# (claude-config#443), so the mock must speak that envelope: the reviewer prose
+# in `.result`, the schema-constrained decision in `.structured_output`.
+#
+# The envelope is DERIVED from the text argument rather than demanded from each
+# of the ~40 call sites: the text goes into .result verbatim, and .blocking is
+# inferred from whether that text declares a BLOCKING severity — i.e. the mock
+# reproduces the same decision the old prose path produced. Existing call sites
+# therefore keep working unchanged while now exercising the structured channel.
+#
+# $4 (optional) overrides the derived structured_output, so a test can pin an
+# exact shape: a raw JSON object, or the literal "none" to emit an envelope
+# with NO structured_output key at all (the fail-open case), or "raw" to emit
+# the text with no JSON envelope whatsoever (an older CLI).
 make_mock_claude() {
-  local mock_dir="$1" exit_code="$2" output="$3"
+  local mock_dir="$1" exit_code="$2" output="$3" structured="${4:-}"
   mkdir -p "${mock_dir}"
   printf '%s\n' "${output}" >"${mock_dir}/output.txt"
+
+  if [[ "${structured}" == "raw" ]]; then
+    # No envelope: exercises the degrade-to-prose path.
+    cp "${mock_dir}/output.txt" "${mock_dir}/envelope.json"
+  elif [[ -z "${output}" && -z "${structured}" ]]; then
+    # Empty output stays empty — that is what a timeout or a crashed CLI
+    # actually produces, and run-review.sh normalises it into a synthetic
+    # transient verdict. Wrapping it in an envelope would misrepresent it.
+    : >"${mock_dir}/envelope.json"
+  else
+    local _so
+    case "${structured}" in
+      "")
+        # Derive: BLOCKING in the prose => blocking true.
+        if printf '%s\n' "${output}" | tr -d '*`_' | grep -qiE 'SEVERITY:[[:space:]]*BLOCKING'; then
+          _so='{"verdict":"FAIL","blocking":true,"findings":[]}'
+        else
+          _so='{"verdict":"PASS","blocking":false,"findings":[]}'
+        fi
+        ;;
+      none) _so="" ;;
+      *) _so="${structured}" ;;
+    esac
+    if [[ -n "${_so}" ]]; then
+      jq -n --rawfile r "${mock_dir}/output.txt" --argjson so "${_so}" \
+        '{type:"result",subtype:"success",is_error:false,result:$r,structured_output:$so}' \
+        >"${mock_dir}/envelope.json"
+    else
+      jq -n --rawfile r "${mock_dir}/output.txt" \
+        '{type:"result",subtype:"success",is_error:false,result:$r}' \
+        >"${mock_dir}/envelope.json"
+    fi
+  fi
+
   cat >"${mock_dir}/claude" <<EOF
 #!/usr/bin/env bash
 if [[ "\$1" == "--version" ]]; then
   echo "mock-claude 0.0.0-test"
   exit 0
 fi
-cat "${mock_dir}/output.txt"
+cat "${mock_dir}/envelope.json"
 exit ${exit_code}
 EOF
   chmod +x "${mock_dir}/claude"
@@ -447,7 +516,12 @@ MOCK6_DIR="${TMPDIR_TEST}/mock6"
 # Single-quoted here to prevent shell expansion of the double-quotes
 make_mock_claude "${MOCK6_DIR}" 0 'VERDICT: FAIL (agent error: "timeout")'
 
-mock6_out="$("${MOCK6_DIR}/claude" 2>/dev/null || true)"
+# The mock now emits an --output-format json envelope (claude-config#443), so
+# the prose lives in .result with its quotes JSON-escaped. The property under
+# test is unchanged — embedded double-quotes must survive the mock intact — but
+# it is now asserted after unwrapping, which additionally proves the envelope
+# is well-formed JSON rather than a broken concatenation.
+mock6_out="$("${MOCK6_DIR}/claude" 2>/dev/null | jq -r '.result' || true)"
 
 assert_contains \
   "mock correctly outputs string with embedded double-quotes" \
@@ -666,11 +740,43 @@ assert_contains \
 # The single-pass path calls: --agent "<agent_name>" ... so $2 is the agent
 # name. Used to test the code-reviewer / adversarial-reviewer asymmetry
 # fixed in issue #199.
+# Per-agent variant of make_mock_claude. Same --output-format json envelope
+# (claude-config#443) and the same derive-from-prose rule, applied to each of
+# the two reviewers independently so existing call sites keep working.
+#
+# $4/$5 optionally override the code-reviewer / adversarial structured_output:
+# a raw JSON object, or "none" for an envelope with NO structured_output key.
 make_mock_claude_by_agent() {
   local mock_dir="$1" cr_output="$2" ar_output="$3"
+  local cr_structured="${4:-}" ar_structured="${5:-}"
   mkdir -p "${mock_dir}"
-  printf '%s\n' "${cr_output}" >"${mock_dir}/cr_output.txt"
-  printf '%s\n' "${ar_output}" >"${mock_dir}/ar_output.txt"
+
+  _mock_envelope() {
+    local _text="$1" _override="$2" _dest="$3" _so
+    printf '%s\n' "${_text}" >"${_dest}.txt"
+    case "${_override}" in
+      "")
+        if printf '%s\n' "${_text}" | tr -d '*`_' | grep -qiE 'SEVERITY:[[:space:]]*BLOCKING'; then
+          _so='{"verdict":"FAIL","blocking":true,"findings":[]}'
+        else
+          _so='{"verdict":"PASS","blocking":false,"findings":[]}'
+        fi
+        ;;
+      none) _so="" ;;
+      *) _so="${_override}" ;;
+    esac
+    if [[ -n "${_so}" ]]; then
+      jq -n --rawfile r "${_dest}.txt" --argjson so "${_so}" \
+        '{type:"result",subtype:"success",is_error:false,result:$r,structured_output:$so}' >"${_dest}"
+    else
+      jq -n --rawfile r "${_dest}.txt" \
+        '{type:"result",subtype:"success",is_error:false,result:$r}' >"${_dest}"
+    fi
+  }
+  _mock_envelope "${cr_output}" "${cr_structured}" "${mock_dir}/cr_output.json"
+  _mock_envelope "${ar_output}" "${ar_structured}" "${mock_dir}/ar_output.json"
+  unset -f _mock_envelope
+
   cat >"${mock_dir}/claude" <<EOF
 #!/usr/bin/env bash
 if [[ "\$1" == "--version" ]]; then
@@ -678,9 +784,9 @@ if [[ "\$1" == "--version" ]]; then
   exit 0
 fi
 if [[ "\$2" == *adversarial* ]]; then
-  cat "${mock_dir}/ar_output.txt"
+  cat "${mock_dir}/ar_output.json"
 else
-  cat "${mock_dir}/cr_output.txt"
+  cat "${mock_dir}/cr_output.json"
 fi
 exit 0
 EOF
@@ -2201,6 +2307,355 @@ assert_eq \
   "markdown-bolded WARNING does not block commit (exit 0)" \
   "0" \
   "${exit_t39}"
+
+# =========================================================
+# TESTS 40-46: structured output is the decision channel (claude-config#443)
+#
+# The reviewer's blocking/non-blocking call is a boolean, returned in
+# `.structured_output.blocking` under --output-format json --json-schema.
+# The prose is still produced and still consumed (DETAILS, issue filing,
+# arbiter input, logs) — structured output ADDS a decision channel.
+#
+# The trap these tests exist to pin: `jq -e '.structured_output.blocking'`
+# exits 1 for blocking=false, for the key being absent, AND for null. That
+# collapses "the reviewer said it is fine" into "the reviewer never answered",
+# which is a silent fail-open on the exact gate the pipeline exists to be.
+# Test 42 is the one that catches it.
+# =========================================================
+echo ""
+echo "=== Test 40: structured blocking=true blocks the commit ==="
+
+setup_repo
+stage_small_change
+
+MOCK40_DIR="${TMPDIR_TEST}/mock40"
+# Prose deliberately carries NO "SEVERITY: BLOCKING" line. has_blocking_severity
+# would therefore pass this. Only the structured boolean can block it, so a
+# rejection here proves the structured channel is genuinely wired and load-
+# bearing rather than shadowed by the prose matcher.
+# Both reviewers agree, so the arbiter never engages and this test measures
+# only the gate. (An adversarial PASS against a code-reviewer block routes
+# through arbitration instead, which is a different code path — Test 48.)
+make_mock_claude_by_agent "${MOCK40_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Unchecked index
+LOCATION: foo.sh:2
+DETAILS: The loop can read past the end." \
+  "VERDICT: FAIL
+
+ISSUE: Unchecked index
+LOCATION: foo.sh:2
+DETAILS: The loop can read past the end." \
+  '{"verdict":"FAIL","blocking":true,"findings":[]}' \
+  '{"verdict":"FAIL","blocking":true,"findings":[]}'
+
+TEST40_LOG="${TMPDIR_TEST}/test40-review.log"
+rm -f "${TEST40_LOG}"
+
+exit_t40=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST40_LOG}" CLAUDE_CLI="${MOCK40_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t40=$?
+cd - >/dev/null
+
+assert_eq \
+  "structured blocking=true blocks even with no SEVERITY line in the prose" \
+  "1" \
+  "${exit_t40}"
+
+# =========================================================
+echo ""
+echo "=== Test 41: structured blocking=false passes the commit ==="
+
+setup_repo
+stage_small_change
+
+MOCK41_DIR="${TMPDIR_TEST}/mock41"
+# The mirror of Test 40. The prose DOES say SEVERITY: BLOCKING — inside a
+# sentence disclaiming it — so has_blocking_severity's deliberate substring
+# match would block. The reviewer answered blocking=false, and a reviewer that
+# answered is not second-guessed by a grep over its own explanation. That is
+# the substring false-positive class #443 names, fixed rather than tolerated.
+make_mock_claude_by_agent "${MOCK41_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Style nit
+LOCATION: foo.sh:2
+DETAILS: To be clear this is not a SEVERITY: BLOCKING issue, only a nit." \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  '{"verdict":"FAIL","blocking":false,"findings":[]}' \
+  '{"verdict":"PASS","blocking":false,"findings":[]}'
+
+TEST41_LOG="${TMPDIR_TEST}/test41-review.log"
+rm -f "${TEST41_LOG}"
+
+exit_t41=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST41_LOG}" CLAUDE_CLI="${MOCK41_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t41=$?
+cd - >/dev/null
+
+assert_eq \
+  "structured blocking=false passes despite a disclaimed SEVERITY string" \
+  "0" \
+  "${exit_t41}"
+
+# =========================================================
+# TEST 42: THE FAIL-OPEN TEST.
+#
+# The single most important test in this group. The envelope is well-formed
+# and `.result` is present, but there is NO `.structured_output` key at all —
+# an older CLI, a truncated response, a model that returned prose instead of
+# a tool call. The reviewer did NOT answer the boolean.
+#
+# A naive `jq -e '.structured_output.blocking'` exits 1 here, exactly as it
+# does for a legitimate blocking=false, and the commit sails through. It must
+# not. Absent structured output means NO USABLE ANSWER, and the gate must fall
+# back to the prose matcher — which here finds SEVERITY: BLOCKING and blocks.
+# =========================================================
+echo ""
+echo "=== Test 42: missing .structured_output does NOT silently pass ==="
+
+setup_repo
+stage_small_change
+
+MOCK42_DIR="${TMPDIR_TEST}/mock42"
+# Both reviewers return an envelope with NO structured_output key, and both
+# agree on the finding, so the arbiter never engages and the assertion is
+# purely about the missing-key branch.
+make_mock_claude_by_agent "${MOCK42_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Command injection via unquoted expansion
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: The variable is expanded into a shell command unquoted." \
+  "VERDICT: FAIL
+
+ISSUE: Command injection via unquoted expansion
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: The variable is expanded into a shell command unquoted." \
+  "none" \
+  "none"
+
+TEST42_LOG="${TMPDIR_TEST}/test42-review.log"
+rm -f "${TEST42_LOG}"
+
+exit_t42=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST42_LOG}" CLAUDE_CLI="${MOCK42_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t42=$?
+cd - >/dev/null
+
+assert_eq \
+  "FAIL-OPEN GUARD: absent structured_output falls back to prose and still blocks" \
+  "1" \
+  "${exit_t42}"
+
+# =========================================================
+# TEST 43: blocking:null is rejected, not trusted.
+#
+# null is not a boolean. It is a malformed answer, not a "no". It must land in
+# the same no-usable-answer branch as an absent key.
+# =========================================================
+echo ""
+echo "=== Test 43: blocking:null is rejected, not read as false ==="
+
+setup_repo
+stage_small_change
+
+MOCK43_DIR="${TMPDIR_TEST}/mock43"
+# Both reviewers return blocking:null, and both agree on the finding, so the
+# arbiter never engages and the assertion is purely about the null branch.
+make_mock_claude_by_agent "${MOCK43_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Unsafe eval of reviewer-supplied text
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Input reaches eval without validation." \
+  "VERDICT: FAIL
+
+ISSUE: Unsafe eval of reviewer-supplied text
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Input reaches eval without validation." \
+  '{"verdict":"FAIL","blocking":null,"findings":[]}' \
+  '{"verdict":"FAIL","blocking":null,"findings":[]}'
+
+TEST43_LOG="${TMPDIR_TEST}/test43-review.log"
+rm -f "${TEST43_LOG}"
+
+exit_t43=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST43_LOG}" CLAUDE_CLI="${MOCK43_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t43=$?
+cd - >/dev/null
+
+assert_eq \
+  "blocking:null is not a boolean — falls back to prose and blocks" \
+  "1" \
+  "${exit_t43}"
+
+# =========================================================
+# TEST 44: the STRING "false" is rejected, not trusted.
+#
+# The mirror hazard. In jq the string "false" is TRUTHY, so a naive truthiness
+# read turns a type slip into a hard block on everything. Requiring a real
+# JSON boolean rejects it as no-usable-answer instead, and the prose decides.
+# Here the prose is WARNING-only, so the correct outcome is a PASS — proving
+# the string was neither trusted as false NOR mistaken for true.
+# =========================================================
+echo ""
+echo "=== Test 44: string \"false\" is rejected as a non-boolean ==="
+
+setup_repo
+stage_small_change
+
+MOCK44_DIR="${TMPDIR_TEST}/mock44"
+make_mock_claude_by_agent "${MOCK44_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Missing rationale comment
+SEVERITY: WARNING
+LOCATION: foo.sh:2
+DETAILS: Explain why this line is here." \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  '{"verdict":"FAIL","blocking":"false","findings":[]}' \
+  '{"verdict":"PASS","blocking":false,"findings":[]}'
+
+TEST44_LOG="${TMPDIR_TEST}/test44-review.log"
+rm -f "${TEST44_LOG}"
+
+exit_t44=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST44_LOG}" CLAUDE_CLI="${MOCK44_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t44=$?
+cd - >/dev/null
+
+assert_eq \
+  "string \"false\" is not trusted as a boolean; WARNING-only prose passes" \
+  "0" \
+  "${exit_t44}"
+
+# =========================================================
+# TEST 45: a timeout stays NON-blocking (issues #172, #199).
+#
+# `timeout` killing the CLI yields exit 124 and zero bytes — not a JSON
+# envelope, not prose. invoke_agent turns that into a synthetic
+# "VERDICT: FAIL (timeout)" carrying no structured decision and no SEVERITY
+# line. The strict extractor must not convert an infrastructure failure into
+# a hard block: an unreachable reviewer is not a blocking finding.
+# =========================================================
+echo ""
+echo "=== Test 45: timeout (exit 124, zero bytes) stays non-blocking ==="
+
+setup_repo
+stage_small_change
+
+MOCK45_DIR="${TMPDIR_TEST}/mock45"
+mkdir -p "${MOCK45_DIR}"
+cat >"${MOCK45_DIR}/claude" <<'MOCK45EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+# Exactly what `timeout` produces when it kills the CLI: no stdout, exit 124.
+exit 124
+MOCK45EOF
+chmod +x "${MOCK45_DIR}/claude"
+
+TEST45_LOG="${TMPDIR_TEST}/test45-review.log"
+rm -f "${TEST45_LOG}"
+
+exit_t45=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST45_LOG}" CLAUDE_CLI="${MOCK45_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t45=$?
+cd - >/dev/null
+
+assert_eq \
+  "timeout with zero bytes does not become a hard block (issue #172)" \
+  "0" \
+  "${exit_t45}"
+
+# =========================================================
+# TEST 46: a non-JSON response degrades to the prose path.
+#
+# An older CLI that does not understand --json-schema returns bare prose. The
+# script must not discard it as unparseable; it must review on the prose, with
+# has_blocking_severity() as the gate — which is why #442's matcher is kept
+# rather than reverted. Here the prose is BLOCKING, so the commit is rejected.
+# =========================================================
+echo ""
+echo "=== Test 46: non-JSON (older CLI) degrades to the prose gate ==="
+
+setup_repo
+stage_small_change
+
+MOCK46_DIR="${TMPDIR_TEST}/mock46"
+make_mock_claude "${MOCK46_DIR}" 0 "VERDICT: FAIL
+
+ISSUE: Secret written to a world-readable path
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: The token lands in a file with mode 0644." "raw"
+
+TEST46_LOG="${TMPDIR_TEST}/test46-review.log"
+rm -f "${TEST46_LOG}"
+
+exit_t46=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST46_LOG}" CLAUDE_CLI="${MOCK46_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t46=$?
+cd - >/dev/null
+
+assert_eq \
+  "bare prose from an older CLI still reaches has_blocking_severity and blocks" \
+  "1" \
+  "${exit_t46}"
+
+# =========================================================
+# TEST 47: the sentinel never reaches the human-facing log.
+#
+# The structured decision travels to the gates as a leading marker line on the
+# prose, because every caller captures invoke_agent by command substitution.
+# That is machinery. It must be stripped before the output reaches a terminal,
+# the review log, issue filing, or another agent's prompt.
+# =========================================================
+echo ""
+echo "=== Test 47: structured sentinel is stripped from the review log ==="
+
+setup_repo
+stage_small_change
+
+MOCK47_DIR="${TMPDIR_TEST}/mock47"
+make_mock_claude_by_agent "${MOCK47_DIR}" \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  "VERDICT: PASS
+
+No blocking issues found."
+
+TEST47_LOG="${TMPDIR_TEST}/test47-review.log"
+rm -f "${TEST47_LOG}"
+
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST47_LOG}" CLAUDE_CLI="${MOCK47_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+
+log47="$(cat "${TEST47_LOG}" 2>/dev/null || echo "")"
+
+assert_not_contains \
+  "review log carries no __REVIEW_BLOCKING__ marker" \
+  "__REVIEW_BLOCKING__" \
+  "${log47}"
+
+assert_contains \
+  "review log still carries the reviewer's prose" \
+  "No blocking issues found." \
+  "${log47}"
 
 # =========================================================
 # Summary

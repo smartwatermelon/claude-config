@@ -224,6 +224,152 @@ parse_verdict() {
 has_blocking_severity() {
   printf '%s\n' "$1" | tr -d '*`_' | grep -qiE 'SEVERITY:[[:space:]]*BLOCKING'
 }
+# --- Structured reviewer output (claude-config#443) ---
+#
+# A reviewer's blocking/non-blocking call is a BOOLEAN. It was transported as
+# prose and re-derived by grep at five call sites. #442 made that grep tolerant
+# of six known leak variants (markdown, case, spacing); there is no reason to
+# believe six is the complete set, because enumerating the ways a model can
+# spell a word is not a terminating exercise.
+#
+# The CLI can return a schema-constrained object alongside the prose:
+#   claude --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" ...
+# The response then carries `.structured_output` next to the text `.result`.
+# The prose is still needed (DETAILS for the human, issue filing, arbiter
+# input, logs), so this ADDS a decision channel rather than replacing output.
+#
+# Phase 1 (this change) is plumbing only: the severity enum stays the CURRENT
+# two-tier taxonomy. FIX_NOW (design item 2) and the reworked anti-noise prompt
+# language (design item 4) land in phase 2, so this change stays verifiable
+# against the existing suites.
+#
+# Kept on ONE line: --json-schema takes the schema INLINE as a JSON string,
+# not a file path.
+REVIEW_JSON_SCHEMA='{"type":"object","required":["verdict","blocking","findings"],"properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"blocking":{"type":"boolean"},"findings":{"type":"array","items":{"type":"object","required":["severity","location","issue"],"properties":{"severity":{"type":"string","enum":["BLOCKING","WARNING"]},"location":{"type":"string"},"issue":{"type":"string"}}}}}}'
+
+# Sentinel line carrying the structured decision from an agent invocation to
+# the gates downstream. invoke_agent returns prose on stdout and every caller
+# captures it by command substitution, so the boolean rides along as a leading
+# line rather than requiring a second return channel through subshells,
+# temp files, and background jobs.
+#
+# Only ever emitted by this script from a verified JSON boolean, and stripped
+# before the prose reaches a human, a log, or another agent's prompt.
+STRUCTURED_MARKER="__REVIEW_BLOCKING__"
+
+# THE FAIL-OPEN TRAP, stated so it is not reintroduced:
+#
+#   jq -e '.structured_output.blocking'
+#
+# exits 1 for THREE distinct situations — blocking=false (a legitimate PASS),
+# the key being absent (broken or truncated response), and blocking=null
+# (malformed). "The reviewer said it is fine" and "the reviewer never answered"
+# become indistinguishable, which is exactly the silent-failure/false-OK class
+# this pipeline exists to catch. The mirror hazard: the STRING "false" is
+# TRUTHY in jq, so a type slip blocks everything.
+#
+# So: require a real JSON boolean, and report the three outcomes distinctly.
+#   exit 0, prints "true"  -> reviewer says BLOCK
+#   exit 0, prints "false" -> reviewer says PASS (it genuinely answered)
+#   exit 3                 -> absent / null / wrong type (no usable answer)
+#   exit 4                 -> jq could not parse the input at all (e.g. a
+#                             timeout's zero bytes)
+# Callers MUST NOT collapse "false" and "no answer" into one branch.
+extract_structured_blocking() {
+  printf '%s' "$1" | jq -er '
+    if (.structured_output.blocking | type) == "boolean"
+    then (.structured_output.blocking | tostring)
+    else halt_error(3) end' 2>/dev/null
+}
+
+# Prepend the structured decision to an agent's prose so it survives the
+# command-substitution return path. $1 = "true"|"false", $2 = prose.
+attach_structured_blocking() {
+  printf '%s %s\n%s\n' "${STRUCTURED_MARKER}" "$1" "$2"
+}
+
+# Read back a sentinel attached above. Echoes "true", "false", or "" when the
+# output carries no structured decision (fallback territory).
+#
+# Anchored to the start of a line and to the two literal words, so reviewer
+# prose that merely quotes the marker cannot forge a decision.
+read_structured_blocking() {
+  local _line
+  _line=$(printf '%s\n' "$1" | grep -m1 -E "^${STRUCTURED_MARKER} (true|false)$" || true)
+  [[ -n "${_line}" ]] || return 0
+  printf '%s\n' "${_line##* }"
+}
+
+# Strip the sentinel so prose handed to humans, logs, issue filing, and other
+# agents' prompts looks exactly as it did before this change.
+strip_structured_blocking() {
+  printf '%s\n' "$1" | grep -vE "^${STRUCTURED_MARKER} " || true
+}
+
+# The gate. Answers "does this reviewer output block?" using the structured
+# boolean when the reviewer genuinely answered, and #442's tolerant prose
+# matcher when it did not.
+#
+# Returns 0 (block) / 1 (do not block). The three-way flow:
+#   sentinel "true"  -> block. Structured, authoritative.
+#   sentinel "false" -> do NOT block. The reviewer answered; do not second-
+#                       guess it with a grep over its own explanatory prose,
+#                       which is what makes the boolean worth having.
+#   no sentinel      -> NO USABLE ANSWER. Fall back to has_blocking_severity()
+#                       on the text (an older CLI, a malformed response, a
+#                       cached pre-#443 result, a synthetic transient verdict).
+#                       That matcher fails closed on ambiguity, which is the
+#                       correct direction for a gate.
+#
+# Transient infrastructure failures (timeout, agent error) reach here as
+# synthetic "VERDICT: FAIL (timeout)" prose with no sentinel and no SEVERITY
+# line, so they land in the fallback branch and stay NON-blocking — issues
+# #172 and #199. A timeout must not become a hard block.
+output_blocks() {
+  local _decision
+  _decision=$(read_structured_blocking "$1")
+  case "${_decision}" in
+    true) return 0 ;;
+    false) return 1 ;;
+    *) has_blocking_severity "$1" ;;
+  esac
+}
+
+# Run the CLI with structured output and normalise the response.
+#
+# $1 = raw CLI stdout (a --output-format json envelope, in principle).
+# Echoes the reviewer's prose with a structured sentinel attached when the
+# response carried a real boolean; echoes the input unchanged otherwise, so
+# a non-JSON response (older CLI, error text, an empty timeout) degrades to
+# the prose path instead of being discarded.
+normalize_agent_response() {
+  local _raw="$1"
+  local _blocking _result
+
+  # Nothing to parse. Hand it back untouched; callers already normalise empty
+  # output into a synthetic transient verdict.
+  [[ -n "${_raw}" ]] || {
+    printf '%s' "${_raw}"
+    return 0
+  }
+
+  # `.result` is the text the reviewer produced. A response that is not a JSON
+  # object with a string .result is not an envelope — treat the whole thing as
+  # prose rather than dropping it on the floor.
+  _result=$(printf '%s' "${_raw}" | jq -er 'if (.result | type) == "string" then .result else halt_error(3) end' 2>/dev/null) || {
+    printf '%s\n' "${_raw}"
+    return 0
+  }
+
+  if _blocking=$(extract_structured_blocking "${_raw}"); then
+    attach_structured_blocking "${_blocking}" "${_result}"
+  else
+    # An envelope whose structured_output is absent, null, or the wrong type.
+    # The reviewer did not answer the boolean; leave the prose unmarked so the
+    # gate falls back to has_blocking_severity() rather than silently passing.
+    printf '%s\n' "${_result}"
+  fi
+}
 
 # --- Version-pin-unfamiliarity downgrade ---
 # Rationale and rules: docs/CODE-REVIEW.md
@@ -356,6 +502,23 @@ downgrade_version_unfamiliarity_findings() {
       }
       { print }
     ')
+    # This function deliberately overrides the reviewer's own judgment on a
+    # known false-positive class. A structured `blocking=true` sentinel must
+    # not survive that override and re-block via output_blocks() — it is the
+    # very claim just determined to be invalid. Dropping the sentinel returns
+    # the decision to the rewritten prose, which now reads WARNING/PASS.
+    # Only done when a downgrade actually fired and nothing blocking survived.
+    #
+    # Belt-and-braces: the promotion above already rewrote VERDICT to PASS, and
+    # every severity gate is guarded by VERDICT == FAIL/REVISE, so a promoted
+    # output never reaches output_blocks() in the first place.
+    #
+    # Inlined rather than calling strip_structured_blocking(): this function is
+    # sourced standalone by tests/test_version_pin_downgrade.bats, which
+    # extracts it with sed and would not pick up a helper defined elsewhere in
+    # the file. Keep it self-contained. `|| true` guards grep's exit 1 on an
+    # all-lines-match (impossible here, but set -e is on).
+    _result=$(printf '%s\n' "${_result}" | grep -vE "^${STRUCTURED_MARKER:-__REVIEW_BLOCKING__} " || true)
   fi
 
   printf '%s\n' "${_result}"
@@ -450,9 +613,26 @@ invoke_agent() {
   # Safe here because --no-session-persistence + piped input = non-interactive child process.
   local agent_output
   local exit_code=0
+  # --output-format json + --json-schema: the reviewer returns a
+  # schema-constrained object in `.structured_output` alongside the prose in
+  # `.result`, so the blocking decision arrives as a boolean instead of a word
+  # the gate has to find in a sentence (claude-config#443).
+  #
+  # stderr is no longer merged with 2>&1. It used to be, which was harmless
+  # when stdout was prose — but a CLI upgrade notice or deprecation warning
+  # interleaved into a JSON document makes it unparseable, which would silently
+  # demote every review to the prose fallback path. Same reasoning, and the
+  # same pattern, as codebase mode and the parallel invocations (issue #89).
+  local _agent_err
+  _agent_err=$(mktemp)
   # Use || to prevent set -e from propagating if the CLI exits non-zero.
   # exit_code is then set to the actual failure code for the handler below.
-  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p "${model_args[@]}" --tools "" --no-session-persistence 2>&1) || exit_code=$?
+  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p "${model_args[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" --tools "" --no-session-persistence 2>"${_agent_err}") || exit_code=$?
+  if [[ -s "${_agent_err}" ]]; then
+    cat "${_agent_err}" >&2
+  fi
+  rm -f "${_agent_err}"
+  unset _agent_err
 
   # Handle timeout - BLOCK commit (strict mode)
   if [[ ${exit_code} -eq 124 ]]; then
@@ -480,6 +660,12 @@ invoke_agent() {
   end_time=$(date +%s)
   local elapsed=$((end_time - start_time))
   log_info "${agent_name} completed in ${elapsed}s"
+
+  # Unwrap the JSON envelope into prose, with the structured boolean attached
+  # as a leading sentinel when the reviewer actually supplied one. A response
+  # that is not an envelope (older CLI, raw error text) passes through as prose,
+  # unmarked, so the gate falls back to has_blocking_severity().
+  agent_output=$(normalize_agent_response "${agent_output}")
 
   # Return the output for parsing
   echo "${agent_output}"
@@ -895,17 +1081,19 @@ ${file_diff}
 
     _chunk_verdict=$(parse_verdict "${_rout}")
     if [[ "${_chunk_verdict}" == "FAIL" || "${_chunk_verdict}" == "REVISE" ]]; then
-      if has_blocking_severity "${_rout}"; then
+      if output_blocks "${_rout}"; then
         ((blocking_count += 1))
         overall_verdict="FAIL"
       else
         ((warning_count += 1))
       fi
 
+      # The digest is read by a human and fed to later prompts; strip the
+      # machinery sentinel so it looks exactly as it did before #443.
       issues_output="${issues_output}
 
 === Issues in ${_rfile} ===
-${_rout}"
+$(strip_structured_blocking "${_rout}")"
     fi
 
     ((reviewed_files += 1))
@@ -1231,11 +1419,15 @@ ${DIFF}
 
   [[ -n "${FULL_DIFF_OUTPUT}" ]] || FULL_DIFF_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
 
+  # FULL_DIFF_OUTPUT keeps the structured sentinel for the gate below;
+  # the displayed and logged copy has it stripped.
+  FULL_DIFF_DISPLAY=$(strip_structured_blocking "${FULL_DIFF_OUTPUT}")
+
   echo "=== FULL-DIFF REVIEW (adversarial-reviewer) ===" >&2
-  echo "${FULL_DIFF_OUTPUT}" >&2
+  echo "${FULL_DIFF_DISPLAY}" >&2
   echo "" >&2
 
-  { printf '=== FULL-DIFF REVIEW ===\n%s\n' "${FULL_DIFF_OUTPUT}"; } >>"${REVIEW_LOG}" || true
+  { printf '=== FULL-DIFF REVIEW ===\n%s\n' "${FULL_DIFF_DISPLAY}"; } >>"${REVIEW_LOG}" || true
 
   FULL_DIFF_VERDICT=$(parse_verdict "${FULL_DIFF_OUTPUT}")
   if [[ "${FULL_DIFF_VERDICT}" == "PASS" ]]; then
@@ -1243,7 +1435,7 @@ ${DIFF}
     log_success "Full-diff review passed"
     exit 0
   elif [[ "${FULL_DIFF_VERDICT}" == "FAIL" || "${FULL_DIFF_VERDICT}" == "REVISE" ]]; then
-    if has_blocking_severity "${FULL_DIFF_OUTPUT}"; then
+    if output_blocks "${FULL_DIFF_OUTPUT}"; then
       printf 'full-diff: FAIL (blocking)\n' >>"${REVIEW_LOG}" || true
       log_error "Full-diff review found blocking cross-file issues"
       exit 1
@@ -1255,7 +1447,7 @@ ${DIFF}
   else
     log_error "Could not parse full-diff review verdict"
     log_error "Output was:"
-    echo "${FULL_DIFF_OUTPUT}" | head -20 >&2
+    echo "${FULL_DIFF_DISPLAY}" | head -20 >&2
     printf 'full-diff: FAIL (unparseable)\n' >>"${REVIEW_LOG}" || true
     exit 1
   fi
@@ -1434,7 +1626,11 @@ no factual claim about external state (style, structure, maintainability)."
   # Matches the pattern used for the parallel code-reviewer/adversarial
   # invocations (_cr_out/_ar_out). Issue #89.
   _codebase_err=$(mktemp)
-  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "adversarial-reviewer" -p "${ADVERSARIAL_MODEL_ARGS[@]}" --allowedTools "Read,Grep,Glob" --no-session-persistence 2>"${_codebase_err}") || codebase_exit=$?
+  #
+  # --output-format json + --json-schema, as in invoke_agent (claude-config#443).
+  # Tool use and structured output compose: the reviewer reads files across
+  # several turns, then emits the conforming object at the end.
+  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "adversarial-reviewer" -p "${ADVERSARIAL_MODEL_ARGS[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" --allowedTools "Read,Grep,Glob" --no-session-persistence 2>"${_codebase_err}") || codebase_exit=$?
   if [[ -s "${_codebase_err}" ]]; then
     cat "${_codebase_err}" >&2
   fi
@@ -1462,10 +1658,18 @@ no factual claim about external state (style, structure, maintainability)."
     log_error "Codebase reviewer exited with error code ${codebase_exit}"
   fi
 
+  # Unwrap the JSON envelope. CODEBASE_OUTPUT keeps the structured sentinel so
+  # the gate below can read the boolean; CODEBASE_DISPLAY is the same text with
+  # the sentinel stripped, and is what reaches the terminal, the log, and
+  # issue filing — the machinery marker is not something a human should see.
+  CODEBASE_OUTPUT=$(normalize_agent_response "${CODEBASE_OUTPUT}")
+
   [[ -n "${CODEBASE_OUTPUT}" ]] || CODEBASE_OUTPUT="VERDICT: FAIL (agent error: invoke produced no output)"
 
+  CODEBASE_DISPLAY=$(strip_structured_blocking "${CODEBASE_OUTPUT}")
+
   echo "=== CODEBASE REVIEW ===" >&2
-  echo "${CODEBASE_OUTPUT}" >&2
+  echo "${CODEBASE_DISPLAY}" >&2
 
   # Parse verdict and handle results
   CODEBASE_VERDICT=$(parse_verdict "${CODEBASE_OUTPUT}")
@@ -1475,14 +1679,14 @@ no factual claim about external state (style, structure, maintainability)."
     log_success "Codebase review passed"
 
     # Extract and file non-blocking issues (best-effort, never blocks)
-    if echo "${CODEBASE_OUTPUT}" | grep -q "NON_BLOCKING_ISSUE:"; then
+    if echo "${CODEBASE_DISPLAY}" | grep -q "NON_BLOCKING_ISSUE:"; then
       log_info "Filing non-blocking issues found during codebase review..."
-      create_nonblocking_issues "${CODEBASE_OUTPUT}" || true
+      create_nonblocking_issues "${CODEBASE_DISPLAY}" || true
     fi
 
     exit 0
   elif [[ "${CODEBASE_VERDICT}" == "FAIL" || "${CODEBASE_VERDICT}" == "REVISE" ]]; then
-    if has_blocking_severity "${CODEBASE_OUTPUT}"; then
+    if output_blocks "${CODEBASE_OUTPUT}"; then
       printf 'codebase: FAIL (blocking)\n' >>"${REVIEW_LOG}" || true
       log_error "Codebase review found blocking issues"
       exit 1
@@ -1494,7 +1698,7 @@ no factual claim about external state (style, structure, maintainability)."
   else
     log_error "Could not parse codebase review verdict"
     log_error "Output was:"
-    echo "${CODEBASE_OUTPUT}" | head -20 >&2
+    echo "${CODEBASE_DISPLAY}" | head -20 >&2
     printf 'codebase: FAIL (unparseable)\n' >>"${REVIEW_LOG}" || true
     exit 1
   fi
@@ -1703,6 +1907,15 @@ if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
   ADVERSARIAL_OUTPUT=$(downgrade_version_unfamiliarity_findings "${ADVERSARIAL_OUTPUT}")
 fi
 
+# The *_OUTPUT vars carry the structured-decision sentinel (claude-config#443)
+# and are what the gates read. The *_DISPLAY copies have it stripped and are
+# what reaches a human, the review log, round-history feedback, the arbiter's
+# prompt, and the disagreement issue — none of which should ever see the
+# marker, and one of which (the arbiter prompt) would otherwise be handed
+# another agent's raw decision channel as if it were review prose.
+CODE_REVIEWER_DISPLAY=$(strip_structured_blocking "${CODE_REVIEWER_OUTPUT}")
+ADVERSARIAL_DISPLAY=$(strip_structured_blocking "${ADVERSARIAL_OUTPUT}")
+
 # Parse verdict from code-reviewer output
 CODE_REVIEWER_VERDICT=$(parse_verdict "${CODE_REVIEWER_OUTPUT}")
 if [[ "${CODE_REVIEWER_VERDICT}" == "PASS" ]]; then
@@ -1714,7 +1927,7 @@ else
   log_error "BLOCKING: Cannot verify review result"
   log_error ""
   log_error "Output was:"
-  echo "${CODE_REVIEWER_OUTPUT}" | head -20 >&2
+  echo "${CODE_REVIEWER_DISPLAY}" | head -20 >&2
   exit 1
 fi
 
@@ -1730,7 +1943,7 @@ if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
     log_error "BLOCKING: Cannot verify adversarial review result"
     log_error ""
     log_error "Output was:"
-    echo "${ADVERSARIAL_OUTPUT}" | head -20 >&2
+    echo "${ADVERSARIAL_DISPLAY}" | head -20 >&2
     exit 1
   fi
 fi
@@ -1739,7 +1952,7 @@ if [[ -n "${ROUND_HISTORY_FILE}" ]]; then
   if [[ "${CODE_REVIEWER_VERDICT}" == "PASS" ]]; then
     clear_round_feedback "${ROUND_HISTORY_FILE}"
   else
-    write_round_feedback "${ROUND_HISTORY_FILE}" "${CODE_REVIEWER_OUTPUT}"
+    write_round_feedback "${ROUND_HISTORY_FILE}" "${CODE_REVIEWER_DISPLAY}"
   fi
 fi
 
@@ -1748,16 +1961,16 @@ echo "" >&2
 
 # Show code-reviewer output; also write to log (best-effort: || true guards set -e)
 echo "=== CODE REVIEWER ===" >&2
-echo "${CODE_REVIEWER_OUTPUT}" >&2
+echo "${CODE_REVIEWER_DISPLAY}" >&2
 echo "" >&2
-{ printf '=== CODE REVIEWER ===\n%s\n' "${CODE_REVIEWER_OUTPUT}"; } >>"${REVIEW_LOG}" || true
+{ printf '=== CODE REVIEWER ===\n%s\n' "${CODE_REVIEWER_DISPLAY}"; } >>"${REVIEW_LOG}" || true
 
 # Show adversarial-reviewer output if ran
 if [[ -n "${ADVERSARIAL_OUTPUT}" ]]; then
   echo "=== ADVERSARIAL REVIEWER ===" >&2
-  echo "${ADVERSARIAL_OUTPUT}" >&2
+  echo "${ADVERSARIAL_DISPLAY}" >&2
   echo "" >&2
-  { printf '=== ADVERSARIAL REVIEWER ===\n%s\n' "${ADVERSARIAL_OUTPUT}"; } >>"${REVIEW_LOG}" || true
+  { printf '=== ADVERSARIAL REVIEWER ===\n%s\n' "${ADVERSARIAL_DISPLAY}"; } >>"${REVIEW_LOG}" || true
 fi
 
 # Write verdict summary before exit — EXIT trap appends exit_code
@@ -1768,8 +1981,9 @@ fi
 
 # Determine final result
 if [[ "${CODE_REVIEWER_VERDICT}" == "FAIL" ]]; then
-  # Check if BLOCKING severity exists
-  if has_blocking_severity "${CODE_REVIEWER_OUTPUT}"; then
+  # Check if the reviewer's finding blocks. Structured boolean when it
+  # answered; #442's prose matcher when it did not (see output_blocks).
+  if output_blocks "${CODE_REVIEWER_OUTPUT}"; then
     # Reconciliation: if adversarial-reviewer (already a bigger model,
     # already reasoning about failure modes) independently reached PASS,
     # don't take code-reviewer's BLOCKING FAIL as final — ask a third
@@ -1786,10 +2000,10 @@ Do NOT output Protocol 0 environment check or any preamble.
 Begin your response directly with the verdict in the specified format below.
 
 === CODE-REVIEWER VERDICT (found a BLOCKING issue) ===
-${CODE_REVIEWER_OUTPUT}
+${CODE_REVIEWER_DISPLAY}
 
 === ADVERSARIAL-REVIEWER VERDICT (found no blocking issue) ===
-${ADVERSARIAL_OUTPUT}
+${ADVERSARIAL_DISPLAY}
 
 === DIFF UNDER REVIEW ===
 \`\`\`diff
@@ -1814,6 +2028,11 @@ DETAILS: [explanation and fix]"
       ARBITER_OUTPUT=$(invoke_agent "adversarial-reviewer" "${ARBITER_PROMPT}" "${ARBITER_CACHE}" "${ARBITER_MODEL_ARGS[@]}") || true
       [[ -n "${ARBITER_OUTPUT}" ]] || ARBITER_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
 
+      # The arbiter's ruling is read from its VERDICT line, not from a
+      # severity gate, so its structured sentinel has no consumer — strip it
+      # everywhere. The disagreement issue is read by a human.
+      ARBITER_OUTPUT=$(strip_structured_blocking "${ARBITER_OUTPUT}")
+
       echo "=== ARBITER (reconciling code-reviewer vs adversarial-reviewer) ===" >&2
       echo "${ARBITER_OUTPUT}" >&2
       echo "" >&2
@@ -1823,7 +2042,7 @@ DETAILS: [explanation and fix]"
       [[ -n "${ARBITER_VERDICT}" ]] || ARBITER_VERDICT="FAIL"
       printf 'arbiter: %s\n' "${ARBITER_VERDICT}" >>"${REVIEW_LOG}" || true
 
-      file_reviewer_disagreement_issue "${CODE_REVIEWER_OUTPUT}" "${ADVERSARIAL_OUTPUT}" "${ARBITER_OUTPUT}" "${ARBITER_VERDICT}"
+      file_reviewer_disagreement_issue "${CODE_REVIEWER_DISPLAY}" "${ADVERSARIAL_DISPLAY}" "${ARBITER_OUTPUT}" "${ARBITER_VERDICT}"
 
       if [[ "${ARBITER_VERDICT}" == "PASS" ]]; then
         log_success "Arbiter sided with adversarial-reviewer — commit allowed"
@@ -1853,9 +2072,9 @@ if [[ "${ADVERSARIAL_VERDICT}" == "FAIL" ]]; then
   # consistent with how code-reviewer handles the same case. Also matches a
   # "Revise (...)" form in case a future synthetic transient error is ever
   # phrased that way instead of "FAIL (...)" (#172).
-  if echo "${ADVERSARIAL_OUTPUT}" | grep -qE "VERDICT: (FAIL|Revise) \((timeout|agent error)"; then
+  if echo "${ADVERSARIAL_DISPLAY}" | grep -qE "VERDICT: (FAIL|Revise) \((timeout|agent error)"; then
     log_warn "adversarial-reviewer timed out or errored — non-blocking (infrastructure failure)"
-  elif has_blocking_severity "${ADVERSARIAL_OUTPUT}"; then
+  elif output_blocks "${ADVERSARIAL_OUTPUT}"; then
     # Symmetric with the code-reviewer gate above: only a BLOCKING severity
     # rejects the commit. A warnings-only FAIL is logged but non-blocking.
     # Issue #199.
