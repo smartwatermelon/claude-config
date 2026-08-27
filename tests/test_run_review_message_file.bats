@@ -58,8 +58,10 @@ for a in "\$@"; do
 done
 # Real agent invocation: capture stdin (the prompt) and emit PASS.
 cat >> "${PROMPT_CAPTURE}"
-echo "VERDICT: PASS"
-echo "No blocking issues found."
+# --output-format json envelope (claude-config#443).
+jq -n '{type:"result",subtype:"success",is_error:false,
+        result:"VERDICT: PASS\nNo blocking issues found.",
+        structured_output:{verdict:"PASS",blocking:false,findings:[]}}'
 EOF
   chmod +x "${MOCK_DIR}/claude"
   export CLAUDE_CLI="${MOCK_DIR}/claude"

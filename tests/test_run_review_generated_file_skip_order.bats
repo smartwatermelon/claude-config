@@ -55,8 +55,11 @@ for a in "\$@"; do
 done
 touch "${AGENT_INVOKED}"
 cat > /dev/null
-echo "VERDICT: FAIL"
-echo "reviewer should not have been reached"
+# --output-format json envelope (claude-config#443). blocking:true so that a
+# regressed skip is caught by the gate, not merely by the prose.
+jq -n '{type:"result",subtype:"success",is_error:false,
+        result:"VERDICT: FAIL\nSEVERITY: BLOCKING\nreviewer should not have been reached",
+        structured_output:{verdict:"FAIL",blocking:true,findings:[]}}'
 EOF
   chmod +x "${MOCK_DIR}/claude"
   export CLAUDE_CLI="${MOCK_DIR}/claude"
