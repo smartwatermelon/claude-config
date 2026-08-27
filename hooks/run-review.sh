@@ -238,14 +238,31 @@ has_blocking_severity() {
 # The prose is still needed (DETAILS for the human, issue filing, arbiter
 # input, logs), so this ADDS a decision channel rather than replacing output.
 #
-# Phase 1 (this change) is plumbing only: the severity enum stays the CURRENT
-# two-tier taxonomy. FIX_NOW (design item 2) and the reworked anti-noise prompt
-# language (design item 4) land in phase 2, so this change stays verifiable
-# against the existing suites.
+# Phase 1 built the transport. Phase 2 (design items 2 and 4) uses it to carry
+# the taxonomy:
+#
+#   severity: BLOCKING | FIX_NOW | WARNING
+#     BLOCKING - a defect introduced by this diff. Blocks.
+#     FIX_NOW  - a small, mechanical, concrete edit. Commit stage only.
+#                PRINTED ONLY: blocks nothing, and has NO FILING PATH anywhere
+#                in this file. That absence is the design constraint, not an
+#                oversight - see emit_fix_now_entries(). Do not add a flag,
+#                a config key, or an env var that could route it to
+#                create_nonblocking_issues; a switchable filing path is how
+#                this tier becomes the next firehose.
+#     WARNING  - reported, does not block. The pre-existing tier.
+#
+#   details: the human-readable explanation and fix.
+#     Phase 1 modelled a finding as {severity, location, issue} with no
+#     `details`, so the rendered DETAILS line was a VERBATIM repeat of ISSUE on
+#     every finding - measured live against the real CLI after #444 merged.
+#     Under the prose contract DETAILS carried the explanation AND the fix, so
+#     that repeat was a real, user-visible loss of content. `details` restores
+#     it; the renderer falls back to `issue` when a reviewer omits it.
 #
 # Kept on ONE line: --json-schema takes the schema INLINE as a JSON string,
 # not a file path.
-REVIEW_JSON_SCHEMA='{"type":"object","required":["verdict","blocking","findings"],"properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"blocking":{"type":"boolean"},"findings":{"type":"array","items":{"type":"object","required":["severity","location","issue"],"properties":{"severity":{"type":"string","enum":["BLOCKING","WARNING"]},"location":{"type":"string"},"issue":{"type":"string"}}}}}}'
+REVIEW_JSON_SCHEMA='{"type":"object","required":["verdict","blocking","findings"],"properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"blocking":{"type":"boolean"},"findings":{"type":"array","items":{"type":"object","required":["severity","location","issue"],"properties":{"severity":{"type":"string","enum":["BLOCKING","FIX_NOW","WARNING"]},"location":{"type":"string"},"issue":{"type":"string"},"details":{"type":"string"}}}}}}'
 
 # Sentinel line carrying the structured decision from an agent invocation to
 # the gates downstream. invoke_agent returns prose on stdout and every caller
@@ -303,10 +320,93 @@ read_structured_blocking() {
   printf '%s\n' "${_line##* }"
 }
 
-# Strip the sentinel so prose handed to humans, logs, issue filing, and other
-# agents' prompts looks exactly as it did before this change.
+# --- FIX_NOW transport (claude-config#443 phase 2, design item 2) ---
+#
+# A FIX_NOW finding is PRINTED AT COMMIT TIME AND NOTHING ELSE. It does not
+# block, and there is NO code path from here to create_nonblocking_issues() or
+# to any other filing call. Do not add one, and do not add a flag that would
+# enable one: the design makes that absence the mechanism that stops this tier
+# becoming the next issue firehose.
+#
+# Transport mirrors STRUCTURED_MARKER: the renderer drops FIX_NOW findings out
+# of the prose block (so no gate and no issue filer can ever see them), so they
+# need their own channel back through the command-substitution return path that
+# every invoke_agent caller uses. One line, one finding, JSON-encoded so an
+# embedded newline in a reviewer string cannot forge extra entries.
+FIX_NOW_MARKER="__REVIEW_FIX_NOW__"
+
+# Cap per the design: beyond this many, print a count instead of a wall of
+# text. A commit generating more than this many mechanical fixes signals a
+# calibration problem better seen as one number.
+FIX_NOW_MAX=5
+
+# Pull FIX_NOW findings out of a raw CLI envelope, one compact JSON object per
+# line. Empty output (no findings, no structured output, unparseable) is normal
+# and not an error.
+extract_fix_now() {
+  printf '%s' "$1" | jq -c '
+    (.structured_output.findings // [])
+    | map(select((.severity // "") | ascii_upcase == "FIX_NOW"))
+    | .[]' 2>/dev/null || true
+}
+
+# Attach FIX_NOW findings as sentinel lines beneath the prose. $1 = the
+# newline-separated JSON objects from extract_fix_now, $2 = prose.
+attach_fix_now() {
+  local _entries="$1" _prose="$2" _line
+  printf '%s\n' "${_prose}"
+  [[ -n "${_entries}" ]] || return 0
+  while IFS= read -r _line; do
+    [[ -n "${_line}" ]] || continue
+    printf '%s %s\n' "${FIX_NOW_MARKER}" "${_line}"
+  done <<<"${_entries}"
+}
+
+# Read FIX_NOW sentinels back out of an agent's returned text.
+read_fix_now() {
+  printf '%s\n' "$1" | grep -E "^${FIX_NOW_MARKER} " | sed -E "s/^${FIX_NOW_MARKER} //" || true
+}
+
+# Print the FIX_NOW block for a commit-stage review. Advisory output only:
+# always returns 0, never touches the exit status, never files anything.
+#
+# One line per entry, `file:line - what to change`, per the design's 15-word
+# target. No DETAILS block, no rationale - that shape is what keeps the
+# hedging problem from moving out of GitHub and into the terminal.
+emit_fix_now_entries() {
+  local _entries="$1" _count _shown _line _loc _issue
+  [[ -n "${_entries}" ]] || return 0
+  _count=$(printf '%s\n' "${_entries}" | grep -c . || true)
+  [[ "${_count}" -gt 0 ]] || return 0
+
+  echo "" >&2
+  echo "=== FIX NOW (${_count}) — not blocking, not filed ===" >&2
+  if [[ "${_count}" -gt "${FIX_NOW_MAX}" ]]; then
+    # Over the cap: a count only, per the design.
+    printf '%s mechanical fixes suggested (over the %s-entry cap; not listed).\n' \
+      "${_count}" "${FIX_NOW_MAX}" >&2
+  else
+    _shown=0
+    while IFS= read -r _line; do
+      [[ -n "${_line}" ]] || continue
+      _loc=$(printf '%s' "${_line}" | jq -r '.location // "unspecified"' 2>/dev/null || echo "unspecified")
+      _issue=$(printf '%s' "${_line}" | jq -r '.issue // ""' 2>/dev/null || echo "")
+      [[ -n "${_issue}" ]] || continue
+      printf '  %s — %s\n' "${_loc}" "${_issue}" >&2
+      _shown=$((_shown + 1))
+    done <<<"${_entries}"
+    [[ "${_shown}" -gt 0 ]] || return 0
+  fi
+  echo "" >&2
+  return 0
+}
+
+# Strip the sentinels so prose handed to humans, logs, issue filing, and other
+# agents' prompts looks exactly as it did before this change. FIX_NOW lines are
+# stripped here too: they must never reach lib-review-issues.sh, an arbiter
+# prompt, or the review log's reviewer blocks.
 strip_structured_blocking() {
-  printf '%s\n' "$1" | grep -vE "^${STRUCTURED_MARKER} " || true
+  printf '%s\n' "$1" | grep -vE "^(${STRUCTURED_MARKER}|${FIX_NOW_MARKER}) " || true
 }
 
 # The gate. Answers "does this reviewer output block?" using the structured
@@ -364,7 +464,7 @@ output_blocks() {
 # prose path instead of being discarded.
 normalize_agent_response() {
   local _raw="$1"
-  local _blocking _result _rendered
+  local _blocking _result _rendered _fixnow _withfix
 
   # Nothing to parse. Hand it back untouched; callers already normalise empty
   # output into a synthetic transient verdict.
@@ -381,6 +481,10 @@ normalize_agent_response() {
   }
 
   if _blocking=$(extract_structured_blocking "${_raw}"); then
+    # FIX_NOW findings ride their own sentinel: the renderer below drops them
+    # from the prose so no gate or issue filer sees them.
+    _fixnow=$(extract_fix_now "${_raw}")
+
     # Prefer the reviewer's own prose when it produced any. Under --json-schema
     # the model is constrained to a tool call and .result is the serialized
     # object, so there is normally none — but a response that DID carry prose
@@ -389,7 +493,8 @@ normalize_agent_response() {
     # lib-review-issues.sh) live only there, and rendering over them would
     # silently drop pre-existing-defect filing.
     if [[ -n "${_result}" ]] && printf '%s\n' "${_result}" | grep -qiE '^[[:space:]]*[*`_]*VERDICT'; then
-      attach_structured_blocking "${_blocking}" "${_result}"
+      _withfix=$(attach_fix_now "${_fixnow}" "${_result}")
+      attach_structured_blocking "${_blocking}" "${_withfix}"
       return 0
     fi
 
@@ -397,21 +502,26 @@ normalize_agent_response() {
     # VERDICT/ISSUE/SEVERITY/LOCATION/DETAILS block the rest of the pipeline
     # expects, straight from the structured findings.
     #
-    # DETAILS repeats ISSUE, because the phase-1 schema has no `details` field:
-    # its finding is {severity, location, issue}. That is a real loss of the
-    # explanation a human reads, and it is deliberate — phase 1 keeps the
-    # CURRENT taxonomy so the change stays verifiable against the existing
-    # suites. Adding `details` belongs with the taxonomy rework (design item 2),
-    # where the prompt language that produces it is rewritten anyway. Until
-    # then a rendered finding is terser than a prose one, never wrong.
+    # DETAILS now comes from the finding's own `details` field, falling back to
+    # `issue` only when the reviewer omitted one. Phase 1 had no such field, so
+    # DETAILS was a verbatim repeat of ISSUE on every finding - a measured,
+    # user-visible regression against the prose contract, where DETAILS carried
+    # the explanation and the fix.
+    #
+    # FIX_NOW findings are EXCLUDED here. They are not part of the
+    # VERDICT/ISSUE/SEVERITY block a gate or an issue filer reads; they are
+    # printed separately, at the commit stage only, by emit_fix_now_entries().
+    # Rendering them into this block would feed them to has_blocking_severity()
+    # and to lib-review-issues.sh, which is precisely what must not happen.
     _rendered=$(printf '%s' "${_raw}" | jq -r '
       .structured_output as $o
       | ([ "VERDICT: " + ($o.verdict // (if $o.blocking then "FAIL" else "PASS" end)) ]
          + ( ($o.findings // [])
+             | map(select((.severity // "WARNING") | ascii_upcase != "FIX_NOW"))
              | map( "\nISSUE: " + (.issue // "unspecified")
                     + "\nSEVERITY: " + (.severity // "WARNING")
                     + "\nLOCATION: " + (.location // "unspecified")
-                    + "\nDETAILS: " + (.issue // "unspecified") ) )
+                    + "\nDETAILS: " + (.details // .issue // "unspecified") ) )
         ) | join("\n")' 2>/dev/null) || _rendered=""
 
     # Defensive: never hand downstream an empty body. A structured object that
@@ -424,7 +534,8 @@ normalize_agent_response() {
       fi
     }
 
-    attach_structured_blocking "${_blocking}" "${_rendered}"
+    _withfix=$(attach_fix_now "${_fixnow}" "${_rendered}")
+    attach_structured_blocking "${_blocking}" "${_withfix}"
   else
     # An envelope whose structured_output is absent, null, or the wrong type.
     # The reviewer did not answer the boolean; leave .result unmarked so the
@@ -432,6 +543,109 @@ normalize_agent_response() {
     printf '%s\n' "${_result}"
   fi
 }
+
+# --- Shared anti-noise prompt language (claude-config#443 phase 2, item 4) ---
+#
+# The DO-NOT-FILE list, the concede-check, and the Kind A / Kind B split lived
+# ONLY in the codebase and CI prompts. The commit, full-diff, chunked, and
+# arbiter prompts were ~20 lines each with no severity calibration and no
+# anti-nitpick guidance. Measured: 63% of filed issue bodies are phrased
+# "Consider..." / "Worth..." / "Suggest..." - a suggestion, not a defect - and
+# only 12.5% of a classified sample were real correctness or security findings.
+#
+# This is ONE variable that every prompt now includes, so the calibration
+# cannot drift back apart across five copies.
+#
+# IT IS NOT REDUNDANT UNDER THE SCHEMA. Measured after #444: on a context-free
+# stub the adversarial reviewer set blocking=true. The schema guarantees the
+# boolean is WELL-FORMED; it does not make it CORRECT. This language is what
+# calibrates the value the model puts in that field, which is why every prompt
+# states explicitly when to set blocking=true.
+REVIEW_SEVERITY_RULES='SEVERITY — set this deliberately. Two INDEPENDENT questions.
+
+1. IS IT A DEFECT — would a maintainer change code because of it?
+   Something is a defect when it produces a wrong result, a crash, a security
+   hole, data loss, a silently skipped check, or a documented behavior the code
+   does not deliver. Answering "no" here is the COMMON case, and it is a
+   complete answer. Say nothing further about it.
+
+2. WHEN did it originate — INTRODUCED by this diff, or PRE-EXISTING?
+
+Then pick exactly one tier:
+
+- BLOCKING: a DEFECT that is INTRODUCED by this diff. Set blocking=true ONLY
+  for this tier. If nothing meets this bar, blocking is FALSE — that is the
+  expected outcome for a clean diff, not a lazy one.
+- FIX_NOW: a small, mechanical, concrete edit worth making right now, in this
+  round. Printed to the author and NOTHING else — it never blocks and is never
+  filed. Rules below.
+- WARNING: a real defect that is neither of the above.
+- Everything else: NOT REPORTED AT ALL. There is no third channel — no FYI, no
+  note for the next reader, no "worth verifying", no "consider".
+
+FIX_NOW — the tier is defined by these cases, not by a general invitation to
+comment on code quality:
+  - a comment that only restates what its line already says
+  - an unused import or a dead local
+  - a missing quote on a variable expansion
+  - a leaked temp file with no trap
+Rules, all mandatory:
+  - ONE LINE: put "file:line" in location and "what to change" in issue. Under
+    15 words. No rationale, no details field, no explanation.
+  - It must name a CONCRETE EDIT. If you cannot express it as a specific change
+    to a specific line, it is NOT FIX_NOW and you must not report it at all.
+  - The words "consider", "worth noting", "may want to", and "for the next
+    person" are BANNED in this tier. That phrasing is the tell that you already
+    decided it is not a defect.
+  - At most 5. Beyond that only a count is shown, so send the 5 best.
+
+DO NOT REPORT (this list is where most bad findings come from):
+- Anything you would introduce with "worth noting", "worth verifying",
+  "consider", "may want to", "for the next person", or "no code change
+  required". If that phrasing fits, you have already decided it is not a
+  defect. Stop.
+- Style, naming, formatting, comment wording, or test-coverage suggestions for
+  code that behaves correctly.
+- A gap that the comments in the file already document as known and accepted.
+- Code that works but that you would have written differently.
+- A concern you reasoned about and resolved. If your own analysis ends in "this
+  is fine" or "no defect", the finding is finished and unreported. Do not
+  report the reasoning.
+- Platform or runtime behavior you cannot check and have no specific reason to
+  doubt.
+
+BEFORE EMITTING EACH FINDING, CHECK YOURSELF:
+Does your explanation end by conceding the thing is fine? If so, delete the
+whole finding. Measured over 876 auto-filed issues from this reviewer, roughly
+one in seven stated in its own body that nothing was wrong — every one cost a
+human a read and a manual close. Reporting nothing is a good outcome and the
+expected one for a clean diff.
+
+VERIFIABLE CLAIMS (mandatory). Every factual claim splits into two kinds, and
+they have DIFFERENT rules.
+
+KIND A — claims about repository contents: what a file contains, whether a
+symbol is defined, whether a name is referenced elsewhere, what a config value
+is. If you have tools, open the file or run the search before asserting it, and
+say what you looked at. If you have no tools, you cannot make a Kind A claim
+about anything outside the diff you were given.
+
+KIND B — claims about how a tool, shell construct, or runtime BEHAVES:
+"printf appends another newline here", "command substitution keeps the
+trailing newline",
+"grep -w splits on /", "this flag does not exist". You CANNOT check these.
+Reading the code that calls a tool tells you what the code does, never what the
+tool does with it.
+
+FOR EVERY KIND B CLAIM THE SOFTENED FORM IS MANDATORY, NOT A FALLBACK. Phrase
+it as a question and say what would settle it. Write:
+  "does printf re-add a trailing newline here — worth checking whether the
+   command substitution already stripped it?"
+NOT:
+  "printf appends another newline, producing a blank line between blocks."
+A Kind B claim stated as fact is wrong even when the underlying suspicion is
+right, because you are reporting a guess as a measurement — and a human then
+spends a command disproving it. Confidence does not rescue it. No exceptions.'
 
 # --- Version-pin-unfamiliarity downgrade ---
 # Rationale and rules: docs/CODE-REVIEW.md
@@ -1059,7 +1273,9 @@ Focus on:
 2. Security: Hardcoded secrets, injection vulnerabilities, auth issues
 3. Error Handling: Silent failures, missing error cases
 4. Completeness: Edge cases, incomplete implementations
-5. Comments: limited to what isn't obvious from the code — flag comments that only restate what the code already says
+5. Comments: limited to what isn't obvious from the code — flag comments that only restate what the code already says. Report these as SEVERITY: FIX_NOW, never as BLOCKING.
+
+${REVIEW_SEVERITY_RULES}
 
 CRITICAL: Respond with this exact format:
 
@@ -1067,7 +1283,7 @@ VERDICT: [PASS or FAIL]
 
 [If FAIL, list each issue:]
 ISSUE: [one-line description]
-SEVERITY: [BLOCKING or WARNING]
+SEVERITY: [BLOCKING, FIX_NOW, or WARNING]
 LOCATION: [file:line]
 DETAILS: [explanation and fix]
 
@@ -1456,6 +1672,12 @@ Focus on CROSS-FILE integration issues that per-commit reviews miss:
 
 Do NOT repeat per-line issues (those are caught in per-commit review).
 Focus ONLY on issues visible when examining the full change set together.
+
+${REVIEW_SEVERITY_RULES}
+
+FIX_NOW does NOT apply at this stage. It is a commit-time tier, and the commit
+review has already run over these changes. Use BLOCKING or WARNING, or report
+nothing.
 
 CRITICAL: Respond with this exact format:
 
@@ -1881,7 +2103,9 @@ Focus on:
 2. Security: Hardcoded secrets, injection vulnerabilities, auth issues
 3. Error Handling: Silent failures, missing error cases
 4. Completeness: Edge cases, incomplete implementations
-5. Comments: limited to what isn't obvious from the code — flag comments that only restate what the code already says
+5. Comments: limited to what isn't obvious from the code — flag comments that only restate what the code already says. Report these as SEVERITY: FIX_NOW, never as BLOCKING.
+
+${REVIEW_SEVERITY_RULES}
 
 CRITICAL: Respond with this exact format:
 
@@ -1889,7 +2113,7 @@ VERDICT: [PASS or FAIL]
 
 [If FAIL, list each issue:]
 ISSUE: [one-line description]
-SEVERITY: [BLOCKING or WARNING]
+SEVERITY: [BLOCKING, FIX_NOW, or WARNING]
 LOCATION: [file:line]
 DETAILS: [explanation and fix]
 
@@ -2035,6 +2259,23 @@ if [[ -n "${ADVERSARIAL_OUTPUT}" ]]; then
   { printf '=== ADVERSARIAL REVIEWER ===\n%s\n' "${ADVERSARIAL_DISPLAY}"; } >>"${REVIEW_LOG}" || true
 fi
 
+# --- FIX_NOW (claude-config#443 phase 2, design item 2) ---
+#
+# Commit stage ONLY. This is the cheapest moment to apply a mechanical fix, and
+# early enough that full-diff and CI never see the finding. Advisory: it does
+# not touch the exit status below, and there is no filing call anywhere on this
+# path - a FIX_NOW finding never becomes a GitHub issue by any route.
+#
+# Both reviewers' entries are pooled, then capped as one list, so the cap is a
+# per-commit budget rather than a per-reviewer one.
+_FIX_NOW_ENTRIES=$(
+  {
+    read_fix_now "${CODE_REVIEWER_OUTPUT}"
+    [[ -z "${ADVERSARIAL_OUTPUT}" ]] || read_fix_now "${ADVERSARIAL_OUTPUT}"
+  } | grep -v '^$' || true
+)
+emit_fix_now_entries "${_FIX_NOW_ENTRIES}" || true
+
 # Write verdict summary before exit — EXIT trap appends exit_code
 {
   printf 'code-reviewer: %s\n' "${CODE_REVIEWER_VERDICT}"
@@ -2073,6 +2314,13 @@ ${DIFF}
 \`\`\`
 
 Decide: is code-reviewer's BLOCKING finding a genuine, currently-present issue in this diff, or is adversarial-reviewer correct that it doesn't apply (e.g. out of stated scope, already mitigated, a false positive)?
+
+${REVIEW_SEVERITY_RULES}
+
+You are ruling on ONE question: does the disputed finding meet the BLOCKING bar
+above? If it is real but does not meet that bar — including anything that is
+merely FIX_NOW-shaped or a style preference — the correct ruling is PASS. Do
+not introduce new findings of your own; you are arbitrating, not reviewing.
 
 CRITICAL: Respond with this exact format:
 
