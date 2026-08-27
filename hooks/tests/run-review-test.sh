@@ -2752,6 +2752,350 @@ assert_not_contains \
   "${log48}"
 
 # =========================================================
+# TESTS 49-54: the FIX_NOW tier (claude-config#443 phase 2, design item 2).
+#
+# FIX_NOW is PRINTED AT COMMIT TIME AND NOTHING ELSE. The three properties that
+# define it, each pinned below because each is a way the tier could rot into
+# the next issue firehose:
+#   - it never blocks (49, 50)
+#   - it is never filed (49)
+#   - it is capped at 5, with a count beyond that (51)
+# Plus the DETAILS regression fix (53) and the design-mandated pin on the
+# user-requested redundant-comment filter (52, 54).
+#
+# These use explicit structured overrides rather than derived ones: the point
+# is the exact severity token, so it must not be inferred from prose.
+# =========================================================
+echo ""
+echo "=== Test 49: a FIX_NOW-only commit exits 0 and files nothing ==="
+
+setup_repo
+stage_small_change
+
+MOCK49_DIR="${TMPDIR_TEST}/mock49"
+make_mock_claude_by_agent "${MOCK49_DIR}" \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  '{"verdict":"PASS","blocking":false,"findings":[{"severity":"FIX_NOW","location":"foo.sh:2","issue":"quote the expansion"},{"severity":"FIX_NOW","location":"foo.sh:3","issue":"remove the unused local"}]}' \
+  '{"verdict":"PASS","blocking":false,"findings":[]}'
+
+TEST49_LOG="${TMPDIR_TEST}/test49-review.log"
+rm -f "${TEST49_LOG}"
+
+# A stub `gh` on PATH that records every invocation. If any FIX_NOW path ever
+# reaches issue filing, this file becomes non-empty and the test fails. A
+# filing call is the failure mode the design names explicitly.
+GH_STUB_DIR="${TMPDIR_TEST}/ghstub49"
+mkdir -p "${GH_STUB_DIR}"
+GH_CALLS="${TMPDIR_TEST}/gh-calls-49.txt"
+: >"${GH_CALLS}"
+cat >"${GH_STUB_DIR}/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"${GH_CALLS}"
+exit 0
+EOF
+chmod +x "${GH_STUB_DIR}/gh"
+
+exit_t49=0
+t49_stderr="${TMPDIR_TEST}/test49-stderr.txt"
+cd "${REPO_DIR}"
+PATH="${GH_STUB_DIR}:${PATH}" REVIEW_LOG="${TEST49_LOG}" CLAUDE_CLI="${MOCK49_DIR}/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>"${t49_stderr}" || exit_t49=$?
+cd - >/dev/null
+
+t49_err="$(cat "${t49_stderr}" 2>/dev/null || echo "")"
+
+assert_eq \
+  "FIX_NOW-only commit exits 0 (the tier must never block)" \
+  "0" \
+  "${exit_t49}"
+
+assert_contains \
+  "FIX_NOW entries are printed to the author" \
+  "foo.sh:2 — quote the expansion" \
+  "${t49_err}"
+
+assert_contains \
+  "FIX_NOW block is labelled as neither blocking nor filed" \
+  "not blocking, not filed" \
+  "${t49_err}"
+
+assert_eq \
+  "FIX_NOW files NOTHING: no gh invocation at all" \
+  "" \
+  "$(grep -c 'issue create' "${GH_CALLS}" 2>/dev/null | tr -d ' ' | sed 's/^0$//')"
+
+assert_not_contains \
+  "a FIX_NOW finding never renders a SEVERITY line into the prose block" \
+  "SEVERITY: FIX_NOW" \
+  "$(cat "${TEST49_LOG}" 2>/dev/null || echo "")"
+
+# =========================================================
+# TEST 50: FIX_NOW alongside a real BLOCKING finding still blocks.
+#
+# The tier must not dilute the gate: mixing a mechanical fix into a blocking
+# response must not turn the block into a pass.
+# =========================================================
+echo ""
+echo "=== Test 50: FIX_NOW does not dilute a real BLOCKING finding ==="
+
+setup_repo
+stage_small_change
+
+MOCK50_DIR="${TMPDIR_TEST}/mock50"
+make_mock_claude_by_agent "${MOCK50_DIR}" \
+  "VERDICT: FAIL
+
+ISSUE: Command injection
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Unquoted expansion reaches a shell command." \
+  "VERDICT: FAIL
+
+ISSUE: Command injection
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Unquoted expansion reaches a shell command." \
+  '{"verdict":"FAIL","blocking":true,"findings":[{"severity":"BLOCKING","location":"foo.sh:2","issue":"Command injection","details":"Unquoted expansion reaches a shell command."},{"severity":"FIX_NOW","location":"foo.sh:9","issue":"drop the redundant comment"}]}' \
+  '{"verdict":"FAIL","blocking":true,"findings":[{"severity":"BLOCKING","location":"foo.sh:2","issue":"Command injection","details":"Unquoted expansion reaches a shell command."}]}'
+
+TEST50_LOG="${TMPDIR_TEST}/test50-review.log"
+rm -f "${TEST50_LOG}"
+
+exit_t50=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST50_LOG}" CLAUDE_CLI="${MOCK50_DIR}/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t50=$?
+cd - >/dev/null
+
+assert_eq \
+  "a BLOCKING finding still blocks when a FIX_NOW rides along" \
+  "1" \
+  "${exit_t50}"
+
+# =========================================================
+# TEST 51: the cap. More than FIX_NOW_MAX entries prints a COUNT, not a wall.
+# =========================================================
+echo ""
+echo "=== Test 51: more than 5 FIX_NOW entries print a count, not a wall ==="
+
+setup_repo
+stage_small_change
+
+MOCK51_DIR="${TMPDIR_TEST}/mock51"
+make_mock_claude_by_agent "${MOCK51_DIR}" \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  '{"verdict":"PASS","blocking":false,"findings":[{"severity":"FIX_NOW","location":"foo.sh:1","issue":"fix one"},{"severity":"FIX_NOW","location":"foo.sh:2","issue":"fix two"},{"severity":"FIX_NOW","location":"foo.sh:3","issue":"fix three"},{"severity":"FIX_NOW","location":"foo.sh:4","issue":"fix four"},{"severity":"FIX_NOW","location":"foo.sh:5","issue":"fix five"},{"severity":"FIX_NOW","location":"foo.sh:6","issue":"fix six"},{"severity":"FIX_NOW","location":"foo.sh:7","issue":"fix seven"}]}' \
+  '{"verdict":"PASS","blocking":false,"findings":[]}'
+
+TEST51_LOG="${TMPDIR_TEST}/test51-review.log"
+rm -f "${TEST51_LOG}"
+
+exit_t51=0
+t51_stderr="${TMPDIR_TEST}/test51-stderr.txt"
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST51_LOG}" CLAUDE_CLI="${MOCK51_DIR}/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>"${t51_stderr}" || exit_t51=$?
+cd - >/dev/null
+
+t51_err="$(cat "${t51_stderr}" 2>/dev/null || echo "")"
+
+assert_eq \
+  "an over-cap FIX_NOW batch still exits 0" \
+  "0" \
+  "${exit_t51}"
+
+assert_contains \
+  "over the cap, a count is printed" \
+  "7 mechanical fixes suggested" \
+  "${t51_err}"
+
+assert_not_contains \
+  "over the cap, individual entries are NOT listed" \
+  "foo.sh:7 — fix seven" \
+  "${t51_err}"
+
+# =========================================================
+# TEST 52: THE DESIGN-MANDATED PIN on the redundant-comment filter.
+#
+# Item 5 of the commit prompt ("flag comments that only restate what the code
+# already says") exists by DIRECT USER REQUEST, not reviewer drift. The design
+# requires pinning it with a test so a later noise-reduction pass cannot
+# quietly delete it.
+#
+# Two halves, both required:
+#   (a) the prompt still instructs the reviewer to flag such comments, and
+#       routes them to FIX_NOW rather than BLOCKING;
+#   (b) a diff whose comment restates its line produces a FIX_NOW entry,
+#       exit 0, and no filing call.
+# =========================================================
+echo ""
+echo "=== Test 52: the redundant-comment filter survives and routes to FIX_NOW ==="
+
+# Scope the assertion to EACH prompt independently. A whole-file grep is NOT a
+# pin here: the identical line appears in both the commit prompt and the
+# chunked per-file prompt, so deleting it from one still matches the other.
+# The first version of this test did exactly that and survived a sabotage run
+# that removed the filter from the commit prompt. Counting the sites is what
+# makes the pin real.
+subject_src="$(cat "${SUBJECT}")"
+
+filter_sites=$(grep -c "flag comments that only restate what the code already says" "${SUBJECT}" | tr -d ' ')
+routed_sites=$(grep -c "Report these as SEVERITY: FIX_NOW, never as BLOCKING." "${SUBJECT}" | tr -d ' ')
+
+# Both the commit prompt (single-pass) and the chunked per-file prompt carry
+# it, because either can be the one that reviews a given commit.
+assert_eq \
+  "PIN: the redundant-comment filter is present in BOTH the commit and chunked prompts" \
+  "2" \
+  "${filter_sites}"
+
+assert_eq \
+  "PIN: both copies route the filter explicitly to FIX_NOW" \
+  "2" \
+  "${routed_sites}"
+
+# And it must never be routed to BLOCKING: a redundant comment stopping a
+# commit is the failure mode that made this filter look like noise.
+assert_not_contains \
+  "PIN: the filter is never routed to BLOCKING" \
+  "restate what the code already says. Report these as SEVERITY: BLOCKING" \
+  "${subject_src}"
+
+# =========================================================
+# TEST 53: a diff whose comment restates its line — the live-shaped half of
+# the design-mandated pin. FIX_NOW entry, exit 0, no filing call.
+# =========================================================
+echo ""
+echo "=== Test 53: a redundant comment yields FIX_NOW, exit 0, no filing ==="
+
+setup_repo
+cd "${REPO_DIR}"
+# The canonical case: a comment that says exactly what its line already says.
+printf '%s\n' '# increment the counter' 'counter=$((counter + 1))' >>foo.sh
+git add foo.sh
+cd - >/dev/null
+
+MOCK53_DIR="${TMPDIR_TEST}/mock53"
+make_mock_claude_by_agent "${MOCK53_DIR}" \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  '{"verdict":"PASS","blocking":false,"findings":[{"severity":"FIX_NOW","location":"foo.sh:2","issue":"delete the comment restating the increment"}]}' \
+  '{"verdict":"PASS","blocking":false,"findings":[]}'
+
+TEST53_LOG="${TMPDIR_TEST}/test53-review.log"
+rm -f "${TEST53_LOG}"
+
+GH_STUB53_DIR="${TMPDIR_TEST}/ghstub53"
+mkdir -p "${GH_STUB53_DIR}"
+GH_CALLS53="${TMPDIR_TEST}/gh-calls-53.txt"
+: >"${GH_CALLS53}"
+cat >"${GH_STUB53_DIR}/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"${GH_CALLS53}"
+exit 0
+EOF
+chmod +x "${GH_STUB53_DIR}/gh"
+
+exit_t53=0
+t53_stderr="${TMPDIR_TEST}/test53-stderr.txt"
+cd "${REPO_DIR}"
+PATH="${GH_STUB53_DIR}:${PATH}" REVIEW_LOG="${TEST53_LOG}" CLAUDE_CLI="${MOCK53_DIR}/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>"${t53_stderr}" || exit_t53=$?
+cd - >/dev/null
+
+t53_err="$(cat "${t53_stderr}" 2>/dev/null || echo "")"
+
+assert_eq \
+  "PIN: a redundant-comment finding does not block the commit" \
+  "0" \
+  "${exit_t53}"
+
+assert_contains \
+  "PIN: a redundant-comment finding is printed as a FIX_NOW entry" \
+  "delete the comment restating the increment" \
+  "${t53_err}"
+
+assert_eq \
+  "PIN: a redundant-comment finding is never filed" \
+  "" \
+  "$(grep -c 'issue create' "${GH_CALLS53}" 2>/dev/null | tr -d ' ' | sed 's/^0$//')"
+
+# =========================================================
+# TEST 54: DETAILS renders from `details`, not as a repeat of ISSUE.
+#
+# The live regression measured after #444 merged: the phase-1 finding was
+# {severity, location, issue} with no `details`, so every rendered finding read
+#   ISSUE:   Hardcoded AWS secret access key committed to source
+#   DETAILS: Hardcoded AWS secret access key committed to source
+# Under the prose contract DETAILS carried the explanation AND the fix.
+# =========================================================
+echo ""
+echo "=== Test 54: DETAILS renders distinctly from ISSUE ==="
+
+setup_repo
+stage_small_change
+
+MOCK54_DIR="${TMPDIR_TEST}/mock54"
+mkdir -p "${MOCK54_DIR}"
+# The real CLI's tool-call shape: .result is the SERIALIZED object, no prose,
+# so the VERDICT block is rendered out of .structured_output (cf. Test 48).
+cat >"${MOCK54_DIR}/envelope.json" <<'MOCK54JSON'
+{"type":"result","subtype":"success","is_error":false,
+ "result":"{\"verdict\":\"FAIL\",\"blocking\":true,\"findings\":[{\"severity\":\"BLOCKING\",\"location\":\"foo.sh:3\",\"issue\":\"Hardcoded AWS secret access key committed to source\",\"details\":\"Move the key to an environment variable and rotate the exposed credential.\"}]}",
+ "structured_output":{"verdict":"FAIL","blocking":true,"findings":[{"severity":"BLOCKING","location":"foo.sh:3","issue":"Hardcoded AWS secret access key committed to source","details":"Move the key to an environment variable and rotate the exposed credential."}]}}
+MOCK54JSON
+cat >"${MOCK54_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+cat "${MOCK54_DIR}/envelope.json"
+exit 0
+EOF
+chmod +x "${MOCK54_DIR}/claude"
+
+TEST54_LOG="${TMPDIR_TEST}/test54-review.log"
+rm -f "${TEST54_LOG}"
+
+exit_t54=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST54_LOG}" CLAUDE_CLI="${MOCK54_DIR}/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t54=$?
+cd - >/dev/null
+
+log54="$(cat "${TEST54_LOG}" 2>/dev/null || echo "")"
+
+assert_contains \
+  "DETAILS carries the explanation and fix, not a repeat of ISSUE" \
+  "DETAILS: Move the key to an environment variable and rotate the exposed credential." \
+  "${log54}"
+
+assert_not_contains \
+  "DETAILS is no longer a verbatim repeat of ISSUE" \
+  "DETAILS: Hardcoded AWS secret access key committed to source" \
+  "${log54}"
+
+assert_eq \
+  "the blocking finding still blocks with details present" \
+  "1" \
+  "${exit_t54}"
+
+# =========================================================
 # Summary
 # =========================================================
 echo ""
