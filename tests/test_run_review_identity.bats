@@ -36,8 +36,11 @@ setup() {
 # review diff survives for the actual review invocation.
 [[ "$1" == "--version" ]] && { echo "mock 0.0.0"; exit 0; }
 cat > /dev/null
-echo "VERDICT: PASS"
-echo "No blocking issues found."
+# --output-format json envelope (claude-config#443): prose in .result, the
+# schema-constrained decision in .structured_output.
+jq -n '{type:"result",subtype:"success",is_error:false,
+        result:"VERDICT: PASS\nNo blocking issues found.",
+        structured_output:{verdict:"PASS",blocking:false,findings:[]}}'
 EOF
   chmod +x "${MOCK_DIR}/claude"
   export CLAUDE_CLI="${MOCK_DIR}/claude"
