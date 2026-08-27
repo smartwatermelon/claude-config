@@ -257,6 +257,9 @@ REVIEW_JSON_SCHEMA='{"type":"object","required":["verdict","blocking","findings"
 # before the prose reaches a human, a log, or another agent's prompt.
 STRUCTURED_MARKER="__REVIEW_BLOCKING__"
 
+# A literal newline, for building multi-line fallbacks readably.
+_NL=$'\n'
+
 # THE FAIL-OPEN TRAP, stated so it is not reintroduced:
 #
 #   jq -e '.structured_output.blocking'
@@ -338,13 +341,30 @@ output_blocks() {
 # Run the CLI with structured output and normalise the response.
 #
 # $1 = raw CLI stdout (a --output-format json envelope, in principle).
+#
+# MEASURED, and it contradicts the obvious reading of the CLI contract: under
+# --json-schema the model is constrained to a schema-conforming TOOL CALL, so
+# it does not emit prose at all. `.result` holds the SERIALIZED JSON object,
+# not a VERDICT/ISSUE/SEVERITY block. Verified against the real CLI:
+#   .result == "{\"verdict\":\"FAIL\",\"blocking\":true,\"findings\":[...]}"
+#
+# Everything downstream reads prose — parse_verdict, the version-pin downgrade,
+# NON_BLOCKING_ISSUE filing, round-history feedback, the arbiter's prompt, the
+# human-facing log. Handing them a JSON blob makes parse_verdict return "" and
+# the run hard-blocks as "unparseable", which is how this was caught.
+#
+# So when structured output is present, RENDER the prose from it. The structured
+# object is authoritative and the rendered text is derived from it, which is the
+# right direction: one source of truth, and the prose can no longer disagree
+# with the boolean.
+#
 # Echoes the reviewer's prose with a structured sentinel attached when the
-# response carried a real boolean; echoes the input unchanged otherwise, so
-# a non-JSON response (older CLI, error text, an empty timeout) degrades to
-# the prose path instead of being discarded.
+# response carried a real boolean; echoes the input unchanged otherwise, so a
+# non-JSON response (older CLI, error text, an empty timeout) degrades to the
+# prose path instead of being discarded.
 normalize_agent_response() {
   local _raw="$1"
-  local _blocking _result
+  local _blocking _result _rendered
 
   # Nothing to parse. Hand it back untouched; callers already normalise empty
   # output into a synthetic transient verdict.
@@ -353,19 +373,53 @@ normalize_agent_response() {
     return 0
   }
 
-  # `.result` is the text the reviewer produced. A response that is not a JSON
-  # object with a string .result is not an envelope — treat the whole thing as
-  # prose rather than dropping it on the floor.
+  # Not a JSON object with a string .result => not an envelope. Treat the whole
+  # thing as prose rather than dropping it on the floor.
   _result=$(printf '%s' "${_raw}" | jq -er 'if (.result | type) == "string" then .result else halt_error(3) end' 2>/dev/null) || {
     printf '%s\n' "${_raw}"
     return 0
   }
 
   if _blocking=$(extract_structured_blocking "${_raw}"); then
-    attach_structured_blocking "${_blocking}" "${_result}"
+    # Prefer the reviewer's own prose when it produced any. Under --json-schema
+    # the model is constrained to a tool call and .result is the serialized
+    # object, so there is normally none — but a response that DID carry prose
+    # must keep it verbatim. The prose sub-languages the schema does not model
+    # (NON_BLOCKING_ISSUE / TITLE / END_ISSUE blocks, consumed by
+    # lib-review-issues.sh) live only there, and rendering over them would
+    # silently drop pre-existing-defect filing.
+    if [[ -n "${_result}" ]] && printf '%s\n' "${_result}" | grep -qiE '^[[:space:]]*[*`_]*VERDICT'; then
+      attach_structured_blocking "${_blocking}" "${_result}"
+      return 0
+    fi
+
+    # Otherwise .result is the serialized object. Render the
+    # VERDICT/ISSUE/SEVERITY/LOCATION/DETAILS block the rest of the pipeline
+    # expects, straight from the structured findings.
+    _rendered=$(printf '%s' "${_raw}" | jq -r '
+      .structured_output as $o
+      | ([ "VERDICT: " + ($o.verdict // (if $o.blocking then "FAIL" else "PASS" end)) ]
+         + ( ($o.findings // [])
+             | map( "\nISSUE: " + (.issue // "unspecified")
+                    + "\nSEVERITY: " + (.severity // "WARNING")
+                    + "\nLOCATION: " + (.location // "unspecified")
+                    + "\nDETAILS: " + (.issue // "unspecified") ) )
+        ) | join("\n")' 2>/dev/null) || _rendered=""
+
+    # Defensive: never hand downstream an empty body. A structured object that
+    # renders to nothing still has to carry a parseable verdict.
+    [[ -n "${_rendered}" ]] || {
+      if [[ "${_blocking}" == "true" ]]; then
+        _rendered="VERDICT: FAIL${_NL}ISSUE: reviewer reported a blocking issue with no renderable detail${_NL}SEVERITY: BLOCKING${_NL}LOCATION: unspecified${_NL}DETAILS: The structured response set blocking=true but carried no findings."
+      else
+        _rendered="VERDICT: PASS${_NL}No blocking issues found."
+      fi
+    }
+
+    attach_structured_blocking "${_blocking}" "${_rendered}"
   else
     # An envelope whose structured_output is absent, null, or the wrong type.
-    # The reviewer did not answer the boolean; leave the prose unmarked so the
+    # The reviewer did not answer the boolean; leave .result unmarked so the
     # gate falls back to has_blocking_severity() rather than silently passing.
     printf '%s\n' "${_result}"
   fi

@@ -47,6 +47,10 @@
 #       issues"; 43/44 reject null and the string "false"; 45 keeps a timeout
 #       non-blocking (#172); 46 degrades to prose for an older CLI; 47 keeps
 #       the transport marker out of human-facing output
+#   48. The real CLI's tool-call response shape: .result is the SERIALIZED
+#       object with no prose in it, so the VERDICT block is rendered out of
+#       .structured_output. Caught by a live dry-run, not by any mock — every
+#       mock was green while the gate would have hard-blocked every commit
 
 set -euo pipefail
 
@@ -173,42 +177,82 @@ stage_large_change() {
 # exact shape: a raw JSON object, or the literal "none" to emit an envelope
 # with NO structured_output key at all (the fail-open case), or "raw" to emit
 # the text with no JSON envelope whatsoever (an older CLI).
+# Build the --output-format json envelope the real CLI returns under
+# --json-schema (claude-config#443).
+#
+# MEASURED, and it is the non-obvious part: under --json-schema the model is
+# constrained to a TOOL CALL, so it emits no prose. `.result` holds the
+# SERIALIZED structured object, and run-review.sh renders the
+# VERDICT/ISSUE/SEVERITY/LOCATION/DETAILS block back out of
+# `.structured_output`. A mock that puts prose in `.result` and an unrelated
+# object in `.structured_output` does NOT resemble the CLI, and would let a
+# rendering bug pass. So: derive the structured object FROM the prose, then
+# serialize that same object into `.result`.
+#
+# $1 prose, $2 override ("" = derive, "none" = omit structured_output,
+# anything else = a raw JSON object), $3 destination file.
+_mock_write_envelope() {
+  local _text="$1" _override="$2" _dest="$3" _so
+  printf '%s\n' "${_text}" >"${_dest}.txt"
+
+  case "${_override}" in
+    "")
+      # Derive: split the prose into findings so the rendered output round-trips
+      # back to (materially) the text the call site asked for.
+      # Strip markdown emphasis first, exactly as has_blocking_severity() does.
+      # Without this a call site written as "**SEVERITY:** BLOCKING" would
+      # derive blocking=false, and the structured false would then correctly
+      # override its own prose — a mock artifact, not a production behavior.
+      _so=$(printf '%s\n' "${_text}" | tr -d '*`_' | jq -Rn '
+        [inputs] as $lines
+        | ($lines | map(select(test("^VERDICT:";"i"))) | .[0] // "VERDICT: PASS") as $v
+        | (if ($v | ascii_upcase | test("VERDICT:[[:space:]]*PASS")) then "PASS" else "FAIL" end) as $verdict
+        | ($lines | map(select(test("^ISSUE:";"i"))    | sub("^[Ii][Ss][Ss][Uu][Ee]:[[:space:]]*";""))) as $issues
+        | ($lines | map(select(test("^SEVERITY:";"i")) | sub("^[Ss][Ee][Vv][Ee][Rr][Ii][Tt][Yy]:[[:space:]]*";""))) as $sevs
+        | ($lines | map(select(test("^LOCATION:";"i")) | sub("^[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]:[[:space:]]*";""))) as $locs
+        | {verdict: $verdict,
+           blocking: ($sevs | map(ascii_upcase) | any(. == "BLOCKING")),
+           findings: [ range(0; ($issues | length))
+                       | { severity: ($sevs[.] // "WARNING"),
+                           location: ($locs[.] // "unspecified"),
+                           issue:    ($issues[.]) } ]}')
+      ;;
+    none) _so="" ;;
+    *) _so="${_override}" ;;
+  esac
+
+  if [[ -n "${_so}" ]]; then
+    # .result carries the prose the call site asked for, and structured_output
+    # carries the boolean derived from it. This is the prose-bearing response
+    # shape: the reviewer answered the schema AND explained itself, so the
+    # prose sub-languages the schema does not model (NON_BLOCKING_ISSUE /
+    # TITLE / END_ISSUE) survive. The serialized-object shape the real CLI
+    # returns for a pure tool call is covered separately by
+    # make_mock_claude_structured_only below.
+    jq -n --rawfile r "${_dest}.txt" --argjson so "${_so}" \
+      '{type:"result",subtype:"success",is_error:false,result:$r,structured_output:$so}' >"${_dest}"
+  else
+    # No structured_output: the fail-open case, and an older CLI. Here .result
+    # genuinely is prose, because no tool call constrained the model.
+    jq -n --rawfile r "${_dest}.txt" \
+      '{type:"result",subtype:"success",is_error:false,result:$r}' >"${_dest}"
+  fi
+}
+
 make_mock_claude() {
   local mock_dir="$1" exit_code="$2" output="$3" structured="${4:-}"
   mkdir -p "${mock_dir}"
-  printf '%s\n' "${output}" >"${mock_dir}/output.txt"
 
   if [[ "${structured}" == "raw" ]]; then
-    # No envelope: exercises the degrade-to-prose path.
-    cp "${mock_dir}/output.txt" "${mock_dir}/envelope.json"
+    # No envelope at all: exercises the degrade-to-prose path (older CLI).
+    printf '%s\n' "${output}" >"${mock_dir}/envelope.json"
   elif [[ -z "${output}" && -z "${structured}" ]]; then
     # Empty output stays empty — that is what a timeout or a crashed CLI
     # actually produces, and run-review.sh normalises it into a synthetic
     # transient verdict. Wrapping it in an envelope would misrepresent it.
     : >"${mock_dir}/envelope.json"
   else
-    local _so
-    case "${structured}" in
-      "")
-        # Derive: BLOCKING in the prose => blocking true.
-        if printf '%s\n' "${output}" | tr -d '*`_' | grep -qiE 'SEVERITY:[[:space:]]*BLOCKING'; then
-          _so='{"verdict":"FAIL","blocking":true,"findings":[]}'
-        else
-          _so='{"verdict":"PASS","blocking":false,"findings":[]}'
-        fi
-        ;;
-      none) _so="" ;;
-      *) _so="${structured}" ;;
-    esac
-    if [[ -n "${_so}" ]]; then
-      jq -n --rawfile r "${mock_dir}/output.txt" --argjson so "${_so}" \
-        '{type:"result",subtype:"success",is_error:false,result:$r,structured_output:$so}' \
-        >"${mock_dir}/envelope.json"
-    else
-      jq -n --rawfile r "${mock_dir}/output.txt" \
-        '{type:"result",subtype:"success",is_error:false,result:$r}' \
-        >"${mock_dir}/envelope.json"
-    fi
+    _mock_write_envelope "${output}" "${structured}" "${mock_dir}/envelope.json"
   fi
 
   cat >"${mock_dir}/claude" <<EOF
@@ -750,32 +794,8 @@ make_mock_claude_by_agent() {
   local mock_dir="$1" cr_output="$2" ar_output="$3"
   local cr_structured="${4:-}" ar_structured="${5:-}"
   mkdir -p "${mock_dir}"
-
-  _mock_envelope() {
-    local _text="$1" _override="$2" _dest="$3" _so
-    printf '%s\n' "${_text}" >"${_dest}.txt"
-    case "${_override}" in
-      "")
-        if printf '%s\n' "${_text}" | tr -d '*`_' | grep -qiE 'SEVERITY:[[:space:]]*BLOCKING'; then
-          _so='{"verdict":"FAIL","blocking":true,"findings":[]}'
-        else
-          _so='{"verdict":"PASS","blocking":false,"findings":[]}'
-        fi
-        ;;
-      none) _so="" ;;
-      *) _so="${_override}" ;;
-    esac
-    if [[ -n "${_so}" ]]; then
-      jq -n --rawfile r "${_dest}.txt" --argjson so "${_so}" \
-        '{type:"result",subtype:"success",is_error:false,result:$r,structured_output:$so}' >"${_dest}"
-    else
-      jq -n --rawfile r "${_dest}.txt" \
-        '{type:"result",subtype:"success",is_error:false,result:$r}' >"${_dest}"
-    fi
-  }
-  _mock_envelope "${cr_output}" "${cr_structured}" "${mock_dir}/cr_output.json"
-  _mock_envelope "${ar_output}" "${ar_structured}" "${mock_dir}/ar_output.json"
-  unset -f _mock_envelope
+  _mock_write_envelope "${cr_output}" "${cr_structured}" "${mock_dir}/cr_output.json"
+  _mock_write_envelope "${ar_output}" "${ar_structured}" "${mock_dir}/ar_output.json"
 
   cat >"${mock_dir}/claude" <<EOF
 #!/usr/bin/env bash
@@ -2656,6 +2676,80 @@ assert_contains \
   "review log still carries the reviewer's prose" \
   "No blocking issues found." \
   "${log47}"
+
+# =========================================================
+# TEST 48: the real CLI's tool-call shape — .result is the SERIALIZED object.
+#
+# Caught by a pre-push dry-run against the live CLI, not by any mock. Under
+# --json-schema the model is constrained to a TOOL CALL, so it emits no prose
+# at all: `.result` holds the serialized structured object, and there is no
+# VERDICT line anywhere. parse_verdict then returns "" and the whole run hard-
+# blocks as "Could not parse verdict" — a total outage of the review gate, on
+# every commit, from a change whose mocks were all green.
+#
+# The fix is to RENDER the VERDICT/ISSUE/SEVERITY/LOCATION/DETAILS block out of
+# .structured_output when .result carries no prose. This pins that, using the
+# exact response shape measured from the live CLI.
+# =========================================================
+echo ""
+echo "=== Test 48: serialized-object .result (real CLI tool-call shape) ==="
+
+setup_repo
+stage_small_change
+
+MOCK48_DIR="${TMPDIR_TEST}/mock48"
+mkdir -p "${MOCK48_DIR}"
+# Measured shape: result is the tojson of the same object in structured_output.
+cat >"${MOCK48_DIR}/envelope.json" <<'MOCK48JSON'
+{"type":"result","subtype":"success","is_error":false,"stop_reason":"tool_use",
+ "result":"{\"verdict\":\"FAIL\",\"blocking\":true,\"findings\":[{\"severity\":\"BLOCKING\",\"location\":\"foo.sh:2\",\"issue\":\"Unquoted expansion reaches a shell command.\"}]}",
+ "structured_output":{"verdict":"FAIL","blocking":true,"findings":[{"severity":"BLOCKING","location":"foo.sh:2","issue":"Unquoted expansion reaches a shell command."}]}}
+MOCK48JSON
+cat >"${MOCK48_DIR}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+cat "${MOCK48_DIR}/envelope.json"
+exit 0
+EOF
+chmod +x "${MOCK48_DIR}/claude"
+
+TEST48_LOG="${TMPDIR_TEST}/test48-review.log"
+rm -f "${TEST48_LOG}"
+
+exit_t48=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST48_LOG}" CLAUDE_CLI="${MOCK48_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t48=$?
+cd - >/dev/null
+
+log48="$(cat "${TEST48_LOG}" 2>/dev/null || echo "")"
+
+assert_eq \
+  "serialized-object .result blocks (not 'unparseable')" \
+  "1" \
+  "${exit_t48}"
+
+assert_not_contains \
+  "serialized-object .result does not log an unparseable verdict" \
+  "unparseable" \
+  "${log48}"
+
+assert_contains \
+  "prose is rendered from structured_output for downstream consumers" \
+  "SEVERITY: BLOCKING" \
+  "${log48}"
+
+assert_contains \
+  "rendered prose carries the finding's location" \
+  "LOCATION: foo.sh:2" \
+  "${log48}"
+
+assert_not_contains \
+  "rendered log is prose, not a raw JSON blob" \
+  '{"verdict"' \
+  "${log48}"
 
 # =========================================================
 # Summary
