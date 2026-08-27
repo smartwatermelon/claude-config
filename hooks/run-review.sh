@@ -202,6 +202,23 @@ parse_verdict() {
   fi
 }
 
+# True when reviewer output declares a BLOCKING severity. Tolerant of markdown
+# emphasis (**SEVERITY:** BLOCKING, `SEVERITY: BLOCKING`), case, and spacing,
+# exactly like parse_verdict — the five severity gates previously used a bare
+# `grep -q "SEVERITY: BLOCKING"`, so markdown-bolded, lowercased, or
+# double-spaced emissions from a prose-heavy prompt slipped the gate and let a
+# real blocking defect through (dev-env review-pipeline-redesign, item 3).
+#
+# Deliberately a substring match, matching the previous behavior: prose such as
+# "this is not a SEVERITY: BLOCKING issue" still matches. That fails closed
+# (blocks a commit that might have passed), which is the safe direction for a
+# gate, and it is unchanged from the literal grep this replaces. Note that
+# "SEVERITY: NON_BLOCKING_ISSUE" does not match: `_` is stripped, and the
+# pattern requires BLOCKING to follow the colon directly.
+has_blocking_severity() {
+  printf '%s\n' "$1" | tr -d '*`_' | grep -qiE 'SEVERITY:[[:space:]]*BLOCKING'
+}
+
 # --- Version-pin-unfamiliarity downgrade ---
 # Rationale and rules: docs/CODE-REVIEW.md
 # §Version-Pin Unfamiliarity Is Not a Blocking Finding
@@ -872,7 +889,7 @@ ${file_diff}
 
     _chunk_verdict=$(parse_verdict "${_rout}")
     if [[ "${_chunk_verdict}" == "FAIL" || "${_chunk_verdict}" == "REVISE" ]]; then
-      if echo "${_rout}" | grep -q "SEVERITY: BLOCKING"; then
+      if has_blocking_severity "${_rout}"; then
         ((blocking_count += 1))
         overall_verdict="FAIL"
       else
@@ -1220,7 +1237,7 @@ ${DIFF}
     log_success "Full-diff review passed"
     exit 0
   elif [[ "${FULL_DIFF_VERDICT}" == "FAIL" || "${FULL_DIFF_VERDICT}" == "REVISE" ]]; then
-    if echo "${FULL_DIFF_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
+    if has_blocking_severity "${FULL_DIFF_OUTPUT}"; then
       printf 'full-diff: FAIL (blocking)\n' >>"${REVIEW_LOG}" || true
       log_error "Full-diff review found blocking cross-file issues"
       exit 1
@@ -1459,7 +1476,7 @@ no factual claim about external state (style, structure, maintainability)."
 
     exit 0
   elif [[ "${CODEBASE_VERDICT}" == "FAIL" || "${CODEBASE_VERDICT}" == "REVISE" ]]; then
-    if echo "${CODEBASE_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
+    if has_blocking_severity "${CODEBASE_OUTPUT}"; then
       printf 'codebase: FAIL (blocking)\n' >>"${REVIEW_LOG}" || true
       log_error "Codebase review found blocking issues"
       exit 1
@@ -1746,7 +1763,7 @@ fi
 # Determine final result
 if [[ "${CODE_REVIEWER_VERDICT}" == "FAIL" ]]; then
   # Check if BLOCKING severity exists
-  if echo "${CODE_REVIEWER_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
+  if has_blocking_severity "${CODE_REVIEWER_OUTPUT}"; then
     # Reconciliation: if adversarial-reviewer (already a bigger model,
     # already reasoning about failure modes) independently reached PASS,
     # don't take code-reviewer's BLOCKING FAIL as final — ask a third
@@ -1832,7 +1849,7 @@ if [[ "${ADVERSARIAL_VERDICT}" == "FAIL" ]]; then
   # phrased that way instead of "FAIL (...)" (#172).
   if echo "${ADVERSARIAL_OUTPUT}" | grep -qE "VERDICT: (FAIL|Revise) \((timeout|agent error)"; then
     log_warn "adversarial-reviewer timed out or errored — non-blocking (infrastructure failure)"
-  elif echo "${ADVERSARIAL_OUTPUT}" | grep -q "SEVERITY: BLOCKING"; then
+  elif has_blocking_severity "${ADVERSARIAL_OUTPUT}"; then
     # Symmetric with the code-reviewer gate above: only a BLOCKING severity
     # rejects the commit. A warnings-only FAIL is logged but non-blocking.
     # Issue #199.

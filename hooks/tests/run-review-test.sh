@@ -37,6 +37,9 @@
 #       stays in the local log; an unwritable log path never fails the run
 #   34-36. --no-file / REVIEW_NO_FILE=1 dry-run prints non-blocking findings
 #       instead of filing them, and the flag is opt-in (#415)
+#   37-39. Severity gates tolerate markdown emphasis, case, and spacing, so a
+#       bolded or lowercased BLOCKING no longer slips the gate; a WARNING-only
+#       FAIL still does not block
 
 set -euo pipefail
 
@@ -2082,6 +2085,122 @@ assert_eq \
   "without --no-file, gh issue create is still invoked (flag is opt-in)" \
   "1" \
   "$({ grep -c 'issue-create' "${MOCK36_GH}/gh_calls.txt" || true; } 2>/dev/null)"
+
+# =========================================================
+# TEST 37: markdown-bolded SEVERITY still blocks the commit
+#
+# All five severity gates used a bare `grep -q "SEVERITY: BLOCKING"`, which is
+# case-sensitive and space-exact. A reviewer emitting `**SEVERITY:** BLOCKING`
+# — a likely form from a prose-heavy prompt — slipped the gate, so a real
+# blocking defect was committed with exit 0. has_blocking_severity() normalizes
+# emphasis, case, and spacing the way parse_verdict already did for verdicts.
+# Same fixture shape as Test 13, which pins the plain-text form.
+# =========================================================
+echo ""
+echo "=== Test 37: markdown-bolded SEVERITY blocks commit ==="
+
+setup_repo
+stage_small_change
+
+MOCK37_DIR="${TMPDIR_TEST}/mock37"
+make_mock_claude_by_agent "${MOCK37_DIR}" \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  "VERDICT: FAIL
+
+ISSUE: Hardcoded credential
+**SEVERITY:** BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Remove the hardcoded credential."
+
+TEST37_LOG="${TMPDIR_TEST}/test37-review.log"
+rm -f "${TEST37_LOG}"
+
+exit_t37=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST37_LOG}" CLAUDE_CLI="${MOCK37_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t37=$?
+cd - >/dev/null
+
+assert_eq \
+  "markdown-bolded SEVERITY: BLOCKING blocks commit (exit 1)" \
+  "1" \
+  "${exit_t37}"
+
+# =========================================================
+# TEST 38: lowercase/double-spaced SEVERITY still blocks the commit
+#
+# The other two variants from the falsification table: casing and an extra
+# space after the colon. Both passed the old literal grep.
+# =========================================================
+echo ""
+echo "=== Test 38: lowercase and double-spaced SEVERITY block commit ==="
+
+setup_repo
+stage_small_change
+
+MOCK38_DIR="${TMPDIR_TEST}/mock38"
+make_mock_claude_by_agent "${MOCK38_DIR}" \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  "VERDICT: FAIL
+
+ISSUE: Hardcoded credential
+Severity:  Blocking
+LOCATION: foo.sh:2
+DETAILS: Remove the hardcoded credential."
+
+TEST38_LOG="${TMPDIR_TEST}/test38-review.log"
+rm -f "${TEST38_LOG}"
+
+exit_t38=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST38_LOG}" CLAUDE_CLI="${MOCK38_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t38=$?
+cd - >/dev/null
+
+assert_eq \
+  "lowercase + double-spaced SEVERITY blocks commit (exit 1)" \
+  "1" \
+  "${exit_t38}"
+
+# =========================================================
+# TEST 39: a WARNING-only FAIL is still non-blocking after the loosening
+#
+# The must-NOT-match half of the corpus, end to end: loosening the matcher
+# must not turn every FAIL into a block. Guards the direction Test 12 pins,
+# against a future pattern change that drops the BLOCKING keyword requirement.
+# =========================================================
+echo ""
+echo "=== Test 39: WARNING-only FAIL stays non-blocking after loosening ==="
+
+setup_repo
+stage_small_change
+
+MOCK39_DIR="${TMPDIR_TEST}/mock39"
+make_mock_claude_by_agent "${MOCK39_DIR}" \
+  "VERDICT: PASS
+
+No blocking issues found." \
+  "VERDICT: FAIL
+
+ISSUE: Unpin needs rationale
+**SEVERITY:** WARNING
+LOCATION: settings.json:1
+DETAILS: Document why the pin was removed."
+
+TEST39_LOG="${TMPDIR_TEST}/test39-review.log"
+rm -f "${TEST39_LOG}"
+
+exit_t39=0
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST39_LOG}" CLAUDE_CLI="${MOCK39_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || exit_t39=$?
+cd - >/dev/null
+
+assert_eq \
+  "markdown-bolded WARNING does not block commit (exit 0)" \
+  "0" \
+  "${exit_t39}"
 
 # =========================================================
 # Summary
