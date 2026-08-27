@@ -396,6 +396,14 @@ normalize_agent_response() {
     # Otherwise .result is the serialized object. Render the
     # VERDICT/ISSUE/SEVERITY/LOCATION/DETAILS block the rest of the pipeline
     # expects, straight from the structured findings.
+    #
+    # DETAILS repeats ISSUE, because the phase-1 schema has no `details` field:
+    # its finding is {severity, location, issue}. That is a real loss of the
+    # explanation a human reads, and it is deliberate — phase 1 keeps the
+    # CURRENT taxonomy so the change stays verifiable against the existing
+    # suites. Adding `details` belongs with the taxonomy rework (design item 2),
+    # where the prompt language that produces it is rewritten anyway. Until
+    # then a rendered finding is terser than a prose one, never wrong.
     _rendered=$(printf '%s' "${_raw}" | jq -r '
       .structured_output as $o
       | ([ "VERDICT: " + ($o.verdict // (if $o.blocking then "FAIL" else "PASS" end)) ]
