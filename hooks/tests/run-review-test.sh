@@ -228,7 +228,7 @@ _mock_write_envelope() {
     # prose sub-languages the schema does not model (NON_BLOCKING_ISSUE /
     # TITLE / END_ISSUE) survive. The serialized-object shape the real CLI
     # returns for a pure tool call is covered separately by
-    # make_mock_claude_structured_only below.
+    # make_mock_claude_structured_only above.
     jq -n --rawfile r "${_dest}.txt" --argjson so "${_so}" \
       '{type:"result",subtype:"success",is_error:false,result:$r,structured_output:$so}' >"${_dest}"
   else
@@ -790,6 +790,42 @@ assert_contains \
 #
 # $4/$5 optionally override the code-reviewer / adversarial structured_output:
 # a raw JSON object, or "none" for an envelope with NO structured_output key.
+# Build a mock emitting the REAL CLI's pure-tool-call shape: `.result` is the
+# SERIALIZED structured object, carrying no prose at all, so run-review.sh must
+# RENDER the VERDICT/ISSUE/SEVERITY block out of `.structured_output`.
+#
+# This is the shape measured against the live CLI (see Test 48). It matters
+# because the renderer is skipped entirely when `.result` already contains a
+# VERDICT line, so a prose-bearing mock silently routes around it — which is
+# how the FIX_NOW exclusion went unpinned: the assertion existed, the code was
+# correct, and no mock ever reached the code being asserted about.
+#
+# $2/$3 are the structured objects for code-reviewer / adversarial-reviewer.
+make_mock_claude_structured_only() {
+  local mock_dir="$1" cr_structured="$2" ar_structured="$3"
+  mkdir -p "${mock_dir}"
+  jq -n --argjson so "${cr_structured}" \
+    '{type:"result",subtype:"success",is_error:false,stop_reason:"tool_use",result:($so|tojson),structured_output:$so}' \
+    >"${mock_dir}/cr_output.json"
+  jq -n --argjson so "${ar_structured}" \
+    '{type:"result",subtype:"success",is_error:false,stop_reason:"tool_use",result:($so|tojson),structured_output:$so}' \
+    >"${mock_dir}/ar_output.json"
+  cat >"${mock_dir}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+if [[ "\$2" == *adversarial* ]]; then
+  cat "${mock_dir}/ar_output.json"
+else
+  cat "${mock_dir}/cr_output.json"
+fi
+exit 0
+EOF
+  chmod +x "${mock_dir}/claude"
+}
+
 make_mock_claude_by_agent() {
   local mock_dir="$1" cr_output="$2" ar_output="$3"
   local cr_structured="${4:-}" ar_structured="${5:-}"
@@ -3094,6 +3130,83 @@ assert_eq \
   "the blocking finding still blocks with details present" \
   "1" \
   "${exit_t54}"
+
+# =========================================================
+# TEST 55: the renderer EXCLUDES FIX_NOW from the prose block.
+#
+# Test 49 asserts this, but its mock puts prose in `.result`, and the renderer
+# is skipped whenever `.result` already carries a VERDICT line. So the code
+# under assertion never ran: deleting the exclusion from the renderer left the
+# whole suite green.
+#
+# This test drives the REAL CLI shape (`.result` = serialized object, no
+# prose), which forces the renderer to run. A FIX_NOW finding must not appear
+# in the rendered VERDICT/ISSUE/SEVERITY block. That block is what
+# has_blocking_severity() reads and what lib-review-issues.sh files from, so a
+# leak here would turn every mechanical suggestion into a GitHub issue -- the
+# exact firehose the FIX_NOW tier exists to prevent.
+# =========================================================
+echo ""
+echo "=== Test 55: renderer excludes FIX_NOW from the prose block ==="
+
+setup_repo
+stage_small_change
+
+MOCK55_DIR="${TMPDIR_TEST}/mock55"
+make_mock_claude_structured_only "${MOCK55_DIR}" \
+  '{"verdict":"PASS","blocking":false,"findings":[{"severity":"FIX_NOW","location":"foo.sh:2","issue":"quote the expansion","details":"add quotes"},{"severity":"WARNING","location":"foo.sh:5","issue":"minor nit","details":"n/a"}]}' \
+  '{"verdict":"PASS","blocking":false,"findings":[]}'
+
+GH_STUB55="${TMPDIR_TEST}/ghstub55"
+mkdir -p "${GH_STUB55}"
+GH_CALLS55="${TMPDIR_TEST}/gh-calls-55.txt"
+: >"${GH_CALLS55}"
+cat >"${GH_STUB55}/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"${GH_CALLS55}"
+exit 0
+EOF
+chmod +x "${GH_STUB55}/gh"
+
+TEST55_LOG="${TMPDIR_TEST}/test55-review.log"
+rm -f "${TEST55_LOG}"
+exit_t55=0
+cd "${REPO_DIR}"
+PATH="${GH_STUB55}:${PATH}" REVIEW_LOG="${TEST55_LOG}" CLAUDE_CLI="${MOCK55_DIR}/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) >/dev/null 2>&1 || exit_t55=$?
+cd - >/dev/null
+
+log55="$(cat "${TEST55_LOG}" 2>/dev/null || echo "")"
+
+# The control: prove the renderer actually ran for this mock. Without this a
+# clean result could mean "excluded correctly" OR "rendered nothing at all",
+# and those are not the same outcome.
+assert_contains \
+  "control: the renderer ran and emitted the non-FIX_NOW finding" \
+  "SEVERITY: WARNING" \
+  "${log55}"
+
+assert_not_contains \
+  "renderer never emits SEVERITY: FIX_NOW into the prose block" \
+  "SEVERITY: FIX_NOW" \
+  "${log55}"
+
+assert_eq \
+  "a FIX_NOW-only-plus-warning review still exits 0" \
+  "0" \
+  "${exit_t55}"
+
+# Assign through a local first: a `grep | tr | sed` pipeline inside the
+# assertion masks each stage's exit status (SC2312).
+gh55_calls=0
+if [[ -s "${GH_CALLS55}" ]]; then
+  gh55_calls=$(grep -c 'issue create' "${GH_CALLS55}" || true)
+fi
+
+assert_eq \
+  "renderer path files nothing" \
+  "0" \
+  "${gh55_calls}"
 
 # =========================================================
 # Summary
