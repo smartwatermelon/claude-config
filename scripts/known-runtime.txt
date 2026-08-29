@@ -35,6 +35,7 @@ todos
 skills
 uploads
 calibration-samples
+feedback
 
 # Files
 .claude.json
