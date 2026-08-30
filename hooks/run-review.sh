@@ -190,6 +190,33 @@ log_error() { echo -e "${RED}[review]${NC} $*" >&2; }
 # distinguish those re-inspect the raw output separately.
 parse_verdict() {
   local _norm
+  # Structured first, prose second. Everything reaching here is normally
+  # unwrapped by normalize_agent_response, but a raw SDK envelope that slips
+  # through has no `VERDICT:` line — the verdict lives at
+  # .structured_output.verdict — so the prose grep below returns "" and the
+  # caller reads "unparseable" as "untrustworthy" and blocks. That blocked a
+  # commit whose review had actually PASSed (smartwatermelon/claude-config#448).
+  #
+  # Reading the structured field first makes the call site correct regardless
+  # of how the value arrived, rather than enumerating the shapes prose can
+  # take. Non-JSON input fails the jq and costs one failed parse.
+  local _structured
+  _structured=$(printf '%s' "$1" | jq -er '
+    if (.structured_output.verdict | type) == "string"
+    then (.structured_output.verdict | ascii_upcase)
+    else halt_error(3) end' 2>/dev/null) || _structured=""
+  case "${_structured}" in
+    PASS | FAIL | REVISE)
+      printf '%s\n' "${_structured}"
+      return 0
+      ;;
+    *)
+      # Absent, empty, or an unrecognized spelling — fall through to the prose
+      # parser below rather than inventing a verdict from a value we do not
+      # understand.
+      ;;
+  esac
+
   _norm=$(printf '%s\n' "$1" | tr -d '*`_')
   if printf '%s\n' "${_norm}" | grep -qiE 'VERDICT:[[:space:]]*PASS'; then
     echo "PASS"
@@ -199,6 +226,27 @@ parse_verdict() {
     echo "REVISE"
   else
     echo ""
+  fi
+}
+
+# Explain WHY a verdict could not be read, rather than only that it could not.
+# "Could not parse verdict" printed above output containing `"verdict":"PASS"`
+# sends the reader hunting for a reviewer problem that does not exist
+# (smartwatermelon/claude-config#448). $1 = the unparseable output.
+describe_unparseable_verdict() {
+  local _o="$1"
+  if printf '%s' "${_o}" | jq -e '.structured_output' >/dev/null 2>&1; then
+    local _v
+    _v=$(printf '%s' "${_o}" | jq -r '.structured_output.verdict // "(absent)"' 2>/dev/null) || _v="(unreadable)"
+    log_error "The output is a raw SDK envelope that reached the gate unrendered."
+    log_error "Its .structured_output.verdict is: ${_v}"
+    log_error "This is a bug in this hook, not a reviewer failure — see claude-config#448."
+  elif printf '%s' "${_o}" | jq -e . >/dev/null 2>&1; then
+    log_error "The output parsed as JSON but carried no .structured_output."
+  elif [[ -z "${_o//[[:space:]]/}" ]]; then
+    log_error "The output was empty."
+  else
+    log_error "The output is prose carrying no recognizable VERDICT: line."
   fi
 }
 
@@ -1730,6 +1778,7 @@ ${DIFF}
     fi
   else
     log_error "Could not parse full-diff review verdict"
+    describe_unparseable_verdict "${FULL_DIFF_OUTPUT}"
     log_error "Output was:"
     echo "${FULL_DIFF_DISPLAY}" | head -20 >&2
     printf 'full-diff: FAIL (unparseable)\n' >>"${REVIEW_LOG}" || true
@@ -1981,6 +2030,7 @@ no factual claim about external state (style, structure, maintainability)."
     fi
   else
     log_error "Could not parse codebase review verdict"
+    describe_unparseable_verdict "${CODEBASE_OUTPUT}"
     log_error "Output was:"
     echo "${CODEBASE_DISPLAY}" | head -20 >&2
     printf 'codebase: FAIL (unparseable)\n' >>"${REVIEW_LOG}" || true
@@ -2210,6 +2260,7 @@ elif [[ "${CODE_REVIEWER_VERDICT}" == "FAIL" || "${CODE_REVIEWER_VERDICT}" == "R
   CODE_REVIEWER_VERDICT="FAIL" # normalize REVISE -> FAIL for downstream contract
 else
   log_error "Could not parse code-reviewer verdict"
+  describe_unparseable_verdict "${CODE_REVIEWER_OUTPUT}"
   log_error "BLOCKING: Cannot verify review result"
   log_error ""
   log_error "Output was:"
@@ -2226,6 +2277,7 @@ if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
     ADVERSARIAL_VERDICT="FAIL" # normalize REVISE -> FAIL for downstream contract
   else
     log_error "Could not parse adversarial-reviewer verdict"
+    describe_unparseable_verdict "${ADVERSARIAL_OUTPUT}"
     log_error "BLOCKING: Cannot verify adversarial review result"
     log_error ""
     log_error "Output was:"
