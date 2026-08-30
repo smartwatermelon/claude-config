@@ -1742,8 +1742,16 @@ stage_small_change
 # Prime the round-history file as if a prior round on this branch/file-set
 # already FAILed (same mechanism Test 25/28 exercise) — this is the signal
 # that should force cache bypass.
-TEST29_BRANCH="$(git -C "${REPO_DIR}" symbolic-ref --short HEAD)"
-TEST29_ROUND_KEY="$(printf '%s\n%s\n' "${TEST29_BRANCH}" "foo.sh" | shasum -a 256 | awk '{print $1}')"
+# Derive the key with the production function rather than rebuilding it here.
+# A hand-rolled copy silently drifts: the previous version omitted the `sort`
+# that round_history_key applies, and matched only because this test stages a
+# single file, where sorting one line is a no-op. Staging a second file would
+# have made the primed key stop matching the one run-review.sh computes — the
+# cache bypass would stop being exercised and the test would still pass
+# (smartwatermelon/claude-config#447).
+# shellcheck source=hooks/lib-review-context.sh
+source "${SCRIPT_DIR}/../lib-review-context.sh"
+TEST29_ROUND_KEY="$(cd "${REPO_DIR}" && round_history_key "foo.sh")"
 TEST29_CACHE_DIR="${REPO_DIR}/.git/claude-review-cache"
 mkdir -p "${TEST29_CACHE_DIR}"
 cat >"${TEST29_CACHE_DIR}/round-history-${TEST29_ROUND_KEY}" <<'EOF'
