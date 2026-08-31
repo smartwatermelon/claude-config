@@ -247,6 +247,29 @@ describe_unparseable_verdict() {
     log_error "The output was empty."
   else
     log_error "The output is prose carrying no recognizable VERDICT: line."
+    log_error "NOTE: this describes the value the GATE received, which is not"
+    log_error "necessarily what the reviewer returned — normalize_agent_response"
+    log_error "runs in between. If the terminal above shows a JSON envelope with"
+    log_error "a .structured_output.verdict, that verdict was dropped by a"
+    log_error "transform, not missing from the review (claude-config#450)."
+  fi
+  # The printed *_DISPLAY copy is stripped, so the operator never sees the value
+  # the parser actually saw. Persist it — recovering it cost a full session in
+  # both #448 and #450 (issue #450, suggested step 1).
+  # Only claim the append when it actually succeeded. A redirection to an
+  # unwritable path fails the block, and announcing a file the operator will
+  # then not find sends them chasing a second phantom on top of the first.
+  # The outer `2>/dev/null` catches bash's own "No such file" on the failed
+  # redirection; an inner one would not, since it applies to the block's
+  # commands rather than to the `>>` itself.
+  if [[ -n "${REVIEW_LOG:-}" ]] && {
+    {
+      echo "--- unparseable verdict: raw value seen by the gate ---"
+      printf '%s\n' "${_o}"
+      echo "--- end raw value ---"
+    } >>"${REVIEW_LOG}"
+  } 2>/dev/null; then
+    log_error "Raw gate input appended to: ${REVIEW_LOG}"
   fi
 }
 
@@ -510,6 +533,50 @@ output_blocks() {
 # response carried a real boolean; echoes the input unchanged otherwise, so a
 # non-JSON response (older CLI, error text, an empty timeout) degrades to the
 # prose path instead of being discarded.
+# Render the VERDICT/ISSUE/SEVERITY/LOCATION/DETAILS block the rest of the
+# pipeline reads, straight from a raw envelope's .structured_output.
+#
+# $1 = raw CLI envelope. Prints the rendered prose, or nothing when the
+# envelope has no renderable structured output.
+#
+# Shared by BOTH of normalize_agent_response's structured paths. It used to be
+# inlined in the boolean-present branch only, which is how #450's first fix
+# came to prepend a bare verdict line in the other branch instead of rendering
+# — and prepending left `.result`'s serialized JSON as the only "prose" a
+# severity gate could grep, which no severity pattern matches. One renderer,
+# used by both branches, removes that asymmetry at the source.
+#
+# DETAILS comes from the finding's own `details`, falling back to `issue` only
+# when the reviewer omitted one.
+#
+# The `type != "object"` guard is a DELIBERATE divergence from the jq this was
+# extracted from: on `structured_output: null` or absent, the old inlined form
+# evaluated `$o.verdict // (if $o.blocking then ...)` to `VERDICT: PASS` —
+# inventing a passing verdict out of a null. Both inputs are unreachable from
+# the boolean-present branch (extract_structured_blocking requires
+# .structured_output.blocking to be a JSON boolean, which requires an object
+# parent), so this changes no current behavior. Keep the guard: it makes the
+# helper safe for a future caller that does not pre-screen its input.
+#
+# FIX_NOW findings are EXCLUDED. They are not part of the block a gate or an
+# issue filer reads; they are printed separately, at the commit stage only, by
+# emit_fix_now_entries(). Rendering them here would feed them to
+# has_blocking_severity() and to lib-review-issues.sh, which is precisely what
+# must not happen.
+render_structured_prose() {
+  printf '%s' "$1" | jq -r '
+    .structured_output as $o
+    | if ($o | type) != "object" then "" else
+      ([ "VERDICT: " + ($o.verdict // (if $o.blocking then "FAIL" else "PASS" end)) ]
+       + ( ($o.findings // [])
+           | map(select((.severity // "WARNING") | ascii_upcase != "FIX_NOW"))
+           | map( "\nISSUE: " + (.issue // "unspecified")
+                  + "\nSEVERITY: " + (.severity // "WARNING")
+                  + "\nLOCATION: " + (.location // "unspecified")
+                  + "\nDETAILS: " + (.details // .issue // "unspecified") ) )
+      ) | join("\n") end' 2>/dev/null || true
+}
+
 normalize_agent_response() {
   local _raw="$1"
   local _blocking _result _rendered _fixnow _withfix
@@ -561,16 +628,7 @@ normalize_agent_response() {
     # printed separately, at the commit stage only, by emit_fix_now_entries().
     # Rendering them into this block would feed them to has_blocking_severity()
     # and to lib-review-issues.sh, which is precisely what must not happen.
-    _rendered=$(printf '%s' "${_raw}" | jq -r '
-      .structured_output as $o
-      | ([ "VERDICT: " + ($o.verdict // (if $o.blocking then "FAIL" else "PASS" end)) ]
-         + ( ($o.findings // [])
-             | map(select((.severity // "WARNING") | ascii_upcase != "FIX_NOW"))
-             | map( "\nISSUE: " + (.issue // "unspecified")
-                    + "\nSEVERITY: " + (.severity // "WARNING")
-                    + "\nLOCATION: " + (.location // "unspecified")
-                    + "\nDETAILS: " + (.details // .issue // "unspecified") ) )
-        ) | join("\n")' 2>/dev/null) || _rendered=""
+    _rendered=$(render_structured_prose "${_raw}")
 
     # Defensive: never hand downstream an empty body. A structured object that
     # renders to nothing still has to carry a parseable verdict.
@@ -585,10 +643,162 @@ normalize_agent_response() {
     _withfix=$(attach_fix_now "${_fixnow}" "${_rendered}")
     attach_structured_blocking "${_blocking}" "${_withfix}"
   else
-    # An envelope whose structured_output is absent, null, or the wrong type.
-    # The reviewer did not answer the boolean; leave .result unmarked so the
-    # gate falls back to has_blocking_severity() rather than silently passing.
-    printf '%s\n' "${_result}"
+    # An envelope whose structured_output.blocking is absent, null, or the
+    # wrong type. The reviewer did not answer the BOOLEAN — but it may still
+    # have answered the VERDICT, and those are independent fields.
+    #
+    # This branch used to print `.result` alone. When the response ALSO carried
+    # no `VERDICT:` line in its prose (under --json-schema the model is
+    # constrained to a tool call, so `.result` is often narration or the
+    # serialized object), that discarded a perfectly good
+    # `.structured_output.verdict` and handed the gate bare prose. parse_verdict
+    # then returned "" and the run hard-blocked a clean PASS, reporting it as
+    # "prose carrying no recognizable VERDICT: line" — accurate about the value
+    # it received, and wholly misleading about the review
+    # (smartwatermelon/claude-config#450, the recurrence of #448).
+    #
+    # So: prepend a rendered VERDICT line when the structured verdict is
+    # present and the prose does not already carry one. Deliberately NO
+    # structured sentinel is attached — the reviewer did not supply the
+    # boolean, so output_blocks() must still fall back to
+    # has_blocking_severity() over the prose rather than silently passing.
+    # That keeps the fail-closed direction intact while letting the verdict
+    # through.
+    local _sv
+    _sv=$(printf '%s' "${_raw}" | jq -er '
+      if (.structured_output.verdict | type) == "string"
+      then (.structured_output.verdict | ascii_upcase)
+      else halt_error(3) end' 2>/dev/null) || _sv=""
+    case "${_sv}" in
+      PASS | FAIL | REVISE) ;;
+      *)
+        # No usable verdict either. Hand back the prose unchanged; the gate's
+        # unparseable path will block, which is correct — nothing here is a
+        # reviewer answer.
+        printf '%s\n' "${_result}"
+        return 0
+        ;;
+    esac
+
+    # The reviewer's prose keeps priority when it is REAL prose: the
+    # sub-languages the schema does not model (NON_BLOCKING_ISSUE / TITLE /
+    # END_ISSUE, consumed by lib-review-issues.sh) live ONLY there, and
+    # rendering over them silently stops pre-existing-defect filing.
+    #
+    # The guard matches a NON_BLOCKING_ISSUE header as well as a VERDICT line.
+    # Keying on VERDICT alone was not enough: a `.result` carrying only NBI
+    # blocks has no VERDICT line, so it fell through to the renderer and the
+    # blocks were destroyed — the exact content the guard exists to protect.
+    if printf '%s\n' "${_result}" | grep -qiE '^[[:space:]]*[*`_]*(VERDICT|NON_BLOCKING_ISSUE)'; then
+      # Fail-closed still has to hold on this path. Returning `.result` bare
+      # discards .structured_output entirely — verdict, findings and all — so a
+      # reviewer whose prose says nothing blocking, but whose structured
+      # findings carry a BLOCKING severity, passed the gate. Attaching no
+      # sentinel (correct: it never answered the boolean) means nothing rescues
+      # it downstream either.
+      #
+      # So when the structured verdict is FAIL/REVISE and neither the prose nor
+      # the structured findings put a matchable BLOCKING severity in front of
+      # has_blocking_severity(), append one. The prose is preserved intact
+      # above it, so the sub-languages survive and the human still sees the
+      # reviewer's own words.
+      # The test is against what actually gets EMITTED — `_result` — not against
+      # `_result` plus a rendering that is then thrown away. Checking the
+      # combined text was the first cut here and it left the hole open: the
+      # structured findings supplied the BLOCKING line that satisfied the
+      # check, while the value handed to the gate contained no such line.
+      #
+      # A structured BLOCKING finding that the prose does not mention is
+      # therefore appended verbatim, which both closes the gap and tells the
+      # human what the reviewer actually found.
+      if [[ "${_sv}" != "PASS" ]] && ! has_blocking_severity "${_result}"; then
+        _rendered=$(render_structured_prose "${_raw}")
+        if has_blocking_severity "${_rendered}"; then
+          # Carry the real findings across rather than a synthetic placeholder.
+          # Drop the rendering's own VERDICT line: the prose already has one,
+          # and a second would leave two verdicts in the output for
+          # parse_verdict's PASS-anywhere-wins rule to pick between.
+          #
+          # NOTE: when the prose says PASS and the structured findings say
+          # BLOCKING, parse_verdict reports PASS while output_blocks() blocks.
+          # Severity deliberately wins over verdict — that is the fail-closed
+          # direction — but the log will read as a passing review that blocked,
+          # which is worth recognizing rather than debugging at 3am.
+          _result="${_result}${_NL}${_NL}$(printf '%s\n' "${_rendered}" | grep -vE '^[[:space:]]*[*`_]*VERDICT' || true)"
+        else
+          _result="${_result}${_NL}${_NL}ISSUE: ${_sv} verdict with no blocking finding and no structured boolean${_NL}SEVERITY: BLOCKING${_NL}LOCATION: unspecified${_NL}DETAILS: Treated as blocking because the reviewer returned ${_sv} without the boolean that would let this be evaluated as non-blocking (claude-config#450)."
+        fi
+      fi
+      # No VERDICT line at all (an NBI-only .result) still needs one, or the
+      # gate reads the whole review as unparseable and hard-blocks — the very
+      # failure #450 is about.
+      if ! printf '%s\n' "${_result}" | grep -qiE '^[[:space:]]*[*`_]*VERDICT'; then
+        _result="VERDICT: ${_sv}${_NL}${_result}"
+      fi
+      _fixnow=$(extract_fix_now "${_raw}")
+      _withfix=$(attach_fix_now "${_fixnow}" "${_result}")
+      printf '%s\n' "${_withfix}"
+      return 0
+    fi
+
+    # Otherwise RENDER, rather than prepending a verdict line onto whatever
+    # `.result` happens to hold.
+    #
+    # Prepending was the first attempt at this and it opened a hole. When
+    # `.result` is the serialized object — the NORMAL shape under --json-schema,
+    # per this function's own header — the prose handed downstream is JSON.
+    # has_blocking_severity() matches `SEVERITY:[[:space:]]*BLOCKING`, and the
+    # serialized form is `"severity":"BLOCKING"`, whose quote between the colon
+    # and the keyword defeats that pattern. So a reviewer reporting
+    # verdict=FAIL with a BLOCKING finding, slipping only on the boolean's
+    # TYPE, produced a verdict of FAIL that no gate would act on: exit 0 where
+    # the pre-#450 code exited 1. Trading a noisy false block for a silent
+    # false pass is the one direction a gate must never move.
+    #
+    # Rendering emits real `SEVERITY: BLOCKING` lines, so the stated
+    # fail-closed fallback actually has prose it can read.
+    _rendered=$(render_structured_prose "${_raw}")
+
+    # Belt-and-braces for a FAIL/REVISE that renders no findings at all: the
+    # verdict says something is wrong and there is no severity line to prove
+    # it, so synthesize one rather than emitting a verdict no gate can act on.
+    if [[ -z "${_rendered}" ]]; then
+      if [[ "${_sv}" == "PASS" ]]; then
+        _rendered="VERDICT: PASS${_NL}No blocking issues found."
+      else
+        _rendered="VERDICT: ${_sv}${_NL}ISSUE: reviewer returned ${_sv} with no renderable detail${_NL}SEVERITY: BLOCKING${_NL}LOCATION: unspecified${_NL}DETAILS: The structured response set verdict=${_sv} but supplied no usable blocking boolean and no findings."
+      fi
+    fi
+
+    # Keep the reviewer's own words when `findings[]` was empty but `.result`
+    # carried real finding prose (an ISSUE:/SEVERITY:/LOCATION: block with no
+    # leading VERDICT line, which is why it reached the renderer rather than
+    # the prose-priority path above). Rendering alone would emit a verdict and
+    # a synthetic reason while `foo.sh:2` and "breaks under set -e" vanished —
+    # a hard block with its diagnostic content stripped, which is the worst
+    # kind to receive. Appending costs a duplicate verdict line at worst;
+    # parse_verdict reads the first, and PASS-anywhere-wins cannot fire here
+    # because the appended text has no VERDICT line of its own.
+    if [[ -n "${_result//[[:space:]]/}" ]] \
+      && printf '%s\n' "${_result}" | grep -qiE '^[[:space:]]*[*`_]*(ISSUE|SEVERITY|LOCATION|DETAILS)'; then
+      _rendered="${_rendered}${_NL}${_result}"
+    fi
+
+    # A rendered FAIL/REVISE carrying no BLOCKING severity would reach
+    # output_blocks() and pass, because the reviewer never answered the
+    # boolean and the prose gives the fallback nothing to match. The reviewer
+    # said the diff is not acceptable; honor that rather than downgrading it
+    # to a warning on the strength of a field it failed to fill in.
+    if [[ "${_sv}" != "PASS" ]] && ! has_blocking_severity "${_rendered}"; then
+      _rendered="${_rendered}${_NL}ISSUE: ${_sv} verdict with no blocking finding and no structured boolean${_NL}SEVERITY: BLOCKING${_NL}LOCATION: unspecified${_NL}DETAILS: Treated as blocking because the reviewer returned ${_sv} without the boolean that would let this be evaluated as non-blocking (claude-config#450)."
+    fi
+
+    # Still NO structured sentinel: the reviewer did not answer the boolean, so
+    # output_blocks() must decide from the rendered prose above rather than
+    # from a decision channel nobody filled in.
+    _fixnow=$(extract_fix_now "${_raw}")
+    _withfix=$(attach_fix_now "${_fixnow}" "${_rendered}")
+    printf '%s\n' "${_withfix}"
   fi
 }
 

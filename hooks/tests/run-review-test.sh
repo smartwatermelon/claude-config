@@ -826,6 +826,36 @@ EOF
   chmod +x "${mock_dir}/claude"
 }
 
+# Mock emitting an envelope whose .structured_output.blocking is NOT a boolean
+# and whose .result is narration rather than a VERDICT block -- the shape that
+# hard-blocked a clean PASS in smartwatermelon/claude-config#450. Distinct from
+# make_mock_claude_structured_only, which serializes .result from the structured
+# object and so always carries a "verdict" string in the prose.
+make_mock_claude_nonboolean_blocking() {
+  local mock_dir="$1" cr_structured="$2" cr_prose="$3" ar_structured="$4"
+  mkdir -p "${mock_dir}"
+  jq -n --argjson so "${cr_structured}" --arg prose "${cr_prose}" \
+    '{type:"result",subtype:"success",is_error:false,stop_reason:"tool_use",result:$prose,structured_output:$so}' \
+    >"${mock_dir}/cr_output.json"
+  jq -n --argjson so "${ar_structured}" \
+    '{type:"result",subtype:"success",is_error:false,stop_reason:"tool_use",result:($so|tojson),structured_output:$so}' \
+    >"${mock_dir}/ar_output.json"
+  cat >"${mock_dir}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+if [[ "\$2" == *adversarial* ]]; then
+  cat "${mock_dir}/ar_output.json"
+else
+  cat "${mock_dir}/cr_output.json"
+fi
+exit 0
+EOF
+  chmod +x "${mock_dir}/claude"
+}
+
 make_mock_claude_by_agent() {
   local mock_dir="$1" cr_output="$2" ar_output="$3"
   local cr_structured="${4:-}" ar_structured="${5:-}"
@@ -3215,6 +3245,161 @@ assert_eq \
   "renderer path files nothing" \
   "0" \
   "${gh55_calls}"
+
+echo "=== Test 56: a non-boolean blocking field does not discard the verdict (#450) ==="
+
+# Regression for smartwatermelon/claude-config#450. When the reviewer honors the
+# schema's verdict but not its blocking boolean, and .result carries narration
+# rather than a VERDICT block, normalize_agent_response used to print .result
+# alone and drop .structured_output.verdict. The gate then saw bare prose,
+# parse_verdict returned "", and a clean PASS hard-blocked the commit with
+# "Could not parse code-reviewer verdict".
+
+setup_repo
+stage_small_change
+
+MOCK56_DIR="${TMPDIR_TEST}/mock56"
+make_mock_claude_nonboolean_blocking "${MOCK56_DIR}" \
+  '{"verdict":"PASS","blocking":"false","findings":[]}' \
+  'I reviewed the diff. The changes are clean and correct.' \
+  '{"verdict":"PASS","blocking":false,"findings":[]}'
+
+TEST56_LOG="${TMPDIR_TEST}/test56-review.log"
+rm -f "${TEST56_LOG}"
+exit_t56=0
+t56_stderr="${TMPDIR_TEST}/test56-stderr.txt"
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST56_LOG}" CLAUDE_CLI="${MOCK56_DIR}/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) >/dev/null 2>"${t56_stderr}" || exit_t56=$?
+cd - >/dev/null
+
+t56_err="$(cat "${t56_stderr}" 2>/dev/null || echo "")"
+
+assert_eq \
+  "#450: a PASS with a non-boolean blocking field exits 0" \
+  "0" \
+  "${exit_t56}"
+
+assert_not_contains \
+  "#450: the gate does not report the verdict as unparseable" \
+  "Could not parse code-reviewer verdict" \
+  "${t56_err}"
+
+assert_contains \
+  "control: the code-reviewer mock was invoked" \
+  "completed in" \
+  "${t56_err}"
+
+echo "=== Test 57: a non-boolean blocking field still fails closed on BLOCKING prose (#450) ==="
+
+# The other half of #450's fix: recovering the verdict must NOT hand the gate a
+# structured decision the reviewer never made. With no boolean, output_blocks()
+# must still fall back to has_blocking_severity() over the prose.
+#
+# The adversarial reviewer FAILs here too, deliberately. A PASS from it would
+# put the run on the disagreement/arbitration path, and this test would then be
+# measuring the arbiter rather than the fallback it names.
+
+setup_repo
+stage_small_change
+
+MOCK57_DIR="${TMPDIR_TEST}/mock57"
+make_mock_claude_nonboolean_blocking "${MOCK57_DIR}" \
+  '{"verdict":"FAIL","blocking":"true","findings":[]}' \
+  'ISSUE: a real defect
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: this breaks under set -e' \
+  '{"verdict":"FAIL","blocking":true,"findings":[{"severity":"BLOCKING","location":"foo.sh:2","issue":"a real defect","details":"this breaks under set -e"}]}'
+
+TEST57_LOG="${TMPDIR_TEST}/test57-review.log"
+rm -f "${TEST57_LOG}"
+exit_t57=0
+t57_stderr="${TMPDIR_TEST}/test57-stderr.txt"
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST57_LOG}" CLAUDE_CLI="${MOCK57_DIR}/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) >/dev/null 2>"${t57_stderr}" || exit_t57=$?
+cd - >/dev/null
+
+t57_err="$(cat "${t57_stderr}" 2>/dev/null || echo "")"
+
+# Assign through a local first: the suite has no assert_ne, and comparing a
+# derived "blocked/passed" word reads better in the output than a raw code.
+t57_blocked="passed"
+if [[ "${exit_t57}" -ne 0 ]]; then
+  t57_blocked="blocked"
+fi
+
+assert_eq \
+  "#450: a FAIL with BLOCKING prose and no boolean still blocks" \
+  "blocked" \
+  "${t57_blocked}"
+
+# Assert the REASON, not just the exit code. Without this the test passes on
+# the unfixed code too -- which blocks this input, but for the wrong reason
+# ("unparseable verdict") -- and so cannot tell "the fail-closed fallback
+# worked" from "the verdict was never recovered at all".
+assert_not_contains \
+  "#450: ...and blocks because of the finding, not an unparseable verdict" \
+  "Could not parse code-reviewer verdict" \
+  "${t57_err}"
+
+echo "=== Test 58: a serialized-object .result with FAIL+BLOCKING must not fail open (#450) ==="
+
+# The hole the first attempt at #450's fix opened. `.result` here is the
+# SERIALIZED OBJECT -- the normal shape under --json-schema per
+# normalize_agent_response's own header -- and only the `blocking` field's TYPE
+# is wrong. Prepending a `VERDICT: FAIL` line onto that JSON left
+# has_blocking_severity() with `"severity":"BLOCKING"` to match, which its
+# pattern cannot do (the quote sits between the colon and the keyword). The
+# gate saw FAIL with no blocking finding and exited 0 -- a silent pass on a
+# review that said BLOCKING, where the pre-#450 code hard-blocked.
+
+setup_repo
+stage_small_change
+
+MOCK58_DIR="${TMPDIR_TEST}/mock58"
+MOCK58_SO='{"verdict":"FAIL","blocking":"true","findings":[{"severity":"BLOCKING","location":"foo.sh:2","issue":"a real defect","details":"this breaks under set -e"}]}'
+# Assign through a local first: a command substitution inside the argument list
+# masks jq's exit status (SC2312).
+MOCK58_PROSE=$(jq -nr --argjson so "${MOCK58_SO}" '$so|tojson')
+make_mock_claude_nonboolean_blocking "${MOCK58_DIR}" \
+  "${MOCK58_SO}" \
+  "${MOCK58_PROSE}" \
+  "${MOCK58_SO}"
+
+TEST58_LOG="${TMPDIR_TEST}/test58-review.log"
+rm -f "${TEST58_LOG}"
+exit_t58=0
+t58_stderr="${TMPDIR_TEST}/test58-stderr.txt"
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST58_LOG}" CLAUDE_CLI="${MOCK58_DIR}/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) >/dev/null 2>"${t58_stderr}" || exit_t58=$?
+cd - >/dev/null
+
+t58_err="$(cat "${t58_stderr}" 2>/dev/null || echo "")"
+
+t58_blocked="passed"
+if [[ "${exit_t58}" -ne 0 ]]; then
+  t58_blocked="blocked"
+fi
+
+assert_eq \
+  "#450: a serialized-object FAIL+BLOCKING with a string boolean still blocks" \
+  "blocked" \
+  "${t58_blocked}"
+
+assert_not_contains \
+  "#450: ...and does so on the finding, not an unparseable verdict" \
+  "Could not parse code-reviewer verdict" \
+  "${t58_err}"
+
+t58_log="$(cat "${TEST58_LOG}" 2>/dev/null || echo "")"
+
+assert_contains \
+  "control: the renderer emitted a matchable SEVERITY: BLOCKING line" \
+  "SEVERITY: BLOCKING" \
+  "${t58_log}"
 
 # =========================================================
 # Summary
