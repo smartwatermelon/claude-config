@@ -1,0 +1,11 @@
+{"requestId":"req-agent-a962c964-adversarial-0","type":"assistant","message":{"role":"assistant","usage":{"cache_read_input_tokens":214571,"cache_creation_input_tokens":9005,"input_tokens":0,"output_tokens":0}}}
+{"requestId":"req-agent-a962c964-adversarial-1","type":"assistant","message":{"role":"assistant","usage":{"cache_read_input_tokens":214571,"cache_creation_input_tokens":9000,"input_tokens":0,"output_tokens":0}}}
+{"requestId":"req-agent-a962c964-adversarial-2","type":"assistant","message":{"role":"assistant","usage":{"cache_read_input_tokens":214571,"cache_creation_input_tokens":9000,"input_tokens":0,"output_tokens":0}}}
+{"requestId":"req-agent-a962c964-adversarial-3","type":"assistant","message":{"role":"assistant","usage":{"cache_read_input_tokens":214571,"cache_creation_input_tokens":9000,"input_tokens":0,"output_tokens":0}}}
+{"requestId":"req-agent-a962c964-adversarial-4","type":"assistant","message":{"role":"assistant","usage":{"cache_read_input_tokens":214571,"cache_creation_input_tokens":9000,"input_tokens":0,"output_tokens":0}}}
+{"requestId":"req-agent-a962c964-adversarial-5","type":"assistant","message":{"role":"assistant","usage":{"cache_read_input_tokens":214571,"cache_creation_input_tokens":9000,"input_tokens":0,"output_tokens":0}}}
+{"requestId":"req-agent-a962c964-adversarial-6","type":"assistant","message":{"role":"assistant","usage":{"cache_read_input_tokens":214571,"cache_creation_input_tokens":9000,"input_tokens":0,"output_tokens":0}}}
+{"requestId":"req-agent-a962c964-adversarial-7","type":"assistant","message":{"role":"assistant","usage":{"cache_read_input_tokens":214571,"cache_creation_input_tokens":9000,"input_tokens":0,"output_tokens":0}}}
+{"requestId":"req-agent-a962c964-adversarial-8","type":"assistant","message":{"role":"assistant","usage":{"cache_read_input_tokens":214571,"cache_creation_input_tokens":9000,"input_tokens":0,"output_tokens":0}}}
+{"requestId":"req-agent-a962c964-adversarial-9","type":"assistant","message":{"role":"assistant","usage":{"cache_read_input_tokens":214571,"cache_creation_input_tokens":9000,"input_tokens":0,"output_tokens":0}}}
+{"requestId":"req-agent-a962c964-adversarial-0","type":"assistant","message":{"role":"assistant","usage":{"cache_read_input_tokens":214571,"cache_creation_input_tokens":9005,"input_tokens":0,"output_tokens":0}}}
