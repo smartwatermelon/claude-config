@@ -305,3 +305,64 @@ _subagent_input() {
   run bash -c "\"${HOOK}\" <<<'$(_subagent_input "${TMPD}/small.jsonl")'"
   [ "${status}" -eq 0 ]
 }
+
+# --- Portable replay of the incident (no machine-local state required) -------
+#
+# WHY THESE FIXTURES EXIST. The claim "this guard would have blocked the one
+# runaway agent and left the other four alone" was originally verified against
+# the real subagent transcripts under ~/.claude/projects/. Those exist on
+# exactly one machine and are not committable (they contain session content).
+# On any other checkout the central claim of this guard would have been
+# unverifiable -- taken on faith from a commit message.
+#
+# tests/fixtures/incident-91ef0da0/ holds five synthetic transcripts, one per
+# agent from the measured session, whose requestId-deduped totals reproduce
+# the real per-agent spend (19.4M / 3.7M / 3.2M / 2.2M / 1.7M). Each also
+# carries one duplicated requestId, mirroring how the real transcript stores
+# retried requests, so the fixtures exercise dedup as well as the thresholds.
+#
+# Confirmed equivalent: running the guard against the real transcripts and
+# against these fixtures produces identical verdicts at the 5M default.
+
+FIXTURES="${BATS_TEST_DIRNAME}/fixtures/incident-91ef0da0"
+
+@test "incident replay: only the runaway agent is blocked at the 5M default" {
+  local blocked=0 allowed=0 f
+  for f in "${FIXTURES}"/*.jsonl; do
+    run bash -c "\"${HOOK}\" <<<'$(_subagent_input "${f}")'"
+    if [ "${status}" -eq 2 ]; then
+      blocked=$((blocked + 1))
+    else
+      allowed=$((allowed + 1))
+    fi
+  done
+  # Exactly one of the five agents was the runaway. If a retune makes this 0,
+  # the guard has stopped catching the incident it was built for; if it makes
+  # this 2+, it has started blocking legitimate review fan-out.
+  [ "${blocked}" -eq 1 ]
+  [ "${allowed}" -eq 4 ]
+}
+
+@test "incident replay: the runaway agent is the fix-findings agent" {
+  run bash -c "\"${HOOK}\" <<<'$(_subagent_input "${FIXTURES}/agent-a78eb5a7-fix-findings.jsonl")'"
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *'19.4M'* ]]
+}
+
+@test "incident replay: the two reviewers are left alone" {
+  # These are the agents that did their job at reasonable cost. A guard that
+  # blocks them is worse than no guard, because it would train the operator
+  # to raise the ceiling permanently.
+  for f in agent-a360be39-security-reviewer agent-a962c964-adversarial; do
+    run bash -c "\"${HOOK}\" <<<'$(_subagent_input "${FIXTURES}/${f}.jsonl")'"
+    [ "${status}" -eq 0 ]
+  done
+}
+
+@test "incident replay: fixtures dedup their repeated requestId" {
+  # Each fixture repeats its first entry verbatim. If dedup regressed, every
+  # fixture total would inflate and the cheapest agent (1.7M) would cross a
+  # 2M ceiling. It must not.
+  run bash -c "env BUDGET_SUBAGENT_TOKENS=2000000 \"${HOOK}\" <<<'$(_subagent_input "${FIXTURES}/agent-a6447e0d-build-1-killed.jsonl")'"
+  [ "${status}" -eq 0 ]
+}

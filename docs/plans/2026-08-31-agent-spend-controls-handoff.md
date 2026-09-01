@@ -1,7 +1,7 @@
 # Agent spend controls — handoff
 
 **Date:** 2026-08-31
-**Status:** one commit landed (unpushed), two items designed but not built
+**Status:** two commits landed, pushed; two items designed but not built
 **Origin:** session `62eef446` in `claude-config`, investigating session `91ef0da0`
 in `huddle-transcribe` (2026-08-31) which cost **$42.04** in 2h16m.
 
@@ -87,13 +87,14 @@ Three distinct waste mechanisms, in order of cost:
 
 ## 2. What landed
 
-**Commit `513c979`** on branch `claude/feat-loop-budget-guard-62eef446`,
-**not pushed**, 1 commit ahead of `origin/main`.
+**Commit `513c979`** on branch `claude/feat-loop-budget-guard-62eef446`
+(plus `85347a4` for this document and a follow-up adding portable fixtures).
 
 ```
-scripts/hook-budget-guard.sh      258 ++++
-settings.json                      22 ++
-tests/test_hook_budget_guard.bats 307 ++++
+scripts/hook-budget-guard.sh              258 ++++
+settings.json                              22 ++
+tests/test_hook_budget_guard.bats         307 ++++
+tests/fixtures/incident-91ef0da0/*.jsonl    5 files
 ```
 
 A spend circuit-breaker that meters **tokens, not cycles**. A loop is only one
@@ -102,7 +103,8 @@ spend strictly dominates as a trigger.
 
 - **SubagentStop, 5M default.** Blocks the 19.2M outlier; the other four agents
   (1.6M/2.1M/3.1M/3.7M) pass untouched. Verified against the real subagent
-  transcripts, not just fixtures.
+  transcripts AND against committed fixtures that reproduce them (see §7), so
+  the claim is checkable on a machine that never saw the original session.
 - **Stop, 25M default**, with a 10M advisory warning first (`systemMessage`,
   never blocks). Would have fired around 16:10, roughly an hour before the
   expensive half of the session.
@@ -138,7 +140,7 @@ path in the hook payload. `huddle` appears exactly once in the script, in a
 comment. No path or repo coupling. Verified end-to-end by firing the deployed
 hook against a different repo's live session.
 
-Test state at handoff: **343 bats passing, 0 failures** (26 new). shellcheck
+Test state at handoff: **347 bats passing, 0 failures** (30 new). shellcheck
 clean at `-S info`, no disable directives. `scripts/tests` 8/9 —
 `test-post-push-status.sh` fails identically without these changes (confirmed by
 stashing), so it is pre-existing and unrelated.
@@ -290,39 +292,91 @@ not superseded by it.
 
 ## 7. Resuming
 
-State: branch `claude/feat-loop-budget-guard-62eef446`, commit `513c979`,
-**unpushed**, clean tree.
+**This section assumes a fresh machine with no local session cache.** Everything
+needed to verify the work is committed; nothing depends on `~/.claude/projects/`.
+
+State: branch `claude/feat-loop-budget-guard-62eef446`, two commits, clean tree.
 
 ```bash
-git -C ~/Developer/claude-config switch claude/feat-loop-budget-guard-62eef446
-git -C ~/Developer/claude-config log --oneline -1     # expect 513c979
-bats ~/Developer/claude-config/tests/                  # expect 343 ok, 0 not ok
+git clone <remote> claude-config && cd claude-config
+git switch claude/feat-loop-budget-guard-62eef446
+git log --oneline -2      # expect 85347a4 docs, 513c979 feat
+bats tests/               # expect 347 ok, 0 not ok
+shellcheck -S info scripts/hook-budget-guard.sh   # expect silence
 ```
 
-Confirm the guard is live and reading the current session:
+Deploy into the runtime (`~/.claude/scripts/` holds per-file symlinks, so a new
+script needs `install.sh` to link it; `settings.json` is itself a symlink, so the
+hook wiring goes live as soon as the repo is in place):
+
+```bash
+./install.sh --dry-run    # expect: Would symlink .../hook-budget-guard.sh
+./install.sh
+ls -l ~/.claude/scripts/hook-budget-guard.sh   # expect a symlink into this repo
+```
+
+### Verifying the central claim without the original transcripts
+
+The guard's whole justification is "it would have blocked the one runaway agent
+and left the other four alone". That was originally checked against the real
+subagent transcripts under `~/.claude/projects/`, which exist on one machine and
+are not committable.
+
+`tests/fixtures/incident-91ef0da0/` makes it reproducible anywhere: five
+synthetic transcripts, one per agent from the measured session, whose
+requestId-deduped totals match the real per-agent spend (19.4M / 3.7M / 3.2M /
+2.2M / 1.7M). Each carries one duplicated requestId, mirroring how the real
+transcript stores retries, so the fixtures exercise dedup too. Running the guard
+against the real transcripts and against these fixtures gives identical verdicts
+at the 5M default.
+
+```bash
+for f in tests/fixtures/incident-91ef0da0/*.jsonl; do
+  printf '{"hook_event_name":"SubagentStop","agent_type":"general-purpose","agent_transcript_path":"%s","stop_hook_active":false}' "$f" \
+    | ./scripts/hook-budget-guard.sh >/dev/null 2>&1
+  rc=$?   # capture BEFORE any other command runs, incl. a $(...) substitution
+  printf '%-42s exit=%s\n' "$(basename "$f" .jsonl)" "${rc}"
+done
+```
+
+Expected: `agent-a78eb5a7-fix-findings` exits 2; the other four exit 0.
+
+Four bats tests (27–30) pin this, so a retune that stops catching the incident —
+or starts blocking legitimate review fan-out — fails the suite rather than
+drifting silently.
+
+### Confirm the hook is live on the new machine
 
 ```bash
 printf '{"hook_event_name":"Stop","transcript_path":"%s","stop_hook_active":false}' \
-  "$HOME/.claude/projects/<project>/<session-id>.jsonl" \
+  "$(ls -t ~/.claude/projects/*/*.jsonl | head -1)" \
   | BUDGET_SESSION_WARN_TOKENS=1000 ~/.claude/scripts/hook-budget-guard.sh
 ```
 
 Expected: `{"systemMessage":"💸 Session spend: N.NM tokens (hard stop at 25.0M)."}`
-and exit 0.
+and exit 0. (Uses whatever the newest local transcript is, so it works on a
+machine that has never seen this session.)
 
-Suggested order:
+### The tests are self-contained
 
-1. **Push `513c979` and open a PR** (Protocol 6 allows autonomous PR creation;
+The bats suite builds its own fixtures in `mktemp` and needs no network, no `gh`
+auth, and no session history. `91ef0da0` appears in it only in comments. The
+guard script itself contains no absolute paths and reads only the transcript path
+handed to it by the hook payload — verified by grep, not assumed.
+
+### Suggested order
+
+1. **Open a PR for these two commits** (Protocol 6 allows autonomous PR creation;
    merge still needs CI green plus a merge-lock).
 2. **Build §3** — the scoped-dispatch doc plus narrow agent definitions. Highest
    measured leverage (~33K tokens/agent, 96% on the worst file).
 3. **Decide on §5's structural drivers** — whether to stop auto-filing review
    findings as issues, and whether `REVIEW_LOG` should accumulate.
 
-Thresholds in §2 are calibrated to one incident. They are deliberately set below
-what that session spent so they would have fired during it. Expect to retune
-after a few real sessions; the bats suite pins the current defaults, so a retune
-is a deliberate edit with a failing test, not a silent drift.
+Thresholds in §2 are calibrated to one incident and set deliberately below what
+that session spent, so they would have fired during it. Expect to retune after a
+few real sessions; tests 26–30 pin the current defaults, so a retune is a
+deliberate edit with a failing test, not silent drift.
 
 ### Verification habits that paid off here
 
