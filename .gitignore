@@ -10,6 +10,19 @@ tasks/
 # Conversation logs — NEVER commit these (contain secrets, PII, session data)
 *.jsonl
 
+# NARROW EXEMPTION: synthetic test fixtures, not conversation logs.
+# tests/fixtures/**/ holds hand-generated .jsonl used by the bats suite. These
+# carry ONLY a synthetic requestId, a role string, and four integer token
+# counters -- no content blocks, no file paths, no prose, no PII. Audited before
+# this exemption was added; re-audit before adding files here.
+#
+# They exist because the budget guard's central claim ("would have blocked the
+# one runaway agent, allowed the other four") was otherwise verifiable only on
+# the single machine holding the original ~/.claude/projects/ transcripts. The
+# blanket rule above silently excluded them, which shipped tests that pass
+# locally and fail on a fresh clone. Keep the exemption this narrow.
+!tests/fixtures/**/*.jsonl
+
 # Cache and statistics
 mcp-needs-auth-cache.json
 stats-cache.json
