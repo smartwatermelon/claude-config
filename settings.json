@@ -9,6 +9,7 @@
     "pr": ""
   },
   "includeCoAuthoredBy": false,
+  "autoCompactWindow": 200000,
   "permissions": {},
   "hooks": {
     "PreToolUse": [
