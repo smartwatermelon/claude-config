@@ -113,7 +113,8 @@
     "personify@personify": true,
     "pr-review@pr-review": true,
     "superpowers@superpowers-marketplace": true,
-    "dumbify@dumbify": true
+    "dumbify@dumbify": true,
+    "i-have-adhd@i-have-adhd": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -158,6 +159,12 @@
       "source": {
         "source": "git",
         "url": "https://github.com/smartwatermelon/dumbify.git"
+      }
+    },
+    "i-have-adhd": {
+      "source": {
+        "source": "github",
+        "repo": "ayghri/i-have-adhd"
       }
     }
   },
