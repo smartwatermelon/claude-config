@@ -6,6 +6,57 @@ set -euo pipefail
 
 PR_NUMBER="${1:?Usage: post-push-status.sh <pr_number>}"
 
+# Resolve owner and repo from a git remote URL. Echoes "<owner> <repo>";
+# returns nonzero when the URL carries no owner/repo pair.
+#
+# The host is deliberately NOT validated (claude-config#456). The previous
+# pattern required a literal `github.com`, which broke every per-account SSH
+# host alias — `git@github-<account>:owner/repo.git`, the standard multi-account
+# setup — because such a URL has no `github.com` substring at all. What this
+# script needs is owner/repo; the host is git's business, not ours.
+#
+# Handled shapes: scp-style (`git@host:owner/repo.git`), https, ssh://, with
+# or without a `.git` suffix, a trailing slash, or an embedded `user@`.
+#
+# The repo name is matched with `[^/]+` rather than the old `[^/.]+`: the
+# latter stopped at the first dot, silently resolving `dot.files.git` to repo
+# `dot` and polling the wrong repo instead of failing loudly.
+parse_remote_url() {
+  local _url="$1" _u _scheme=0
+  # A remote URL names a host, which means it carries a scheme, a `user@`, or
+  # an scp-style `host:`. Without one of those this is a local filesystem path,
+  # and coercing `/local/path` into owner=local repo=path would send the poll
+  # at a repo that does not exist instead of reporting the real problem.
+  if [[ "${_url}" != *://* ]] && [[ "${_url}" != *@* ]] && [[ "${_url}" != *:* ]]; then
+    return 1
+  fi
+  # `file://` is a local path wearing a scheme. Reject it for the same reason.
+  [[ "${_url}" == file://* ]] && return 1
+  _u="${_url%/}"  # trailing slash
+  _u="${_u%.git}" # .git suffix
+  if [[ "${_u}" == *://* ]]; then
+    _u="${_u#*://}"
+    _scheme=1
+  fi
+  _u="${_u#*@}" # user: git@ user@
+  if [[ ${_scheme} -eq 1 ]]; then
+    # URL form: the host (with any :port) is its own leading path segment and
+    # must be DROPPED, not absorbed. Relying on the pattern below to swallow it
+    # made `ssh://git@host/repo.git` resolve to owner=host — a bogus owner
+    # rather than the loud failure this function promises.
+    [[ "${_u}" == */* ]] || return 1
+    _u="${_u#*/}"
+  else
+    # scp-style `host:owner/repo`; the colon separates host from path.
+    _u="${_u#*:}"
+  fi
+  if [[ "${_u}" =~ ^(.*/)?([^/]+)/([^/]+)$ ]]; then
+    printf '%s %s\n' "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+    return 0
+  fi
+  return 1
+}
+
 OWNER="${POSTPUSH_OWNER:-}"
 REPO="${POSTPUSH_REPO:-}"
 
@@ -15,11 +66,12 @@ if [[ -z "${OWNER}" ]] || [[ -z "${REPO}" ]]; then
     echo "ERROR: no git remote 'origin' found" >&2
     exit 1
   fi
-  if [[ "${REMOTE_URL}" =~ github\.com[:/]([^/]+)/([^/.]+) ]]; then
-    OWNER="${BASH_REMATCH[1]}"
-    REPO="${BASH_REMATCH[2]}"
+  if PARSED=$(parse_remote_url "${REMOTE_URL}"); then
+    OWNER="${PARSED%% *}"
+    REPO="${PARSED##* }"
   else
     echo "ERROR: cannot parse owner/repo from remote: ${REMOTE_URL}" >&2
+    echo "  Override with POSTPUSH_OWNER=<owner> POSTPUSH_REPO=<repo>" >&2
     exit 1
   fi
 fi
