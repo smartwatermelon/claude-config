@@ -366,9 +366,36 @@ log_info "Review decision: ${REVIEW_DECISION}"
 # fetched from the API): merge-lock.sh check "" is a usage error, not an
 # "unauthorized" result, and would falsely block an already-authorized merge
 # for the branch-tracking invocation (no explicit PR number on the CLI).
+#
+# Resolve the repo first: merge locks are keyed on repo + PR number, so the
+# check must name the repo this merge targets. With an explicit --repo we
+# parse OWNER/NAME directly (no CWD-dependent `gh repo view`). Without one,
+# `gh repo view` resolves from CWD. If neither yields a repo, the lock script
+# refuses rather than falling back to a repo-less match.
+if [[ -n "${GH_REPO_OVERRIDE}" ]]; then
+  REPO_OWNER="${GH_REPO_OVERRIDE%/*}"
+  REPO_NAME="${GH_REPO_OVERRIDE#*/}"
+else
+  REPO_OWNER=$(command gh repo view --json owner -q '.owner.login' 2>&1) || {
+    log_warn "Could not determine repo owner"
+    REPO_OWNER=""
+  }
+  REPO_NAME=$(command gh repo view --json name -q '.name' 2>&1) || {
+    log_warn "Could not determine repo name"
+    REPO_NAME=""
+  }
+fi
+
+LOCK_REPO_FLAG=()
+LOCK_REPO_HINT=""
+if [[ -n "${REPO_OWNER}" && -n "${REPO_NAME}" ]]; then
+  LOCK_REPO_FLAG=(--repo "${REPO_OWNER}/${REPO_NAME}")
+  LOCK_REPO_HINT=" --repo ${REPO_OWNER}/${REPO_NAME}"
+fi
+
 MERGE_LOCK="${HOME}/.claude/hooks/merge-lock.sh"
 if [[ -x "${MERGE_LOCK}" ]]; then
-  if ! "${MERGE_LOCK}" check "${PR_NUMBER}" >/dev/null 2>&1; then
+  if ! "${MERGE_LOCK}" check "${PR_NUMBER}" "${LOCK_REPO_FLAG[@]}" >/dev/null 2>&1; then
     echo "" >&2
     log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     log_error "MERGE AUTHORIZATION REQUIRED"
@@ -377,20 +404,21 @@ if [[ -x "${MERGE_LOCK}" ]]; then
     log_error "Merge requires human authorization before review runs."
     log_error ""
     log_error "To authorize (valid 30 min):"
-    log_error "  ~/.claude/hooks/merge-lock.sh authorize ${PR_NUMBER} \"reason\""
+    log_error "  ~/.claude/hooks/merge-lock.sh authorize ${PR_NUMBER} \"reason\"${LOCK_REPO_HINT}"
     log_error ""
     log_error "Then retry: gh pr merge ${PR_NUMBER}"
     echo "" >&2
     # Write to stdout as well: Bash tool surfaces stdout more reliably than
     # stderr for commands that complete quickly (before any claude invocation).
-    printf '🛑 MERGE AUTHORIZATION REQUIRED: run ~/.claude/hooks/merge-lock.sh authorize %s "reason" then retry gh pr merge %s\n' "${PR_NUMBER}" "${PR_NUMBER}"
+    printf '🛑 MERGE AUTHORIZATION REQUIRED: run ~/.claude/hooks/merge-lock.sh authorize %s "reason"%s then retry gh pr merge %s\n' "${PR_NUMBER}" "${LOCK_REPO_HINT}" "${PR_NUMBER}"
     exit 1
   fi
-  log_success "Merge authorization verified for PR #${PR_NUMBER}"
+  log_success "Merge authorization verified for ${REPO_OWNER:-?}/${REPO_NAME:-?}#${PR_NUMBER}"
 fi
 
-# Track lock file path for dedup guard below (empty if merge-lock is not in use)
-MERGE_LOCK_FILE="${HOME}/.claude/merge-locks/pr-${PR_NUMBER}.lock"
+# Track lock file path for dedup guard below (empty if merge-lock is not in use).
+# Mirrors merge-lock.sh's layout: merge-locks/<owner>/<repo>/pr-<N>.lock
+MERGE_LOCK_FILE="${HOME}/.claude/merge-locks/${REPO_OWNER:-unknown}/${REPO_NAME:-unknown}/pr-${PR_NUMBER}.lock"
 
 # --- Non-interactive flag gate ---
 # When invoked from Claude Code (CLAUDECODE set), require --squash and --delete-branch.
@@ -528,24 +556,8 @@ REVIEW_COMMENTS=$(command gh pr view "${PR_NUMBER}" "${REPO_FLAG[@]}" --comments
 }
 
 # --- Fetch inline review comments (where Sentry bot posts) ---
-# These are comments on specific lines of code, separate from review summaries
-if [[ -n "${GH_REPO_OVERRIDE}" ]]; then
-  # --repo was provided explicitly; parse OWNER/NAME directly. Avoids a
-  # `gh repo view` call that would fall back to CWD (which may not be the
-  # target repo at all when the caller is invoking from elsewhere).
-  REPO_OWNER="${GH_REPO_OVERRIDE%/*}"
-  REPO_NAME="${GH_REPO_OVERRIDE#*/}"
-else
-  REPO_OWNER=$(command gh repo view --json owner -q '.owner.login' 2>&1) || {
-    log_warn "Could not determine repo owner"
-    REPO_OWNER=""
-  }
-  REPO_NAME=$(command gh repo view --json name -q '.name' 2>&1) || {
-    log_warn "Could not determine repo name"
-    REPO_NAME=""
-  }
-fi
-
+# These are comments on specific lines of code, separate from review summaries.
+# REPO_OWNER / REPO_NAME were resolved above, before the merge-lock check.
 INLINE_COMMENTS=""
 if [[ -n "${REPO_OWNER}" && -n "${REPO_NAME}" ]]; then
   log_info "Fetching inline review comments (including bot comments)..."

@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # ~/.claude/hooks/merge-lock.sh
 # Merge authorization lock - requires human to authorize before agent can merge
+#
+# Locks are keyed on repo AND PR number:
+#   ~/.claude/merge-locks/<owner>/<repo>/pr-<N>.lock
+# so an authorization for one repo's PR 3 can never satisfy another repo's
+# PR 3. The repo comes from `--repo owner/name` when given, otherwise from
+# `gh repo view` on the current directory.
+#
+# `--repo` must follow the subcommand. The PreToolUse hook that blocks the
+# agent from running `merge-lock.sh authorize` matches the subcommand in
+# argument position 1; a global flag before it would slip past that regex.
 set -euo pipefail
 unset CDPATH
 
@@ -14,51 +24,154 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# --- Repo resolution ---------------------------------------------------------
+
+# Owner and name are each one path segment: no slashes, no "." or "..".
+validate_repo_slug() {
+  local slug="$1"
+  local owner="${slug%%/*}"
+  local name="${slug#*/}"
+  [[ "${slug}" == */* ]] || return 1
+  [[ "${name}" != */* ]] || return 1
+  [[ "${owner}" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+  [[ "${name}" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+  [[ "${owner}" != "." && "${owner}" != ".." ]] || return 1
+  [[ "${name}" != "." && "${name}" != ".." ]] || return 1
+  return 0
+}
+
+# Populate REPO from --repo or from the cwd. Fails loudly otherwise: a lock
+# check that silently fell back to some default would recreate the
+# cross-repo collision this keying exists to prevent.
+resolve_repo() {
+  local override="$1"
+  if [[ -n "${override}" ]]; then
+    REPO="${override}"
+  else
+    REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null) || REPO=""
+    if [[ -z "${REPO}" ]]; then
+      echo "Error: could not determine the GitHub repo from the current directory." >&2
+      echo "Run from inside the repo checkout, or pass --repo OWNER/NAME after the subcommand." >&2
+      exit 1
+    fi
+  fi
+  if ! validate_repo_slug "${REPO}"; then
+    echo "Error: invalid repo '${REPO}' (expected OWNER/NAME)" >&2
+    exit 1
+  fi
+}
+
+lock_path() {
+  echo "${LOCK_DIR}/${REPO}/pr-$1.lock"
+}
+
+# Split "$@" (everything after the subcommand) into REPO_OVERRIDE and the
+# remaining positional args in POSITIONAL. Accepts --repo VALUE and
+# --repo=VALUE anywhere among the trailing arguments.
+parse_args() {
+  REPO_OVERRIDE=""
+  POSITIONAL=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo)
+        if [[ -z "${2:-}" ]]; then
+          echo "Error: --repo requires a value" >&2
+          exit 1
+        fi
+        REPO_OVERRIDE="$2"
+        shift 2
+        ;;
+      --repo=*)
+        REPO_OVERRIDE="${1#*=}"
+        shift
+        ;;
+      *)
+        POSITIONAL+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+
+# --- Lock operations ---------------------------------------------------------
+
 create_merge_lock() {
   local pr_number="$1"
   local reason="$2"
   local ts="$3"
-  local lock_file="${LOCK_DIR}/pr-${pr_number}.lock"
+  local lock_file
+  lock_file=$(lock_path "${pr_number}")
 
   local user
   user=$(whoami)
 
+  mkdir -p "$(dirname "${lock_file}")"
   {
     echo "PR_NUMBER=${pr_number}"
+    echo "REPO=${REPO}"
     echo "AUTHORIZED_BY=${user}"
     echo "TIMESTAMP=${ts}"
     echo "REASON=${reason}"
   } >"${lock_file}"
 
-  echo -e "${GREEN}[merge-lock]${NC} Authorization created for PR #${pr_number}"
+  echo -e "${GREEN}[merge-lock]${NC} Authorization created for ${REPO}#${pr_number}"
   echo -e "${GREEN}[merge-lock]${NC} Valid for 30 minutes"
   echo -e "${GREEN}[merge-lock]${NC} Lock file: ${lock_file}"
+}
+
+# Every repo-keyed lock file, one path per line, sorted. Exactly three levels
+# deep: <owner>/<repo>/pr-N.lock.
+find_locks() {
+  find "${LOCK_DIR}" -mindepth 3 -maxdepth 3 -type f -name 'pr-*.lock' 2>/dev/null | sort || true
+}
+
+# Human-readable label for a lock file, from its own REPO/PR_NUMBER fields.
+lock_label() {
+  local lock_file="$1"
+  local repo pr
+  repo=$(grep "^REPO=" "${lock_file}" | cut -d= -f2- || true)
+  pr=$(grep "^PR_NUMBER=" "${lock_file}" | cut -d= -f2 || true)
+  echo "${repo:-?}#${pr:-?}"
 }
 
 purge_expired_locks() {
   local now
   now=$(date +%s)
   local lock_file
-  for lock_file in "${LOCK_DIR}"/*.lock; do
+
+  # Flat pr-N.lock files predate repo keying. They carry no repo and can
+  # never be matched, so they are removed regardless of age.
+  for lock_file in "${LOCK_DIR}"/pr-*.lock; do
     [[ ! -f "${lock_file}" ]] && continue
+    local legacy_pr
+    legacy_pr=$(grep "^PR_NUMBER=" "${lock_file}" | cut -d= -f2 || true)
+    rm -f "${lock_file}"
+    echo -e "${YELLOW}[merge-lock]${NC} Purged legacy repo-less lock for PR #${legacy_pr:-?} (re-authorize with the repo-keyed form)"
+  done
+
+  local lock_files
+  lock_files=$(find_locks)
+  while IFS= read -r lock_file; do
+    [[ -z "${lock_file}" ]] && continue
 
     local timestamp
-    timestamp=$(grep "^TIMESTAMP=" "${lock_file}" | cut -d= -f2)
+    timestamp=$(grep "^TIMESTAMP=" "${lock_file}" | cut -d= -f2 || true)
     [[ -z "${timestamp}" ]] && continue
 
     local age=$((now - timestamp))
     if [[ ${age} -gt ${LOCK_TTL_SECONDS} ]]; then
-      local pr
-      pr=$(grep "^PR_NUMBER=" "${lock_file}" | cut -d= -f2 || true)
+      local label
+      label=$(lock_label "${lock_file}")
       rm -f "${lock_file}"
-      echo -e "${YELLOW}[merge-lock]${NC} Purged expired lock for PR #${pr:-?}"
+      echo -e "${YELLOW}[merge-lock]${NC} Purged expired lock for ${label}"
     fi
-  done
+  done <<<"${lock_files}"
 }
 
 check_merge_lock() {
   local pr_number="$1"
-  local lock_file="${LOCK_DIR}/pr-${pr_number}.lock"
+  local lock_file
+  lock_file=$(lock_path "${pr_number}")
 
   [[ ! -f "${lock_file}" ]] && return 1
 
@@ -77,7 +190,8 @@ check_merge_lock() {
 
 show_status() {
   local pr_number="$1"
-  local lock_file="${LOCK_DIR}/pr-${pr_number}.lock"
+  local lock_file
+  lock_file=$(lock_path "${pr_number}")
 
   if [[ -f "${lock_file}" ]]; then
     local timestamp
@@ -91,37 +205,37 @@ show_status() {
       local auth_by
       auth_by=$(grep "^AUTHORIZED_BY=" "${lock_file}" | cut -d= -f2 || true)
       local auth_reason
-      auth_reason=$(grep "^REASON=" "${lock_file}" | cut -d= -f2 || true)
-      echo -e "${GREEN}[merge-lock]${NC} PR #${pr_number} is authorized"
+      auth_reason=$(grep "^REASON=" "${lock_file}" | cut -d= -f2- || true)
+      echo -e "${GREEN}[merge-lock]${NC} ${REPO}#${pr_number} is authorized"
       echo "  Authorized by: ${auth_by}"
       echo "  Reason: ${auth_reason}"
       echo "  Expires in: $((remaining / 60)) minutes"
     else
-      echo -e "${YELLOW}[merge-lock]${NC} PR #${pr_number} authorization expired"
+      echo -e "${YELLOW}[merge-lock]${NC} ${REPO}#${pr_number} authorization expired"
       rm -f "${lock_file}"
     fi
   else
-    echo -e "${RED}[merge-lock]${NC} PR #${pr_number} is NOT authorized"
+    echo -e "${RED}[merge-lock]${NC} ${REPO}#${pr_number} is NOT authorized"
     echo ""
     echo "To authorize merge (valid 30 minutes):"
-    echo "  ~/.claude/hooks/merge-lock.sh authorize ${pr_number} \"reason\""
+    echo "  ~/.claude/hooks/merge-lock.sh authorize ${pr_number} \"reason\" --repo ${REPO}"
   fi
 }
 
 list_locks() {
   echo "=== Active Merge Authorizations ==="
   local found=false
-  for lock_file in "${LOCK_DIR}"/*.lock; do
-    [[ ! -f "${lock_file}" ]] && continue
+  local lock_file lock_files
+  lock_files=$(find_locks)
+  while IFS= read -r lock_file; do
+    [[ -z "${lock_file}" ]] && continue
     found=true
-    local pr
-    pr=$(grep "^PR_NUMBER=" "${lock_file}" | cut -d= -f2)
-    local auth
-    auth=$(grep "^AUTHORIZED_BY=" "${lock_file}" | cut -d= -f2)
-    local reason
-    reason=$(grep "^REASON=" "${lock_file}" | cut -d= -f2)
-    echo "  PR #${pr} - by ${auth} - ${reason}"
-  done
+    local label auth reason
+    label=$(lock_label "${lock_file}")
+    auth=$(grep "^AUTHORIZED_BY=" "${lock_file}" | cut -d= -f2 || true)
+    reason=$(grep "^REASON=" "${lock_file}" | cut -d= -f2- || true)
+    echo "  ${label} - by ${auth} - ${reason}"
+  done <<<"${lock_files}"
   if [[ "${found}" == false ]]; then
     echo "  (none)"
   fi
@@ -160,27 +274,37 @@ authorize_batch() {
   done
 }
 
-case "${1:-help}" in
+# --- Dispatch ----------------------------------------------------------------
+
+SUBCOMMAND="${1:-help}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+parse_args "$@"
+
+case "${SUBCOMMAND}" in
   authorize | auth)
-    if [[ -z "${2:-}" ]]; then
-      echo "Usage: $0 authorize <pr_number[,pr_number...]> <reason>" >&2
+    if [[ -z "${POSITIONAL[0]:-}" ]]; then
+      echo "Usage: $0 authorize <pr_number[,pr_number...]> <reason> [--repo OWNER/NAME]" >&2
       exit 1
     fi
-    if [[ -z "${3:-}" ]]; then
+    if [[ -z "${POSITIONAL[1]:-}" ]]; then
       echo "Error: reason is required" >&2
-      echo "Usage: $0 authorize <pr_number[,pr_number...]> <reason>" >&2
+      echo "Usage: $0 authorize <pr_number[,pr_number...]> <reason> [--repo OWNER/NAME]" >&2
       exit 1
     fi
 
-    authorize_batch "$2" "$3"
+    resolve_repo "${REPO_OVERRIDE}"
+    authorize_batch "${POSITIONAL[0]}" "${POSITIONAL[1]}"
     ;;
   check)
-    if [[ -z "${2:-}" ]]; then
-      echo "Usage: $0 check <pr_number>"
+    if [[ -z "${POSITIONAL[0]:-}" ]]; then
+      echo "Usage: $0 check <pr_number> [--repo OWNER/NAME]"
       exit 1
     fi
+    resolve_repo "${REPO_OVERRIDE}"
     purge_expired_locks
-    if check_merge_lock "$2"; then
+    if check_merge_lock "${POSITIONAL[0]}"; then
       echo "Authorized"
       exit 0
     else
@@ -189,24 +313,28 @@ case "${1:-help}" in
     fi
     ;;
   status)
-    if [[ -z "${2:-}" ]]; then
-      echo "Usage: $0 status <pr_number>"
+    if [[ -z "${POSITIONAL[0]:-}" ]]; then
+      echo "Usage: $0 status <pr_number> [--repo OWNER/NAME]"
       exit 1
     fi
+    resolve_repo "${REPO_OVERRIDE}"
     purge_expired_locks
-    show_status "$2"
+    show_status "${POSITIONAL[0]}"
     ;;
   list)
     purge_expired_locks
     list_locks
     ;;
   *)
-    echo "Usage: $0 {authorize|check|status|list} [args...]"
+    echo "Usage: $0 {authorize|check|status|list} [args...] [--repo OWNER/NAME]"
     echo ""
     echo "Commands:"
     echo "  authorize <pr[,pr...]> <reason>  - Create merge authorization(s) (30 min TTL)"
     echo "  check <pr>               - Check if PR is authorized (exit 0/1)"
     echo "  status <pr>              - Show detailed authorization status"
     echo "  list                     - List all active authorizations"
+    echo ""
+    echo "Locks are keyed on repo + PR number. The repo comes from --repo OWNER/NAME"
+    echo "(after the subcommand) or from 'gh repo view' in the current directory."
     ;;
 esac

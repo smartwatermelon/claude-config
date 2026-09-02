@@ -79,8 +79,11 @@ STRICT_PREPUSH=0 git push
 The agent cannot merge PRs without your authorization:
 
 ```bash
-# Authorize a specific PR (valid 30 minutes)
+# Authorize a specific PR (valid 30 minutes). Run from inside the repo checkout.
 ~/.claude/hooks/merge-lock.sh authorize 123 "Reviewed and approved"
+
+# From anywhere: name the repo explicitly (flag goes AFTER the subcommand)
+~/.claude/hooks/merge-lock.sh authorize 123 "Reviewed and approved" --repo owner/name
 
 # Check authorization status
 ~/.claude/hooks/merge-lock.sh status 123
@@ -88,6 +91,13 @@ The agent cannot merge PRs without your authorization:
 # List all active authorizations
 ~/.claude/hooks/merge-lock.sh list
 ```
+
+Locks are keyed on repo **and** PR number
+(`~/.claude/merge-locks/<owner>/<repo>/pr-<N>.lock`), so an authorization for
+one repo's PR 123 never satisfies another repo's PR 123. Without `--repo`, the
+script resolves the repo from the current directory via `gh repo view` and
+refuses to proceed if that fails. Pre-existing flat `pr-<N>.lock` files carry
+no repo and are purged on the next run; re-authorize if you hit one.
 
 **Workflow:**
 
