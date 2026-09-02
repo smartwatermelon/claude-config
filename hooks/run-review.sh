@@ -235,7 +235,26 @@ parse_verdict() {
 # (smartwatermelon/claude-config#448). $1 = the unparseable output.
 describe_unparseable_verdict() {
   local _o="$1"
-  if printf '%s' "${_o}" | jq -e '.structured_output' >/dev/null 2>&1; then
+  # jq's exit codes carry the distinction that matters here: 5 means "this text
+  # is not valid JSON", 1 means "valid JSON, the key is absent or false".
+  # Reporting them identically is what routed #461 to the "prose carrying no
+  # VERDICT: line" branch and cost #450 an entire misdirected investigation.
+  # Check for contamination FIRST, since a blob of envelope-plus-noise fails
+  # every test below for the wrong reason.
+  local _jq_status=0
+  printf '%s' "${_o}" | jq -e . >/dev/null 2>&1 || _jq_status=$?
+  local _envelope
+  _envelope=$(extract_json_envelope "${_o}")
+  # A recovered envelope that DIFFERS from the input is the signature of
+  # contamination: valid JSON was in there, adjacent text defeated the parse.
+  if [[ ${_jq_status} -eq 5 ]] && [[ "${_envelope}" != "${_o}" ]]; then
+    local _ev
+    _ev=$(printf '%s' "${_envelope}" | jq -r '.structured_output.verdict // "(absent)"' 2>/dev/null) || _ev="(unreadable)"
+    log_error "The output is a JSON envelope with non-JSON text concatenated to it."
+    log_error "jq exited 5 (parse error) on the whole blob, so the verdict was never read."
+    log_error "The envelope's own .structured_output.verdict is: ${_ev}"
+    log_error "This is a bug in this hook, not a reviewer failure — see claude-config#461."
+  elif printf '%s' "${_o}" | jq -e '.structured_output' >/dev/null 2>&1; then
     local _v
     _v=$(printf '%s' "${_o}" | jq -r '.structured_output.verdict // "(absent)"' 2>/dev/null) || _v="(unreadable)"
     log_error "The output is a raw SDK envelope that reached the gate unrendered."
@@ -577,8 +596,115 @@ render_structured_prose() {
       ) | join("\n") end' 2>/dev/null || true
 }
 
+# Recover the SDK envelope from a blob that may carry adjacent non-JSON text.
+#
+# claude-config#461: a diagnostic line concatenated with the envelope —
+# observed verbatim as
+#   Client.listTools() called but server does not advertise tools capability - returning empty list
+# — makes jq exit 5 (PARSE ERROR) rather than 1 (key absent) on the whole blob.
+# Every jq in the parse path then fails, normalize_agent_response takes its
+# "not an envelope" branch, and the gate receives the raw blob as prose. Prose
+# carries no `VERDICT:` line, so a clean PASS blocked the push — the same
+# user-visible failure as #448 and #450, on a third call site.
+#
+# Extracting the envelope makes the parse immune to adjacent noise WHATEVER its
+# source, instead of suppressing warning strings one at a time. #89 fixed this
+# hazard once already (stderr merged into stdout) and it returned in a new
+# form; enumerating strings does not close the class.
+#
+# Strategy, cheapest first:
+#   1. The blob already parses as an object with a string .result — the normal
+#      case, no noise. Return it untouched, costing one jq on the hot path.
+#   2. Otherwise scan the lines for envelopes. If more than one line parses as
+#      an envelope, prefer a BLOCKING one over a non-blocking one.
+#
+# On multiple envelopes, "the last one wins" would be the wrong precedence for
+# a safety gate: a PASS envelope appended after a real FAIL would suppress the
+# FAIL. This is not known to be reachable — the CLI emits one envelope — but a
+# gate should not depend on that for its fail-closed property. So a blocking
+# envelope always beats a non-blocking one, and only among equals does the last
+# win (noise is typically appended, so the later object is the likelier
+# envelope).
+#
+# KNOWN LIMIT: the scan is line-based, so a PRETTY-PRINTED envelope split
+# across lines is not recoverable once noise is attached to it. That case
+# yields no envelope and the gate blocks as unparseable — fail-closed, which is
+# the correct direction. The CLI emits single-line JSON under
+# --output-format json; if that ever changes, this needs a brace-balancing
+# scanner instead.
+#
+# Anything that yields no envelope is echoed back unchanged, so genuine prose
+# (older CLI, error text, a timeout's empty output) degrades exactly as before.
+#
+# $1 = the captured blob. Prints the envelope, or $1 unchanged.
+extract_json_envelope() {
+  local _blob="$1" _line
+  # GUARD: never extract from something that is already usable prose.
+  #
+  # Scanning unconditionally is a FAIL-OPEN. A genuine prose review that merely
+  # QUOTES an envelope — routine when the reviewer is reviewing this very file,
+  # since a finding about envelope handling naturally quotes one in DETAILS —
+  # would have the whole review discarded in favour of the quoted line. A
+  # BLOCKING FAIL then reaches the gate as PASS. Measured against HEAD: the
+  # unguarded version turned `VERDICT: FAIL / SEVERITY: BLOCKING` into a clean
+  # pass.
+  #
+  # #461's shape has no VERDICT: line — it is an envelope plus noise. So prose
+  # carrying its own parseable verdict is left strictly alone, which confines
+  # this recovery to the case it was written for.
+  if printf '%s\n' "${_blob}" | tr -d '*`_' | grep -qiE '^[[:space:]]*VERDICT:[[:space:]]*(PASS|FAIL|REVISE)'; then
+    printf '%s' "${_blob}"
+    return 0
+  fi
+  # Fast path: already a clean, SINGLE envelope.
+  #
+  # `-s` (slurp) is load-bearing. jq reads a STREAM of JSON values, so a blob
+  # holding two concatenated envelopes satisfies a bare `type == "object"` test
+  # and `-e` then reports only the LAST value's status — which would return
+  # both envelopes here and let a trailing PASS mask a leading FAIL. Slurping
+  # collects the values into an array, so `length == 1` genuinely means "one
+  # value", and the multi-envelope case correctly falls through to the scan.
+  if printf '%s' "${_blob}" | jq -se 'length == 1 and (.[0] | type) == "object" and (.[0].result | type) == "string"' >/dev/null 2>&1; then
+    printf '%s' "${_blob}"
+    return 0
+  fi
+  # Slow path: find the envelope line(s) among the noise.
+  local _candidate="" _blocking_candidate=""
+  while IFS= read -r _line; do
+    case "${_line}" in
+      '{'*) ;;
+      *) continue ;;
+    esac
+    printf '%s' "${_line}" | jq -e 'type == "object" and (.result | type) == "string"' >/dev/null 2>&1 || continue
+    _candidate="${_line}"
+    # A blocking envelope wins outright and is never overwritten by a later
+    # non-blocking one. `blocking` may legitimately be absent or a string here
+    # (see #450), so a FAIL/REVISE verdict counts as blocking too.
+    if printf '%s' "${_line}" | jq -e '
+      (.structured_output.blocking == true)
+      or ((.structured_output.verdict // "" | ascii_upcase) as $v
+          | $v == "FAIL" or $v == "REVISE")' >/dev/null 2>&1; then
+      _blocking_candidate="${_line}"
+    fi
+  done < <(printf '%s\n' "${_blob}")
+
+  if [[ -n "${_blocking_candidate}" ]]; then
+    printf '%s' "${_blocking_candidate}"
+    return 0
+  fi
+  if [[ -n "${_candidate}" ]]; then
+    printf '%s' "${_candidate}"
+    return 0
+  fi
+  # No envelope found — hand back what we were given.
+  printf '%s' "${_blob}"
+}
+
 normalize_agent_response() {
-  local _raw="$1"
+  local _raw
+  # Strip adjacent non-JSON noise before any parse (claude-config#461). A
+  # no-op when the input is a clean envelope or genuine prose.
+  _raw=$(extract_json_envelope "$1")
   local _blocking _result _rendered _fixnow _withfix
 
   # Nothing to parse. Hand it back untouched; callers already normalise empty
