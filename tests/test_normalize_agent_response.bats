@@ -51,7 +51,7 @@ setup() {
   for _fn in parse_verdict has_blocking_severity extract_structured_blocking \
     attach_structured_blocking read_structured_blocking extract_fix_now \
     attach_fix_now strip_structured_blocking output_blocks \
-    render_structured_prose normalize_agent_response; do
+    render_structured_prose extract_json_envelope normalize_agent_response; do
     eval "$(sed -n "/^${_fn}() {/,/^}/p" "${SCRIPT}")"
   done
 }
@@ -220,6 +220,160 @@ all good' '{result:$p,structured_output:$so}')
 all good' '{result:$p,structured_output:$so}')
   run parse_verdict "$(normalize_agent_response "${raw}")"
   [ "${output}" = "FAIL" ]
+}
+
+# --- The #461 regression: non-JSON noise adjacent to the envelope ---
+#
+# A stray diagnostic line concatenated with the envelope makes EVERY jq in the
+# parse path exit 5 (parse error), not 1 (key absent). normalize_agent_response
+# then falls through its "not an envelope" branch and hands the gate the whole
+# blob as prose, which carries no `VERDICT:` line, so a clean PASS blocked the
+# push. Observed line, verbatim, from the #461 report:
+#
+#   Client.listTools() called but server does not advertise tools capability - returning empty list
+#
+# The fix extracts the envelope before parsing rather than suppressing any
+# particular warning string: #89 showed this hazard recurs in new forms.
+
+@test "#461: a trailing non-JSON line does not defeat the structured verdict" {
+  raw='{"result":"{\"verdict\":\"PASS\"}","structured_output":{"verdict":"PASS","blocking":false,"findings":[]}}
+Client.listTools() called but server does not advertise tools capability - returning empty list'
+  run parse_verdict "$(normalize_agent_response "${raw}")"
+  [ "${output}" = "PASS" ]
+}
+
+@test "#461: a leading non-JSON line does not defeat the structured verdict" {
+  raw='Client.listTools() called but server does not advertise tools capability - returning empty list
+{"result":"{\"verdict\":\"PASS\"}","structured_output":{"verdict":"PASS","blocking":false,"findings":[]}}'
+  run parse_verdict "$(normalize_agent_response "${raw}")"
+  [ "${output}" = "PASS" ]
+}
+
+@test "#461: noise around a FAIL envelope still blocks — recovery must not fail open" {
+  so='{"verdict":"FAIL","blocking":true,"findings":[{"severity":"BLOCKING","location":"a.sh:1","issue":"broken","details":"very broken"}]}'
+  raw="$(jq -nc --argjson so "${so}" '{result:($so|tojson),structured_output:$so}')
+Client.listTools() called but server does not advertise tools capability - returning empty list"
+  norm=$(normalize_agent_response "${raw}")
+  run parse_verdict "${norm}"
+  [ "${output}" = "FAIL" ]
+  run output_blocks "${norm}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "#461: genuine non-envelope prose still passes through unchanged" {
+  # The extraction must not invent an envelope out of prose that merely
+  # contains braces. This degrades to the prose path, as before.
+  raw='VERDICT: PASS
+No blocking issues found. The { and } here are not an envelope.'
+  run parse_verdict "$(normalize_agent_response "${raw}")"
+  [ "${output}" = "PASS" ]
+}
+
+@test "#461: extract_json_envelope returns the envelope from a contaminated blob" {
+  raw='{"result":"ok","structured_output":{"verdict":"PASS"}}
+Client.listTools() called but server does not advertise tools capability - returning empty list'
+  # Note: not `run bash -c`, which forks a subshell that cannot see the
+  # function sourced into this one.
+  env=$(extract_json_envelope "${raw}")
+  run jq -r '.structured_output.verdict' <<<"${env}"
+  [ "${output}" = "PASS" ]
+}
+
+@test "#461: extract_json_envelope echoes input unchanged when no envelope is present" {
+  run extract_json_envelope 'just some prose'
+  [ "${output}" = "just some prose" ]
+}
+
+# --- Fail-closed properties of the recovery itself ---
+
+@test "#461: prose QUOTING an envelope is not hijacked — a BLOCKING FAIL still blocks" {
+  # The fail-open the recovery introduced before it was guarded. A reviewer
+  # reviewing THIS file quotes an envelope in DETAILS as a matter of course.
+  # Extracting unconditionally discarded the entire prose review in favour of
+  # the quoted line, and a BLOCKING FAIL reached the gate as PASS.
+  raw='VERDICT: FAIL
+ISSUE: envelope handling is wrong
+SEVERITY: BLOCKING
+LOCATION: hooks/run-review.sh:630
+DETAILS: for input
+{"result":"x","structured_output":{"verdict":"PASS","blocking":false}}
+the fast path returns early.'
+  norm=$(normalize_agent_response "${raw}")
+  run parse_verdict "${norm}"
+  [ "${output}" = "FAIL" ]
+  run output_blocks "${norm}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "#461: prose quoting an envelope keeps its own findings intact" {
+  # Not merely "blocked" but "blocked for the right reason": the reviewer's
+  # real finding must survive, not be replaced by the quoted envelope's.
+  raw='VERDICT: FAIL
+ISSUE: envelope handling is wrong
+SEVERITY: BLOCKING
+LOCATION: hooks/run-review.sh:630
+DETAILS: quoting {"result":"x","structured_output":{"verdict":"PASS"}} here'
+  norm=$(normalize_agent_response "${raw}")
+  run has_blocking_severity "${norm}"
+  [ "${status}" -eq 0 ]
+  [[ "${norm}" == *"envelope handling is wrong"* ]]
+}
+
+@test "#461: a blocking envelope is not suppressed by a later PASS envelope" {
+  # Precedence matters for a safety gate. "Last line wins" would let a PASS
+  # appended after a real FAIL hide the FAIL. Not known to be reachable — the
+  # CLI emits one envelope — but the gate must not depend on that.
+  fail=$(jq -nc '{result:"x",structured_output:{verdict:"FAIL",blocking:true,findings:[{severity:"BLOCKING",location:"a:1",issue:"bad",details:"d"}]}}')
+  pass=$(jq -nc '{result:"x",structured_output:{verdict:"PASS",blocking:false,findings:[]}}')
+  norm=$(normalize_agent_response "${fail}
+${pass}")
+  run parse_verdict "${norm}"
+  [ "${output}" = "FAIL" ]
+  run output_blocks "${norm}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "#461: a FAIL verdict with a non-boolean blocking field still takes precedence" {
+  # #450 established that `blocking` may be absent or a string. Precedence must
+  # key on the verdict too, not on the boolean alone.
+  fail=$(jq -nc '{result:"x",structured_output:{verdict:"FAIL",blocking:"true"}}')
+  pass=$(jq -nc '{result:"x",structured_output:{verdict:"PASS",blocking:false,findings:[]}}')
+  run parse_verdict "$(normalize_agent_response "${fail}
+${pass}")"
+  [ "${output}" = "FAIL" ]
+}
+
+@test "#461: a pretty-printed envelope with no noise is still parsed normally" {
+  # The fast path handles this; only the line-based slow path cannot.
+  raw=$(jq -n '{result:"{}",structured_output:{verdict:"PASS",blocking:false,findings:[]}}')
+  run parse_verdict "$(normalize_agent_response "${raw}")"
+  [ "${output}" = "PASS" ]
+}
+
+@test "#461: precedence holds with a serialized .result, the shape seen under --json-schema" {
+  # Same property as the test above, with the .result the CLI actually emits
+  # under --json-schema (the serialized object) rather than a stub.
+  so='{"verdict":"FAIL","blocking":true,"findings":[{"severity":"BLOCKING","location":"a:1","issue":"bad","details":"d"}]}'
+  fail=$(jq -nc --argjson so "${so}" '{result:($so|tojson),structured_output:$so}')
+  pass=$(jq -nc '{result:"{}",structured_output:{verdict:"PASS",blocking:false,findings:[]}}')
+  norm=$(normalize_agent_response "${fail}
+${pass}")
+  run parse_verdict "${norm}"
+  [ "${output}" = "FAIL" ]
+  run output_blocks "${norm}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "#461: a contaminated pretty-printed envelope fails CLOSED, not open" {
+  # Documented limit: a multi-line envelope plus noise is unrecoverable by a
+  # line-based scan. It must yield NO verdict — which is what makes the caller
+  # block as unparseable — never a spurious PASS.
+  raw="$(jq -n '{result:"{}",structured_output:{verdict:"FAIL",blocking:true,findings:[{severity:"BLOCKING",location:"a:1",issue:"bad",details:"d"}]}}')
+Client.listTools() called but server does not advertise tools capability - returning empty list"
+  run parse_verdict "$(normalize_agent_response "${raw}")"
+  # Empty, not merely non-PASS: an empty verdict is the unparseable signal the
+  # gate blocks on.
+  [ -z "${output}" ]
 }
 
 @test "render_structured_prose emits nothing for an envelope with no structured output" {
