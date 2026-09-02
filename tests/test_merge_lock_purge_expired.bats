@@ -12,6 +12,12 @@ setup() {
   TMP_HOME="$(mktemp -d)"
   readonly TMP_HOME
   export HOME="${TMP_HOME}"
+
+  # Locks are keyed on repo + PR; stub gh so cwd resolution is offline.
+  mkdir -p "${TMP_HOME}/bin"
+  printf '#!/usr/bin/env bash\necho acme/widgets\n' >"${TMP_HOME}/bin/gh"
+  chmod +x "${TMP_HOME}/bin/gh"
+  export PATH="${TMP_HOME}/bin:${PATH}"
 }
 
 teardown() {
@@ -21,18 +27,19 @@ teardown() {
 }
 
 lock_file() {
-  echo "${TMP_HOME}/.claude/merge-locks/pr-$1.lock"
+  echo "${TMP_HOME}/.claude/merge-locks/acme/widgets/pr-$1.lock"
 }
 
 write_backdated_lock() {
   local pr_number="$1"
   local age_seconds="$2"
-  local lock_dir="${TMP_HOME}/.claude/merge-locks"
+  local lock_dir="${TMP_HOME}/.claude/merge-locks/acme/widgets"
   mkdir -p "${lock_dir}"
   local ts
   ts=$(($(date +%s) - age_seconds))
   {
     echo "PR_NUMBER=${pr_number}"
+    echo "REPO=acme/widgets"
     echo "AUTHORIZED_BY=tester"
     echo "TIMESTAMP=${ts}"
     echo "REASON=test"
@@ -45,7 +52,7 @@ write_backdated_lock() {
 
   run bash "${SCRIPT}" list
   [ "${status}" -eq 0 ]
-  [[ "${output}" == *"Purged expired lock for PR #100"* ]]
+  [[ "${output}" == *"Purged expired lock for acme/widgets#100"* ]]
   [ ! -f "$(lock_file 100)" ]
 }
 

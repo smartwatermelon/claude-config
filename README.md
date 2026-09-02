@@ -143,7 +143,7 @@ Automated code review and safety hooks are configured in `hooks/` and `scripts/`
 
 - **hooks/pre-merge-review.sh** — AI review gate before merging PRs
 - **hooks/run-review.sh** — per-commit AI code review runner
-- **hooks/merge-lock.sh** — merge authorization lock (30-min TTL)
+- **hooks/merge-lock.sh** — merge authorization lock (30-min TTL, keyed on repo + PR number)
 - **scripts/hook-block-all.sh** — dispatches all PreToolUse hook-block scripts
 - **scripts/hook-block-api-merge.sh** — blocks REST/GraphQL merge bypasses
 - **scripts/hook-block-no-verify.sh** — blocks `--no-verify` flag usage
