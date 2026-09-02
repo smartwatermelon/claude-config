@@ -8,6 +8,12 @@ setup() {
   TMP_HOME="$(mktemp -d)"
   readonly TMP_HOME
   export HOME="${TMP_HOME}"
+
+  # Locks are keyed on repo + PR; stub gh so cwd resolution is offline.
+  mkdir -p "${TMP_HOME}/bin"
+  printf '#!/usr/bin/env bash\necho acme/widgets\n' >"${TMP_HOME}/bin/gh"
+  chmod +x "${TMP_HOME}/bin/gh"
+  export PATH="${TMP_HOME}/bin:${PATH}"
 }
 
 teardown() {
@@ -17,7 +23,7 @@ teardown() {
 }
 
 lock_file() {
-  echo "${TMP_HOME}/.claude/merge-locks/pr-$1.lock"
+  echo "${TMP_HOME}/.claude/merge-locks/acme/widgets/pr-$1.lock"
 }
 
 @test "single PR form still works" {

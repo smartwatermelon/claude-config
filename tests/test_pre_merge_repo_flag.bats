@@ -96,9 +96,11 @@ CLAUDE_EOF
   export CLAUDE_CLI="${MOCK_DIR}/claude"
 
   # Mock merge-lock.sh — always authorized so we test only the parsing path.
-  cat >"${MOCK_DIR}/merge-lock.sh" <<'LOCK_EOF'
+  # Records its argv so tests can assert the repo reaches `check`.
+  cat >"${MOCK_DIR}/merge-lock.sh" <<LOCK_EOF
 #!/usr/bin/env bash
-if [[ "${1:-}" == "check" ]]; then
+printf '%s\n' "\$(IFS='|'; echo "\$*")" >>"${MOCK_DIR}/lock_calls.log"
+if [[ "\${1:-}" == "check" ]]; then
   exit 0
 fi
 LOCK_EOF
@@ -157,6 +159,31 @@ _pr_view_has_number() {
   local pr_num="$1"
   grep -E "^pr\|view\|" "${MOCK_DIR}/gh_calls.log" \
     | grep -qE "(^|\|)${pr_num}(\||$)"
+}
+
+# Helper: assert merge-lock.sh check was invoked with --repo OWNER/NAME.
+_lock_check_has_repo() {
+  local owner_repo="$1"
+  grep -E "^check\|" "${MOCK_DIR}/lock_calls.log" \
+    | grep -qE "(^|\|)--repo\|${owner_repo}(\||$)"
+}
+
+# ── merge-lock check is repo-keyed ───────────────────────────────────────────
+
+@test "gh -R owner/repo pr merge 123: merge-lock check receives --repo owner/repo" {
+  run _run_script -R owner/repo pr merge 123 --squash --delete-branch
+
+  [[ "${status}" -eq 0 ]]
+  _lock_check_has_repo "owner/repo"
+}
+
+@test "gh pr merge 123 (no --repo): merge-lock check receives the cwd-resolved repo" {
+  run _run_script pr merge 123 --squash --delete-branch
+
+  [[ "${status}" -eq 0 ]]
+  # The gh mock answers `repo view` with wrong-owner / wrong-name; that is the
+  # CWD-resolved value, and it must reach the lock check.
+  _lock_check_has_repo "wrong-owner/wrong-name"
 }
 
 # ── -R short form ────────────────────────────────────────────────────────────
