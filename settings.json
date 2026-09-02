@@ -2,15 +2,16 @@
   "env": {
     "BASH_ENV": "~/.config/bash/functions.sh",
     "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash",
-    "BASH_DEFAULT_TIMEOUT_MS": "300000"
+    "BASH_DEFAULT_TIMEOUT_MS": "300000",
+    "CLAUDE_CODE_THRIFTY_SONIC": "0"
   },
   "attribution": {
     "commit": "",
     "pr": ""
   },
   "includeCoAuthoredBy": false,
-  "autoCompactWindow": 200000,
   "permissions": {},
+  "model": "opus[1m]",
   "hooks": {
     "PreToolUse": [
       {
@@ -160,6 +161,7 @@
       }
     }
   },
+  "feedbackDrafts": "off",
   "spinnerTipsOverride": {
     "excludeDefault": false,
     "tips": [
@@ -174,6 +176,7 @@
       "effortLevel": "high"
     }
   },
+  "autoCompactWindow": 200000,
   "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
   "theme": "dark",
@@ -183,6 +186,5 @@
   "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
   "useAutoModeDuringPlan": false,
-  "gitAttribution": true,
-  "feedbackDrafts": "off"
+  "gitAttribution": true
 }
