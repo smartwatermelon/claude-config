@@ -293,17 +293,30 @@ _subagent_input() {
 # --- Regression pin against the real incident -------------------------------
 
 @test "incident 91ef0da0: default subagent ceiling would have caught the 19.2M agent" {
-  # The fix agent spent 19.2M. The three other agents were 1.6M/2.1M/3.1M.
-  # The 5M default must separate them: block the expensive one, ignore the
-  # cheap ones. This pins the DEFAULT, so a future retune that lets the
-  # 19.2M agent through fails here.
-  _write_transcript "${TMPD}/big.jsonl" 20 1000000  # 20M
+  # The fix agent spent 19.2M. This pins the DEFAULT, so a future retune that
+  # lets the 19.2M agent through fails here.
+  _write_transcript "${TMPD}/big.jsonl" 20 1000000 # 20M
   run bash -c "\"${HOOK}\" <<<'$(_subagent_input "${TMPD}/big.jsonl")'"
   [ "${status}" -eq 2 ]
 
-  _write_transcript "${TMPD}/small.jsonl" 3 1000000 # 3M, like the reviewers
+  # 2M is under the 2.3M ceiling: a five-minute agent at the measured mean
+  # rate (416,286 tok/min) lands at 2.08M, so this is the shape of an agent
+  # the cap must NOT touch.
+  _write_transcript "${TMPD}/small.jsonl" 2 1000000 # 2M
   run bash -c "\"${HOOK}\" <<<'$(_subagent_input "${TMPD}/small.jsonl")'"
   [ "${status}" -eq 0 ]
+}
+
+@test "default subagent ceiling is the measured 5-minute budget, not a round guess" {
+  # Pins the derivation itself. 416,286 tok/min x 5 min x 1.1 = 2.29M -> 2.3M.
+  # A retune must move this number deliberately, with its own measurement.
+  _write_transcript "${TMPD}/under.jsonl" 1 2290000 # just under 2.3M
+  run bash -c "\"${HOOK}\" <<<'$(_subagent_input "${TMPD}/under.jsonl")'"
+  [ "${status}" -eq 0 ]
+
+  _write_transcript "${TMPD}/over.jsonl" 1 2310000 # just over 2.3M
+  run bash -c "\"${HOOK}\" <<<'$(_subagent_input "${TMPD}/over.jsonl")'"
+  [ "${status}" -eq 2 ]
 }
 
 # --- Portable replay of the incident (no machine-local state required) -------
@@ -326,7 +339,7 @@ _subagent_input() {
 
 FIXTURES="${BATS_TEST_DIRNAME}/fixtures/incident-91ef0da0"
 
-@test "incident replay: only the runaway agent is blocked at the 5M default" {
+@test "incident replay: the over-budget agents are blocked at the 2.3M default" {
   local blocked=0 allowed=0 f
   for f in "${FIXTURES}"/*.jsonl; do
     run bash -c "\"${HOOK}\" <<<'$(_subagent_input "${f}")'"
@@ -336,11 +349,20 @@ FIXTURES="${BATS_TEST_DIRNAME}/fixtures/incident-91ef0da0"
       allowed=$((allowed + 1))
     fi
   done
-  # Exactly one of the five agents was the runaway. If a retune makes this 0,
-  # the guard has stopped catching the incident it was built for; if it makes
-  # this 2+, it has started blocking legitimate review fan-out.
-  [ "${blocked}" -eq 1 ]
-  [ "${allowed}" -eq 4 ]
+  # At the measured 2.3M ceiling, three of the five incident agents are over
+  # budget (19.4M fix, 3.7M security, 3.2M build-2) and two are under
+  # (2.2M adversarial, 1.7M build-1).
+  #
+  # This is a deliberate change from the earlier 5M default, which blocked
+  # only the 19.4M agent. 5M was a runaway detector; 2.3M is the token
+  # expression of a five-minute lifetime. The wider net is the point: the
+  # security reviewer and build-2 each spent over 3M, which at the measured
+  # mean rate is more than seven minutes of work.
+  #
+  # If a retune makes blocked 0, the guard has stopped catching the incident
+  # it was built for.
+  [ "${blocked}" -eq 3 ]
+  [ "${allowed}" -eq 2 ]
 }
 
 @test "incident replay: the runaway agent is the fix-findings agent" {
@@ -349,11 +371,15 @@ FIXTURES="${BATS_TEST_DIRNAME}/fixtures/incident-91ef0da0"
   [[ "${output}" == *'19.4M'* ]]
 }
 
-@test "incident replay: the two reviewers are left alone" {
-  # These are the agents that did their job at reasonable cost. A guard that
-  # blocks them is worse than no guard, because it would train the operator
-  # to raise the ceiling permanently.
-  for f in agent-a360be39-security-reviewer agent-a962c964-adversarial; do
+@test "incident replay: agents within the five-minute budget are left alone" {
+  # A guard that blocks agents doing their job at reasonable cost is worse
+  # than no guard: it trains the operator to raise the ceiling permanently.
+  #
+  # At 2.3M that set is the adversarial reviewer (2.2M) and the killed
+  # build-1 (1.7M) -- both under a five-minute budget at the measured rate.
+  # The security reviewer (3.7M) is NOT in this set any more; it is asserted
+  # as blocked above, deliberately.
+  for f in agent-a962c964-adversarial agent-a6447e0d-build-1-killed; do
     run bash -c "\"${HOOK}\" <<<'$(_subagent_input "${FIXTURES}/${f}.jsonl")'"
     [ "${status}" -eq 0 ]
   done

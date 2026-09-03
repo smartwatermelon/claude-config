@@ -105,16 +105,37 @@ fi
 # one session without editing this file, and so the bats suite can drive
 # small values instead of synthesizing 5M-token fixtures.
 #
-# Defaults are set from the 91ef0da0 measurements, deliberately below what
-# that session actually spent so they would have fired DURING it rather than
-# after:
-#   subagent 5M  -- the 19.2M fix agent trips this ~1/4 of the way in.
-#                   The three cheap agents (1.6M/2.1M/3.1M) never trip it,
-#                   so ordinary review fan-out is unaffected.
+# Defaults are set from measurement, deliberately below what a runaway
+# session actually spends so they fire DURING it rather than after:
+#
+#   subagent 2.3M -- derived, not guessed. Measured across 447 real subagent
+#                   transcripts on 2026-09-02: a well-behaved agent (finished
+#                   within 5 min, under the prior 5M ceiling, ran >=15s so
+#                   startup does not dominate the rate; n=281) averages
+#                   416,286 tokens/min. Five minutes of that is 2.08M; +10%
+#                   buffer gives 2.3M.
+#
+#                   WHY A RATE, NOT A TOTAL: averaging the totals of agents
+#                   that happened to finish quickly lets a swarm of 20-second
+#                   lookups drag the mean down, throttling exactly the agents
+#                   the cap should permit.
+#
+#                   This is the token expression of a 5-minute lifetime, so
+#                   the two limits describe one constraint instead of one
+#                   silently dominating. Confirmed against the same corpus:
+#                   of the 93 agents this ceiling blocks, 85 (91%) also ran
+#                   over 5 minutes -- both limits catch the same population.
+#
+#                   The filter is not doing the work; varying it (30-300s,
+#                   <2M cap, no runaway cap) moves the answer by under 4%.
+#                   For scale, the cheapest of all 447 agents spent 32,996
+#                   tokens, so a ceiling in the tens of thousands sits below
+#                   the observed floor and would block every agent measured.
+#
 #   session 25M  -- trips at roughly 16:10, about an hour before the
 #                   expensive half of the session. The 10M soft-warn lands
 #                   earlier still, as a nudge with no block.
-BUDGET_SUBAGENT_TOKENS="${BUDGET_SUBAGENT_TOKENS:-5000000}"
+BUDGET_SUBAGENT_TOKENS="${BUDGET_SUBAGENT_TOKENS:-2300000}"
 BUDGET_SESSION_TOKENS="${BUDGET_SESSION_TOKENS:-25000000}"
 BUDGET_SESSION_WARN_TOKENS="${BUDGET_SESSION_WARN_TOKENS:-10000000}"
 
