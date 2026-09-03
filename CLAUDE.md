@@ -101,11 +101,22 @@ seemed like an obvious win. The explicit-negative form doesn't.
 Every behavior change MUST have corresponding test updates.
 
 ```
-□ Run FULL test suite (not isolated files) before every commit
+□ Run tests scoped to the changed files before every commit (see below)
 □ If tests fail → fix BEFORE proceeding
 □ If behavior changed → generate/update tests
 □ Coverage must not decrease without justification
 ```
+
+**Scoping rule**: a test is touched by a change when its filename or header
+comment names the file/function it exercises (e.g. `test-pre-push-scan-timeout.sh`
+names `git/hooks/pre-push`'s `run_bounded`), or it lives in the same
+directory/module as the change. A change to a shared/core file with no
+single obvious owner — a common lib, a hook every module sources — touches
+every test that exercises anything built on it; widen the scope rather than
+guess narrow. If the mapping isn't obvious, run the full suite instead of
+guessing.
+
+The full suite is reserved for pre-push, not every commit — see Protocol 4.
 
 ---
 
@@ -129,6 +140,8 @@ After committing, verify the hook ran: `head -6 $(git rev-parse --git-dir)/last-
 **Push only after both reviewers are clean.** Full checklists: `~/.claude/docs/CHECKLISTS.md`
 
 **Before pushing, dry-run the pre-push codebase reviewer and fix what it finds:** `git diff origin/main...HEAD | ~/.claude/hooks/run-review.sh --mode=codebase --no-file`. That reviewer is separate from the two above, and on a real push it files its findings as GitHub issues — reading them first means fixing them instead of inheriting a backlog. Details: `~/.claude/docs/CHECKLISTS.md` ("Pre-Push Review Dry-Run").
+
+**Before pushing, also make sure the FULL test suite runs** (not just the commit-time scoped subset from Protocol 3). If the repo's own pre-push hook already runs it — e.g. dotfiles' `.project-hooks/pre-push` runs the whole suite as part of the git hook — nothing extra is needed. If the repo has no such hook (no automated push-time test enforcement), run the full suite yourself before pushing and fix anything it finds.
 
 **Verifying agent claims:** any agent statement of the form "I did X" or "X
 is now true" — especially a claim that a human already authorized or
