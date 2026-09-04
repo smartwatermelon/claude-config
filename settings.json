@@ -180,7 +180,7 @@
   "effortLevel": "medium",
   "modelSettings": {
     "claude-opus-5": {
-      "effortLevel": "high"
+      "effortLevel": "medium"
     }
   },
   "autoCompactWindow": 200000,
@@ -189,6 +189,7 @@
   "theme": "dark",
   "editorMode": "normal",
   "verbose": false,
+  "autoContinueAtUsageLimit": true,
   "remoteControlAtStartup": true,
   "inputNeededNotifEnabled": true,
   "agentPushNotifEnabled": true,
