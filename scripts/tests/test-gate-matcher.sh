@@ -42,6 +42,13 @@ printf 'fix(gate): a body nobody reviewed\n' >"${UNAPPROVED_TEXT}"
 # the suite writes the approved bytes itself -- this is the fixture, not a
 # bypass of the real gate.
 cp "${APPROVED_TEXT}" "${GATE_REVIEW_DIR}/approved/commit-1"
+# The per-repo layout (claude-config#606): approvals now land in
+# approved/<repo>-<branch>/<name>. check matches by hash across every key, so
+# the hook passes an approval from any repo's key, whatever its own cwd.
+KEYED_TEXT="${TMP}/keyed-body.txt"
+printf 'fix(gate): a body approved under a repo key\n' >"${KEYED_TEXT}"
+mkdir -p "${GATE_REVIEW_DIR}/approved/alpha-main"
+cp "${KEYED_TEXT}" "${GATE_REVIEW_DIR}/approved/alpha-main/commit-2"
 
 pass=0
 fail=0
@@ -105,6 +112,10 @@ _case "${PERSONIFY}" "quoted absolute -F path, APPROVED" \
   "$(_b64 "git commit -F \"${APPROVED_TEXT}\"")" 0
 _case "${PERSONIFY}" "commit from the approved dir itself, APPROVED" \
   "$(_b64 "git commit -F ${GATE_REVIEW_DIR}/approved/commit-1")" 0
+_case "${PERSONIFY}" "commit from a keyed approved/<repo>-<branch>/ file, APPROVED" \
+  "$(_b64 "git commit -F ${GATE_REVIEW_DIR}/approved/alpha-main/commit-2")" 0
+_case "${PERSONIFY}" "text approved only under a repo key, from its own path" \
+  "$(_b64 "git commit -F ${KEYED_TEXT}")" 0
 _case "${PERSONIFY}" "gh pr create --body-file, APPROVED" \
   "$(_b64 "gh pr create --title t --body-file ${APPROVED_TEXT}")" 0
 _case "${PERSONIFY}" "gh pr create --body-file, NOT approved" \
@@ -474,6 +485,22 @@ _case "${DIRWRITE}" "a per-batch file under batches/ is a gate file too" \
   "$(_b64 "echo '# STATUS: APPROVED' > ${HOME}/.claude/gate-review/batches/dotfiles-main-1-2.txt")" 2
 _case "${DIRWRITE}" "sed -i on a per-batch file" \
   "$(_b64 "sed -i '' s/PENDING/APPROVED/ ${HOME}/.claude/gate-review/batches/dotfiles-main-1-2.txt")" 2
+# The per-repo layout (claude-config#606): pending/<key>/ and
+# approved/<key>/ sit inside gate-review/, so the same prefix covers them.
+_case "${DIRWRITE}" "cp into a keyed approved/<repo>-<branch>/ dir" \
+  "$(_b64 "cp /tmp/x ${HOME}/.claude/gate-review/approved/dotfiles-main/commit-1")" 2
+_case "${DIRWRITE}" "redirect into a keyed approved dir" \
+  "$(_b64 "echo text > ${HOME}/.claude/gate-review/approved/dotfiles-main/commit-1")" 2
+_case "${DIRWRITE}" "redirect into a keyed pending dir" \
+  "$(_b64 "echo text > ${HOME}/.claude/gate-review/pending/dotfiles-main/commit-1")" 2
+_case "${DIRWRITE}" "mkdir a new key dir under approved" \
+  "$(_b64 "mkdir -p ${HOME}/.claude/gate-review/approved/dotfiles-main")" 2
+_case "${DIRWRITE}" "rm a keyed pending item" \
+  "$(_b64 "rm ${HOME}/.claude/gate-review/pending/dotfiles-main/commit-1")" 2
+_case "${DIRWRITE}" "mv a pending item from one key to another" \
+  "$(_b64 "mv ${HOME}/.claude/gate-review/pending/a-main/x ${HOME}/.claude/gate-review/pending/b-main/x")" 2
+_case "${DIRWRITE}" "sed -i on a keyed approval" \
+  "$(_b64 "sed -i '' s/a/b/ ${HOME}/.claude/gate-review/approved/dotfiles-main/commit-1")" 2
 _case "${DIRWRITE}" "redirect into personify checks" \
   "$(_b64 "echo '{}' > ${HOME}/.config/personify/checks/abc.json")" 2
 _case "${DIRWRITE}" "cp into personify checks" \
@@ -489,6 +516,8 @@ echo "=== dir-write: READS must ALLOW (exit 0) ==="
 # would block the workflow it exists to permit.
 _case "${DIRWRITE}" "commit -F from the approved dir" \
   "$(_b64 "git commit -F ${HOME}/.claude/gate-review/approved/commit-1")" 0
+_case "${DIRWRITE}" "commit -F from a keyed approved dir" \
+  "$(_b64 "git commit -F ${HOME}/.claude/gate-review/approved/dotfiles-main/commit-1")" 0
 _case "${DIRWRITE}" "cat an approval" \
   "$(_b64 "cat ${HOME}/.claude/gate-review/approved/commit-1")" 0
 _case "${DIRWRITE}" "ls the approved dir" \
@@ -578,6 +607,10 @@ _wcase "Write SUSPENDED, tilde-spelled" \
   "$(printf '%s/.claude/gate-review/SUSPENDED' '~')" 2
 _wcase "Write into gate-review/approved" \
   "${HOME}/.claude/gate-review/approved/x" 2
+_wcase "Write into a keyed gate-review/approved/<key>/" \
+  "${HOME}/.claude/gate-review/approved/dotfiles-main/x" 2
+_wcase "Write into a keyed gate-review/pending/<key>/" \
+  "${HOME}/.claude/gate-review/pending/dotfiles-main/x" 2
 _wcase "Write into gate-review/batches" \
   "${HOME}/.claude/gate-review/batches/dotfiles-main-1-2.txt" 2
 _wcase "the key file beside checks/ stays writable" \
