@@ -44,11 +44,17 @@ _no() {
 _load() {
   eval "$(sed -n '/^_die()/,$p' "${GATE}" | sed '/^case "${1:-}"/,$d')"
   GATE_DIR="${GATE_REVIEW_DIR}"
-  APPROVED="${GATE_DIR}/approved"
+  # The roots sit above _die(), outside the sed range. Shellcheck flags them
+  # unused because only sourced code reads them; export keeps both satisfied.
+  export PENDING_ROOT="${GATE_DIR}/pending" APPROVED_ROOT="${GATE_DIR}/approved"
+  export GATE_KEY=""
+  # The _split_batch and check cases below work on the flat roots, which is
+  # also where items from before per-repo keying sit. _cmd_open and
+  # _cmd_stage narrow both to the caller's key themselves.
+  APPROVED="${APPROVED_ROOT}"
   # _write_approved clears the staged copy via ${PENDING:?}, which aborts under
-  # set -u if unset. Shellcheck flags it unused because only sourced code reads
-  # it; export keeps both satisfied.
-  export PENDING="${GATE_DIR}/pending"
+  # set -u if unset.
+  export PENDING="${PENDING_ROOT}"
   # The TTL constants sit above _die(), outside the sed range. Take the real
   # lines rather than copies, so the defaults under test are the shipped ones.
   local ttl_line var
@@ -280,7 +286,7 @@ if (_cmd_stage unchecked "${UNCHECKED}") >/dev/null 2>&1; then
 else
   _ok "stage refuses a file with no check record"
 fi
-if [[ ! -e "${PENDING}/unchecked" ]]; then
+if [[ ! -e "${PENDING}/unchecked" ]] && ! compgen -G "${PENDING_ROOT}/*/unchecked" >/dev/null; then
   _ok "a refused stage leaves nothing pending"
 else
   _no "a refused stage leaves nothing pending"
@@ -329,11 +335,23 @@ fi
 CHECKED="${TMP}/checked.txt"
 printf 'fix(x): trailing whitespace is part of the key   \n\n' >"${CHECKED}"
 _seed_record "${CHECKED}" '{"status":"FAIL","verdict":"AI","fraction_ai":0.97,"word_count":212}'
-if (_cmd_stage checked "${CHECKED}") >/dev/null 2>&1 && cmp -s "${CHECKED}" "${PENDING}/checked"; then
+# stage keys by the caller's repo and branch, so run it from a fixed place
+# rather than wherever this test was started. Outside any repo the key is
+# `batch`.
+STAGE_HERE="${TMP}/stage-here"
+mkdir -p "${STAGE_HERE}"
+if (cd "${STAGE_HERE}" && _cmd_stage checked "${CHECKED}") >/dev/null 2>&1 &&
+  cmp -s "${CHECKED}" "${PENDING_ROOT}/batch/checked"; then
   _ok "stage accepts a FAIL record keyed by the raw bytes"
 else
   _no "stage accepts a FAIL record keyed by the raw bytes"
 fi
+if [[ ! -e "${PENDING_ROOT}/checked" ]]; then
+  _ok "stage writes under the caller's key, not flat in pending/"
+else
+  _no "stage writes under the caller's key, not flat in pending/"
+fi
+rm -rf "${PENDING_ROOT:?}/batch" "${APPROVED_ROOT:?}/batch"
 
 got="$(_verdict_line checked "${CHECKED}")"
 if [[ "${got}" == "# checked: FAIL (AI, fraction_ai 0.97, 212 words)" ]]; then
@@ -469,21 +487,28 @@ printf 'stale\n' >"${APPROVED}/stale"
 _age_minutes "${APPROVED}/stale" 31
 printf 'fresh\n' >"${APPROVED}/fresh"
 _seed_record "${TTL_BODY}" '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":4}'
-if bash "${GATE}" stage ttl-item "${TTL_BODY}" >/dev/null 2>&1; then
+# One more pair under another key: the sweep covers every key, not only the
+# caller's.
+mkdir -p "${APPROVED_ROOT}/other-main"
+printf 'stale\n' >"${APPROVED_ROOT}/other-main/stale"
+_age_minutes "${APPROVED_ROOT}/other-main/stale" 31
+printf 'fresh\n' >"${APPROVED_ROOT}/other-main/fresh"
+if (cd "${STAGE_HERE}" && bash "${GATE}" stage ttl-item "${TTL_BODY}") >/dev/null 2>&1; then
   _ok "stage succeeds with expired approvals present"
 else
   _no "stage succeeds with expired approvals present"
 fi
-if [[ ! -e "${APPROVED}/stale" ]]; then
-  _ok "stage prunes an expired approval"
+if [[ ! -e "${APPROVED}/stale" && ! -e "${APPROVED_ROOT}/other-main/stale" ]]; then
+  _ok "stage prunes an expired approval, flat and under any key"
 else
-  _no "stage prunes an expired approval"
+  _no "stage prunes an expired approval, flat and under any key"
 fi
-if [[ -f "${APPROVED}/fresh" ]]; then
+if [[ -f "${APPROVED}/fresh" && -f "${APPROVED_ROOT}/other-main/fresh" ]]; then
   _ok "stage leaves a fresh approval standing"
 else
   _no "stage leaves a fresh approval standing"
 fi
+rm -rf "${PENDING_ROOT:?}/batch" "${APPROVED_ROOT:?}/batch" "${APPROVED_ROOT:?}/other-main"
 
 # --- open: each batch gets its own file ------------------------------------
 
@@ -533,12 +558,20 @@ _mkrepo() {
   command git -C "$1" init -q -b "$2"
 }
 
+# The <repo>-<branch> key an open from $1 stages and approves under.
+_key_of() {
+  (cd "$1" && _batch_key)
+}
+
 # Run one open from $1 with one staged item; print the path it opened. $2,
-# when given, is the staged text instead of the default.
+# when given, is the staged text instead of the default. The item is staged
+# under $1's own key, where stage would have put it.
 _open_from() {
-  local rc=0
+  local rc=0 key
   : >"${OPENED_LOG}"
-  printf '%s\n' "${2:-fix(x): staged from $1}" >"${PENDING}/item"
+  key="$(_key_of "$1")"
+  mkdir -p "${PENDING_ROOT}/${key}"
+  printf '%s\n' "${2:-fix(x): staged from $1}" >"${PENDING_ROOT}/${key}/item"
   (cd "$1" && PATH="${STUB_PATH}" && _cmd_open) >"${OPEN_OUT:-/dev/null}" 2>&1 || rc=$?
   cat "${OPENED_LOG}"
   return "${rc}"
@@ -582,7 +615,7 @@ if [[ "${P4}" == "${GATE_REVIEW_DIR}/batches/batch-"*.txt ]]; then
 else
   _no "outside a git repo the file falls back to batch-<nonce>.txt (got '${P4}')"
 fi
-if [[ -f "${APPROVED}/item" ]] && grep -q 'nogit' "${APPROVED}/item"; then
+if [[ -f "${APPROVED_ROOT}/batch/item" ]] && grep -q 'nogit' "${APPROVED_ROOT}/batch/item"; then
   _ok "an approved open still splits its own batch"
 else
   _no "an approved open still splits its own batch"
@@ -602,6 +635,12 @@ if [[ ! -e "${GATE_REVIEW_DIR}/batch.txt" ]]; then
 else
   _no "no shared batch.txt is written"
 fi
+
+# From here on every open runs from alpha, so point the test's own view of
+# pending/ and approved/ at alpha's key, where _cmd_open reads and writes.
+PENDING="${PENDING_ROOT}/$(_key_of "${TMP}/repos/alpha")"
+APPROVED="${APPROVED_ROOT}/$(_key_of "${TMP}/repos/alpha")"
+mkdir -p "${PENDING}" "${APPROVED}"
 
 # ABORT revokes only the aborted batch's own items (claude-config#613). It
 # used to wipe all of approved/, so aborting a commit-message batch silently
@@ -960,6 +999,203 @@ else
 fi
 rm -f "${YOUNG}"
 unset OPEN_OUT
+
+# --- staging and approval are kept per repo and branch (claude-config#606) --
+
+# pending/ and approved/ used to be one flat directory for every session. An
+# open batched every staged item, whoever staged it, so a reviewer in one repo
+# approved text from another; an aborted item stayed in pending/ and came back
+# in the next open from anywhere. Items now live under pending/<key>/ and
+# approved/<key>/, key = <repo>-<branch>.
+
+# Clean slate for these cases: nothing staged or approved anywhere.
+rm -rf "${PENDING_ROOT:?}"/* "${APPROVED_ROOT:?}"/* "${GATE_REVIEW_DIR}"/batches/*
+KA="$(_key_of "${TMP}/repos/alpha")"
+KB="$(_key_of "${TMP}/repos/beta")"
+OUT606="${TMP}/open-606.txt"
+
+# Stage through the real entry point, from the repo, as an agent would.
+_stage_in() {
+  local dir="$1" name="$2" text="$3" f
+  f="${TMP}/stage-${name}-${dir##*/}.txt"
+  printf '%s\n' "${text}" >"${f}"
+  _seed_record "${f}" '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":6}'
+  (cd "${dir}" && bash "${GATE}" stage "${name}" "${f}") >/dev/null 2>&1
+}
+
+# Open from $1 with nothing staged by the helper; stderr and stdout to OUT606.
+# PENDING and APPROVED start at the roots, as they do in a fresh process, so
+# this runs against the script's own layout and not the alpha view set above.
+_open_in() {
+  : >"${OPENED_LOG}"
+  rm -f "${SHOWN}"
+  (cd "$1" && PENDING="${PENDING_ROOT}" && APPROVED="${APPROVED_ROOT}" &&
+    PATH="${STUB_PATH}" && _cmd_open) >"${OUT606}" 2>&1
+}
+
+_stage_in "${TMP}/repos/alpha" alpha-commit 'fix(a): text staged in alpha'
+_stage_in "${TMP}/repos/beta" beta-commit 'fix(b): text staged in beta'
+if [[ -f "${PENDING_ROOT}/${KA}/alpha-commit" && -f "${PENDING_ROOT}/${KB}/beta-commit" ]]; then
+  _ok "606: stage writes pending/<repo>-<branch>/<name>"
+else
+  _no "606: stage writes pending/<repo>-<branch>/<name>"
+fi
+
+# Known-bad 1: two repos stage one item each; each open shows only its own.
+STUB_STATUS=PENDING
+POLL_TIMEOUT=2
+_open_in "${TMP}/repos/alpha" || true
+if grep -q '^=== alpha-commit ===$' "${SHOWN}" && ! grep -q 'beta-commit' "${SHOWN}"; then
+  _ok "606: an open from alpha shows alpha's item and not beta's"
+else
+  _no "606: an open from alpha shows alpha's item and not beta's"
+fi
+if grep -q "^# FROM: ${KA}\." "${SHOWN}" && grep -q "leaves these" "${SHOWN}" &&
+  grep -q "items staged for ${KA}\. Only the next open from this repo and" "${SHOWN}"; then
+  _ok "606: the header names the key and what ABORT or a timeout does to pending items"
+else
+  _no "606: the header names the key and what ABORT or a timeout does to pending items"
+fi
+_open_in "${TMP}/repos/beta" || true
+if grep -q '^=== beta-commit ===$' "${SHOWN}" && ! grep -q 'alpha-commit' "${SHOWN}"; then
+  _ok "606: an open from beta shows beta's item and not alpha's"
+else
+  _no "606: an open from beta shows beta's item and not alpha's"
+fi
+rm -f "${GATE_REVIEW_DIR}"/batches/*
+
+# Known-bad 2: an aborted item does not reappear in another repo's batch, and
+# stays staged for its own repo on purpose.
+STUB_STATUS=ABORT
+_open_in "${TMP}/repos/alpha" || true
+STUB_STATUS=APPROVED
+_open_in "${TMP}/repos/beta" || true
+if grep -q '^=== beta-commit ===$' "${SHOWN}" && ! grep -q 'alpha-commit' "${SHOWN}"; then
+  _ok "606: an item aborted in alpha is not in beta's next batch"
+else
+  _no "606: an item aborted in alpha is not in beta's next batch"
+fi
+if [[ -f "${PENDING_ROOT}/${KA}/alpha-commit" ]]; then
+  _ok "606: the aborted item stays staged for alpha"
+else
+  _no "606: the aborted item stays staged for alpha"
+fi
+if [[ -f "${APPROVED_ROOT}/${KB}/beta-commit" && ! -e "${APPROVED_ROOT}/${KB}/alpha-commit" &&
+  ! -e "${APPROVED_ROOT}/beta-commit" ]]; then
+  _ok "606: beta's approval lands in approved/<beta key>/ and approves nothing of alpha's"
+else
+  _no "606: beta's approval lands in approved/<beta key>/ and approves nothing of alpha's"
+fi
+if grep -q "^approved: ${APPROVED_ROOT}/${KB}/beta-commit$" "${OUT606}"; then
+  _ok "606: open prints the approved path to commit from"
+else
+  _no "606: open prints the approved path to commit from"
+fi
+
+# check still matches by content, from any cwd: the hook runs it from the Bash
+# tool's cwd, which for `git -C <repo> commit` is some other repo.
+BETA_TEXT="${TMP}/stage-beta-commit-beta.txt"
+if (cd "${TMP}/repos/alpha" && bash "${GATE}" check "${BETA_TEXT}") &&
+  (cd "${STAGE_HERE}" && bash "${GATE}" check "${BETA_TEXT}"); then
+  _ok "606: check finds a keyed approval by hash from another repo and from no repo"
+else
+  _no "606: check finds a keyed approval by hash from another repo and from no repo"
+fi
+
+# The same label in two repos: an ABORT in one does not revoke the other's.
+rm -rf "${PENDING_ROOT:?}"/* "${APPROVED_ROOT:?}"/* "${GATE_REVIEW_DIR}"/batches/*
+_stage_in "${TMP}/repos/alpha" commit 'fix(a): same label, alpha'
+_open_in "${TMP}/repos/alpha" || true
+_stage_in "${TMP}/repos/beta" commit 'fix(b): same label, beta'
+STUB_STATUS=ABORT
+_open_in "${TMP}/repos/beta" || true
+STUB_STATUS=APPROVED
+if [[ -f "${APPROVED_ROOT}/${KA}/commit" ]] &&
+  bash "${GATE}" check "${TMP}/stage-commit-alpha.txt"; then
+  _ok "606: an ABORT in beta leaves alpha's approval of the same label standing"
+else
+  _no "606: an ABORT in beta leaves alpha's approval of the same label standing"
+fi
+if [[ -f "${PENDING_ROOT}/${KB}/commit" ]] &&
+  grep -q 'same label, beta' "${PENDING_ROOT}/${KB}/commit"; then
+  _ok "606: beta's staged item of the same label did not overwrite alpha's"
+else
+  _no "606: beta's staged item of the same label did not overwrite alpha's"
+fi
+
+# Nothing staged here, but something staged elsewhere: say so, and name where.
+rm -rf "${PENDING_ROOT:?}"/* "${APPROVED_ROOT:?}"/* "${GATE_REVIEW_DIR}"/batches/*
+_stage_in "${TMP}/repos/beta" only-beta 'fix(b): staged only in beta'
+rc606=0
+_open_in "${TMP}/repos/alpha" || rc606=$?
+if [[ "${rc606}" != 0 ]] && grep -q "nothing staged for ${KA}" "${OUT606}" &&
+  grep -q "other repos/branches.*${KB}" "${OUT606}" && [[ ! -s "${OPENED_LOG}" ]]; then
+  _ok "606: an open with nothing staged here refuses and names the key that has items"
+else
+  _no "606: an open with nothing staged here refuses and names the key that has items"
+fi
+
+# Upgrade: items left flat in pending/ by the old layout are never batched
+# and never approved, never deleted, and are named on every open.
+rm -rf "${PENDING_ROOT:?}"/* "${APPROVED_ROOT:?}"/* "${GATE_REVIEW_DIR}"/batches/*
+printf 'fix(old): staged before the upgrade\n' >"${PENDING_ROOT}/old-commit"
+_stage_in "${TMP}/repos/alpha" new-commit 'fix(a): staged after the upgrade'
+_open_in "${TMP}/repos/alpha" || true
+if grep -q '^=== new-commit ===$' "${SHOWN}" && ! grep -q 'old-commit' "${SHOWN}"; then
+  _ok "606 upgrade: a flat pending item is not in the batch"
+else
+  _no "606 upgrade: a flat pending item is not in the batch"
+fi
+if grep -q "staged before staging was kept per repo" "${OUT606}" &&
+  grep -q "${PENDING_ROOT}/old-commit" "${OUT606}"; then
+  _ok "606 upgrade: open names each flat pending item"
+else
+  _no "606 upgrade: open names each flat pending item"
+fi
+if [[ -f "${PENDING_ROOT}/old-commit" ]] && ! compgen -G "${APPROVED_ROOT}/*/old-commit" >/dev/null &&
+  [[ ! -e "${APPROVED_ROOT}/old-commit" ]]; then
+  _ok "606 upgrade: the flat pending item is kept and not approved"
+else
+  _no "606 upgrade: the flat pending item is kept and not approved"
+fi
+# Only flat items, nothing keyed: still refused, still named.
+rm -rf "${PENDING_ROOT:?}/${KA}"
+rc606=0
+_open_in "${TMP}/repos/alpha" || rc606=$?
+if [[ "${rc606}" != 0 ]] && grep -q "${PENDING_ROOT}/old-commit" "${OUT606}" &&
+  grep -q "nothing staged for ${KA}" "${OUT606}"; then
+  _ok "606 upgrade: flat items alone do not make a batch"
+else
+  _no "606 upgrade: flat items alone do not make a batch"
+fi
+
+# Upgrade: an approval left flat in approved/ was a human's approval; it still
+# verifies until APPROVAL_TTL, and expires on the same clock.
+rm -rf "${PENDING_ROOT:?}"/* "${APPROVED_ROOT:?}"/*
+printf 'fix(old): approved before the upgrade\n' >"${APPROVED_ROOT}/old-approved"
+printf 'fix(old): approved before the upgrade\n' >"${TMP}/old-approved.txt"
+if bash "${GATE}" check "${TMP}/old-approved.txt"; then
+  _ok "606 upgrade: a fresh flat approval still verifies"
+else
+  _no "606 upgrade: a fresh flat approval still verifies"
+fi
+_age_minutes "${APPROVED_ROOT}/old-approved" 31
+if ! bash "${GATE}" check "${TMP}/old-approved.txt" && [[ ! -e "${APPROVED_ROOT}/old-approved" ]]; then
+  _ok "606 upgrade: a flat approval expires on the same clock"
+else
+  _no "606 upgrade: a flat approval expires on the same clock"
+fi
+
+# Upgrade: a flat item whose name equals this repo's key blocks mkdir; say so.
+printf 'x\n' >"${PENDING_ROOT}/${KA}"
+got="$( (cd "${TMP}/repos/alpha" && _use_key) 2>&1 >/dev/null || true)"
+if [[ "${got}" == *"moved aside by hand"* ]]; then
+  _ok "606 upgrade: a flat file named like the key is reported, not a bare mkdir error"
+else
+  _no "606 upgrade: a flat file named like the key is reported: ${got}"
+fi
+rm -f "${PENDING_ROOT:?}/${KA}"
+POLL_TIMEOUT=6
 
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]

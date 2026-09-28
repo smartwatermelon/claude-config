@@ -207,10 +207,15 @@ _deny() {
     echo '  1. Write the text to a file.'
     echo "  2. ${GATE} stage <label> <file>"
     echo "  3. ${GATE} open"
+    echo '     Run both from the same directory: staged items are kept per'
+    echo '     repo and branch of the current directory, and open shows only'
+    echo "     that directory's items."
     echo '  4. Andrew reads the batch and types APPROVED in the STATUS line.'
-    echo '  5. Re-run the command against the APPROVED file, absolute path:'
-    echo "       git commit -F ${HOME}/.claude/gate-review/approved/<label>"
-    echo "       gh pr create --title t --body-file ${HOME}/.claude/gate-review/approved/<label>"
+    echo '  5. Re-run the command against the APPROVED file, absolute path.'
+    echo '     open prints it on an "approved:" line; it sits under your'
+    echo '     repo and branch:'
+    echo "       git commit -F ${HOME}/.claude/gate-review/approved/<repo>-<branch>/<label>"
+    echo "       gh pr create --title t --body-file ${HOME}/.claude/gate-review/approved/<repo>-<branch>/<label>"
     echo ''
     echo '     Use the approved copy, not the file you staged: if he edited the'
     echo '     text in the editor, his edits are what he approved and the'
