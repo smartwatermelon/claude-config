@@ -76,6 +76,19 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   seconds). Approval is changing `# STATUS: PENDING` to
   `APPROVED` and saving. `ABORT` revokes only that batch's own items.
   `check <file>` exits 0 if the file matches any approval.
+- Staged and approved text is kept per caller's repo and branch, taken from
+  the current directory: `pending/<repo>-<branch>/<name>` and
+  `approved/<repo>-<branch>/<name>` (`batch` outside a repo). `open` batches
+  only its own key's items, and prints an `approved: <path>` line for each
+  item it approved; commit or post from that path. Run `stage` and `open`
+  from the same directory. ABORT, a timeout, or a killed wait leaves the
+  items staged under their key, and the batch header says so. Two sessions in
+  the same directory share one key. `check` still matches by content hash
+  across every key, so `git -C <repo> commit` from elsewhere passes.
+- Upgrade from the flat layout: items left directly in `pending/` are never
+  batched or approved, and every `open` names them; restage any still
+  wanted. Approvals left directly in `approved/` still verify until their
+  30 minutes run out.
 - `check` compares a content hash. A match is not consumed, so an identical
   repeat (for example a retry after a failed push) passes. Approvals expire
   30 minutes after they are written (`GATE_REVIEW_APPROVAL_TTL`, seconds),

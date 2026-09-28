@@ -37,8 +37,20 @@ set -euo pipefail
 unset CDPATH
 
 GATE_DIR="${GATE_REVIEW_DIR:-${HOME}/.claude/gate-review}"
-PENDING="${GATE_DIR}/pending"
-APPROVED="${GATE_DIR}/approved"
+# Staged and approved text is kept per caller: pending/<key>/<name> and
+# approved/<key>/<name>, where <key> is the caller's <repo>-<branch> (see
+# _batch_key). Both used to be one flat directory shared by every session, so
+# an open batched every staged item whoever staged it, and a reviewer in one
+# repo approved text from another (claude-config#606). PENDING and APPROVED
+# start at the roots and are narrowed to the caller's key by _use_key in stage
+# and open. check and the expiry sweep read every key: the hash is what binds
+# an approval, and the hook runs check from whatever cwd the Bash tool has,
+# which for `git -C <repo> commit` is not the repo.
+PENDING_ROOT="${GATE_DIR}/pending"
+APPROVED_ROOT="${GATE_DIR}/approved"
+PENDING="${PENDING_ROOT}"
+APPROVED="${APPROVED_ROOT}"
+GATE_KEY=""
 EDITOR_APP="${GATE_REVIEW_EDITOR:-BBEdit}"
 POLL_TIMEOUT="${GATE_REVIEW_TIMEOUT:-1800}"
 APPROVAL_TTL="${GATE_REVIEW_APPROVAL_TTL:-1800}"
@@ -49,7 +61,7 @@ APPROVAL_TTL="${GATE_REVIEW_APPROVAL_TTL:-1800}"
 # review's buffer is only as new as its last save.
 BUFFER_TTL="${GATE_REVIEW_BUFFER_TTL:-86400}"
 
-mkdir -p "${PENDING}" "${APPROVED}"
+mkdir -p "${PENDING_ROOT}" "${APPROVED_ROOT}"
 
 _die() {
   printf 'gate-review: %s\n' "$1" >&2
@@ -178,8 +190,72 @@ _cmd_stage() {
     } >&2
     exit 1
   fi
+  _use_key
   cp "${file}" "${PENDING}/${name}"
-  printf 'staged: %s\n' "${name}"
+  printf 'staged: %s (for %s)\n' "${name}" "${GATE_KEY}"
+}
+
+# Narrow PENDING and APPROVED to the caller's <repo>-<branch>, the same key
+# batches/ uses, so an open batches only what was staged from here and its
+# approvals land where this caller reads them. The key comes from the cwd,
+# so stage and open must run from the same directory.
+#
+# Not a session key. Claude Code does export CLAUDE_CODE_SESSION_ID, stable
+# across Bash calls, but whether it survives --resume, and whether a subagent
+# gets its parent's, is unverified; if either changes it, staged items strand
+# under a key the agent cannot reach. It would also have to go into the
+# batches/ name, or _prior_buffers carries one session's edited text into
+# another's batch by item name. Limits of repo+branch: two sessions in the
+# same directory (both in one repo, working elsewhere via `git -C`) share one
+# queue, and outside any repo every caller is `batch`. The FROM line in each
+# batch header shows which queue the reviewer is reading.
+_use_key() {
+  local d
+  GATE_KEY="$(_batch_key)"
+  # A key directory can only be missing or a directory. A regular file there is
+  # an item staged or approved under the old flat layout whose name happens to
+  # equal this key; mkdir would fail on it with no useful message.
+  for d in "${PENDING_ROOT}/${GATE_KEY}" "${APPROVED_ROOT}/${GATE_KEY}"; do
+    if [[ -e "${d}" && ! -d "${d}" ]]; then
+      _die "${d} is an item from before staging was kept per repo, and its name is this repo's key (${GATE_KEY}); it must be moved aside by hand"
+    fi
+  done
+  PENDING="${PENDING_ROOT}/${GATE_KEY}"
+  APPROVED="${APPROVED_ROOT}/${GATE_KEY}"
+  mkdir -p "${PENDING}" "${APPROVED}"
+}
+
+# Items staged under the old flat layout: regular files directly in pending/.
+# Nothing records whose they are, so no open may batch them: guessing would
+# recreate the cross-repo approval this layout exists to stop. They are named
+# on every open instead, never approved and never deleted.
+_note_legacy_pending() {
+  local f found=()
+  for f in "${PENDING_ROOT}"/*; do
+    [[ -f "${f}" ]] && found+=("${f}")
+  done
+  ((${#found[@]} > 0)) || return 0
+  {
+    echo "gate-review: ${#found[@]} item(s) were staged before staging was kept per repo and branch."
+    echo "gate-review: Nothing says whose they are, so they are NOT in this batch and NOT approved:"
+    for f in "${found[@]}"; do
+      echo "gate-review:   ${f}"
+    done
+    echo "gate-review: Restage any still wanted from its own repo: gate-review.sh stage <name> <file>."
+    echo "gate-review: Andrew can delete these files by hand; the hooks keep agents out of gate-review/."
+  } >&2
+}
+
+# Other keys that have something staged: said when this caller has nothing,
+# since the usual cause is staging on one branch and opening on another.
+_other_keys_with_pending() {
+  local d
+  for d in "${PENDING_ROOT}"/*/; do
+    d="${d%/}"
+    [[ -d "${d}" && "${d##*/}" != "${GATE_KEY}" ]] || continue
+    compgen -G "${d}/*" >/dev/null && printf '%s\n' "${d##*/}"
+  done
+  return 0
 }
 
 # Where this batch's buffer lives: one file per batch, named for the caller's
@@ -305,17 +381,25 @@ _prune_stale_buffers() {
 _cmd_open() {
   local batch count waited=0 nonce status
 
+  _use_key
+  _note_legacy_pending
   count=$(find "${PENDING}" -type f | wc -l | tr -d ' ')
-  ((count > 0)) || _die "nothing staged"
+  if ((count == 0)); then
+    local others
+    others="$(_other_keys_with_pending)"
+    if [[ -n "${others}" ]]; then
+      printf 'gate-review: items are staged for other repos/branches, not shown here: %s\n' \
+        "${others//$'\n'/ }" >&2
+    fi
+    _die "nothing staged for ${GATE_KEY} (staging is kept per repo and branch)"
+  fi
 
   _require_gui
 
-  # A per-batch file keeps two batches out of one editor buffer, but pending/
-  # and approved/ are still shared by every session. A second `open` running
-  # at the same time would batch the same staged items and could approve them
-  # first. Measured 2026-09-18, back when both also shared one batch.txt: a
-  # stale poller from an interrupted session split a newer batch and reported
-  # it approved, with no human involved at all.
+  # One review at a time, across every key: there is one reviewer and one
+  # editor. Measured 2026-09-18, back when every session shared one batch.txt
+  # and one pending/: a stale poller from an interrupted session split a newer
+  # batch and reported it approved, with no human involved at all.
   _refuse_if_open
 
   # After the refusal, so no other open is live whose buffer this could take.
@@ -349,7 +433,7 @@ _cmd_open() {
     else
       skipped+=("${cand}")
     fi
-  done < <(_prior_buffers "$(_batch_key)")
+  done < <(_prior_buffers "${GATE_KEY}")
 
   # One buffer for the whole set: the reviewer reads and edits everything in a
   # single pass, which is the point of batching.
@@ -374,6 +458,12 @@ _cmd_open() {
     echo "#"
     echo "# To drop ONE item from the set: delete its body."
     echo "# Lines starting with # are stripped from the approved text."
+    echo "#"
+    echo "# FROM: ${GATE_KEY}. Only items staged from this repo and branch are"
+    echo "# here; other repos and branches keep their own."
+    echo "# ABORT, a timeout, or a killed wait approves nothing and leaves these"
+    echo "# items staged for ${GATE_KEY}. Only the next open from this repo and"
+    echo "# branch shows them again."
     echo "#"
     echo "# BATCH: ${nonce}"
     # What each item was built from, so a later open can tell the reviewer's
@@ -510,10 +600,18 @@ _cmd_open() {
   rm -f "${batch}"
   KEPT_BATCH=""
   # The word actually read, so a fuzzy accept is visible rather than silent.
-  local approved_count
+  # The count is this key's approved/ only; other keys' approvals are not
+  # this batch's business.
+  local approved_count item
   approved_count="$(find "${APPROVED}" -type f | wc -l | tr -d ' ')"
   printf "approved %s item(s) (STATUS read as '%s'%s)\n" \
     "${approved_count}" "${status}" "${CLASS_WHY:+; ${CLASS_WHY}}"
+  # The approved copies now sit under this key, so give the exact paths to
+  # commit or post from rather than leave the caller to build them.
+  for item in "${batch_items[@]}"; do
+    [[ -f "${APPROVED}/${item}" ]] && printf 'approved: %s\n' "${APPROVED}/${item}"
+  done
+  return 0
 }
 
 # Optimal-string-alignment distance: Levenshtein plus one edit for swapping
@@ -692,10 +790,15 @@ _write_approved() {
 # Age comes from mtime, not a TIMESTAMP line as in merge-lock: the approved
 # file IS the hashed body, so any line added to it would break `check`.
 # A file whose mtime cannot be read is left alone rather than guessed at.
+#
+# Both depths: approved/<key>/<name>, and the old flat approved/<name>. An
+# approval written before the per-repo layout was a human's approval too; it
+# still verifies and still expires on the same clock, so an upgrade neither
+# drops nor extends it. A key directory fails the -f test and is skipped.
 _prune_expired() {
   local now approval mtime
   now="$(date +%s)"
-  for approval in "${APPROVED}"/*; do
+  for approval in "${APPROVED_ROOT}"/* "${APPROVED_ROOT}"/*/*; do
     [[ -f "${approval}" ]] || continue
     # GNU first: GNU `stat -f %m` fails but still prints filesystem info to stdout.
     mtime="$(stat -c %Y "${approval}" 2>/dev/null || stat -f %m "${approval}" 2>/dev/null)" || continue
@@ -703,6 +806,7 @@ _prune_expired() {
       rm -f "${approval}"
     fi
   done
+  return 0
 }
 
 # Accept if the bytes match ANY approval. A match is not consumed: re-posting
@@ -716,8 +820,12 @@ _cmd_check() {
   _prune_expired
   [[ -f "${file}" ]] || return 1
   want="$(_hash "${file}")"
+  # Every key, not only the caller's: the hook calls check from the Bash
+  # tool's cwd, which for `git -C <repo> commit -F ...` is some other repo.
+  # The key scopes what a reviewer is shown; the hash is what binds. Old flat
+  # approvals count too, until they expire (see _prune_expired).
   local approval
-  for approval in "${APPROVED}"/*; do
+  for approval in "${APPROVED_ROOT}"/* "${APPROVED_ROOT}"/*/*; do
     [[ -f "${approval}" ]] || continue
     [[ "$(_hash "${approval}")" == "${want}" ]] && return 0
   done
