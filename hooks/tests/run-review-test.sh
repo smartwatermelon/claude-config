@@ -57,6 +57,10 @@
 #       (#455/#555); the same finding located in the diff still blocks, and a
 #       security finding outside the diff still blocks (60b)
 #   62-63. Full-diff mode puts the branch commit messages in the prompt (#489)
+#   64-68. Carried-forward (prior-round) findings are checked against the real
+#       tree before they reach the prompt (#488): a nonexistent file is
+#       dropped, an existing file (in or out of the diff) is kept, gone quoted
+#       code is marked stale, and undecidable cases keep the old behavior
 
 set -euo pipefail
 
@@ -3570,6 +3574,155 @@ assert_contains "#489: full-diff prompt carries the newest commit's message" "RA
 assert_contains "#489: full-diff prompt carries the older commit's message" "RATIONALE-ONE" "${received62}"
 assert_contains "#489: the messages arrive under the intent header" "DEVELOPER INTENT (commit messages on this branch" "${received62}"
 assert_eq "#489 control: a real BLOCKING cross-file finding still blocks the push" "1" "${exit_t62}"
+
+# =========================================================
+# TEST 64-68: carried-forward findings are checked against the real tree
+# before they reach the next round's prompt (#488).
+#
+# #488's `tally.sh` finding entered the prompt as PRIOR ROUND FEEDBACK. The
+# ISSUE/LOCATION/DETAILS below are VERBATIM from the recorded incident
+# (dev-env/.git/reviewer-disagreements.log, 2026-09-10T16:42:29Z). tally.sh
+# never existed. A finding whose file is missing is dropped; one whose file
+# exists is carried forward (64/65), and one whose quoted code is gone is
+# marked stale but still carried (67). The filter never reads SEVERITY.
+# =========================================================
+echo ""
+echo "=== Test 64-68: prior-round findings are checked against the tree (#488) ==="
+
+# Seeds round history under the key run-review.sh will compute for foo.sh.
+seed_round_history() {
+  local key
+  key="$(cd "${REPO_DIR}" && round_history_key "foo.sh")"
+  mkdir -p "${REPO_DIR}/.git/claude-review-cache"
+  printf '%s\n' "$1" >"${REPO_DIR}/.git/claude-review-cache/round-history-${key}"
+}
+
+make_prompt_recorder() {
+  local d="$1"
+  mkdir -p "${d}"
+  rm -f "${d}/received_prompt.txt"
+  cat >"${d}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+cat >> "${d}/received_prompt.txt"
+echo "VERDICT: PASS
+
+No blocking issues found."
+exit 0
+EOF
+  chmod +x "${d}/claude"
+}
+
+TALLY_FINDING="ISSUE: Hardcoded GitHub API token and unsafe rm command from prior-round feedback remain unresolved
+SEVERITY: BLOCKING
+LOCATION: tally.sh (not in this diff)
+DETAILS: Prior-round feedback flagged tally.sh:3 (leaked token) and tally.sh:5 (unsafe rm with eval). This diff only modifies example.sh.disabled and does not address those defects. Verify tally.sh has been fixed before committing: remove token (line 3), replace eval \"rm -rf \$target\" with rm -rf -- \"\$target\" (line 5), and revoke the token on GitHub."
+
+# --- 64: phantom dropped, real finding on a changed file kept ---
+setup_repo
+stage_small_change
+seed_round_history "VERDICT: FAIL
+${TALLY_FINDING}
+ISSUE: Unquoted expansion
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: SENTINEL_REAL_FINDING quote the variable."
+make_prompt_recorder "${TMPDIR_TEST}/mock64"
+TEST64_LOG="${TMPDIR_TEST}/test64-review.log"
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST64_LOG}" CLAUDE_CLI="${TMPDIR_TEST}/mock64/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+received64="$(cat "${TMPDIR_TEST}/mock64/received_prompt.txt" 2>/dev/null || echo "")"
+assert_not_contains "#488: a prior-round finding against a nonexistent file is not carried forward" "tally.sh" "${received64}"
+assert_contains "#488: a prior-round finding against a changed file is still carried forward" "SENTINEL_REAL_FINDING" "${received64}"
+log64="$(cat "${TEST64_LOG}" 2>/dev/null || echo "")"
+assert_contains "#488: the dropped finding is logged" "stale-prior-round: dropped (no such file: tally.sh)" "${log64}"
+
+# --- 65: a file in the tree but outside the diff still carries forward.
+# Guards against re-deriving "outside the diff = invented": the reviewer can
+# be right about a file the change did not touch.
+setup_repo
+cd "${REPO_DIR}"
+mkdir -p lib
+echo 'token=abc' >lib/creds.sh
+git add lib/creds.sh
+git commit -q -m "add creds" --no-verify
+cd - >/dev/null
+stage_small_change
+seed_round_history "VERDICT: FAIL
+ISSUE: Hardcoded credential
+SEVERITY: BLOCKING
+LOCATION: creds.sh:1
+DETAILS: SENTINEL_OUTSIDE_DIFF remove the literal."
+make_prompt_recorder "${TMPDIR_TEST}/mock65"
+TEST65_LOG="${TMPDIR_TEST}/test65-review.log"
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST65_LOG}" CLAUDE_CLI="${TMPDIR_TEST}/mock65/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+received65="$(cat "${TMPDIR_TEST}/mock65/received_prompt.txt" 2>/dev/null || echo "")"
+assert_contains "#488: a security finding on an existing file outside the diff is still carried forward (basename resolved via the index)" "SENTINEL_OUTSIDE_DIFF" "${received65}"
+log65="$(cat "${TEST65_LOG}" 2>/dev/null || echo "")"
+assert_not_contains "#488: nothing is logged as stale for an existing file" "stale-prior-round" "${log65}"
+
+# --- 66: every carried finding is phantom -> no PRIOR ROUND section at all,
+# and the retry-only adversarial cache bypass does not fire either.
+setup_repo
+stage_small_change
+seed_round_history "VERDICT: FAIL
+${TALLY_FINDING}"
+make_prompt_recorder "${TMPDIR_TEST}/mock66"
+TEST66_LOG="${TMPDIR_TEST}/test66-review.log"
+cd "${REPO_DIR}"
+t66_stderr=$(REVIEW_LOG="${TEST66_LOG}" CLAUDE_CLI="${TMPDIR_TEST}/mock66/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>&1 >/dev/null || true)
+cd - >/dev/null
+received66="$(cat "${TMPDIR_TEST}/mock66/received_prompt.txt" 2>/dev/null || echo "")"
+assert_not_contains "#488: an all-phantom history injects no PRIOR ROUND section" "PRIOR ROUND FEEDBACK" "${received66}"
+assert_not_contains "#488: an all-phantom history is not treated as a retry" "Retry after a prior FAIL" "${t66_stderr}"
+
+# --- 67: quoted code no longer in the file -> kept, marked stale ---
+setup_repo
+stage_small_change
+seed_round_history "VERDICT: FAIL
+ISSUE: Unsafe eval
+SEVERITY: BLOCKING
+LOCATION: foo.sh:3
+DETAILS: SENTINEL_STALE \`eval \"\$removed_input\"\` runs untrusted text."
+make_prompt_recorder "${TMPDIR_TEST}/mock67"
+TEST67_LOG="${TMPDIR_TEST}/test67-review.log"
+cd "${REPO_DIR}"
+REVIEW_LOG="${TEST67_LOG}" CLAUDE_CLI="${TMPDIR_TEST}/mock67/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+cd - >/dev/null
+received67="$(cat "${TMPDIR_TEST}/mock67/received_prompt.txt" 2>/dev/null || echo "")"
+assert_contains "#488: a finding whose quoted code is gone is still carried forward" "SENTINEL_STALE" "${received67}"
+assert_contains "#488: ...and is marked stale" "[STALE: the code this finding quoted no longer appears in foo.sh." "${received67}"
+
+# --- 68: unit checks on the filter's undecidable cases (keep = old behavior)
+feedback68="VERDICT: FAIL
+ISSUE: Missing error handling
+SEVERITY: BLOCKING
+LOCATION: N/A
+DETAILS: SENTINEL_NA."
+out68a=$(filter_prior_round_feedback "${feedback68}" "${REPO_DIR}" "" "")
+assert_eq "#488: a LOCATION with no concrete path is kept unchanged" "${feedback68}" "${out68a}"
+out68b=$(filter_prior_round_feedback "VERDICT: FAIL
+${TALLY_FINDING}" "" "" "")
+assert_eq "#488: no repo top level -> everything is kept" "VERDICT: FAIL
+${TALLY_FINDING}" "${out68b}"
+out68c=$(filter_prior_round_feedback "VERDICT: FAIL (timeout)" "${REPO_DIR}" "" "")
+assert_eq "#488: a bare timeout round passes through" "VERDICT: FAIL (timeout)" "${out68c}"
+out68d=$(filter_prior_round_feedback "VERDICT: FAIL
+ISSUE: x
+SEVERITY: BLOCKING
+LOCATION: example.sh.disabled:12
+DETAILS: SENTINEL_PIPED" "${REPO_DIR}" ".claude/hooks/extensions/example.sh.disabled" "")
+assert_contains "#488: a path the current diff names counts as existing even if not on disk" "SENTINEL_PIPED" "${out68d}"
 
 # =========================================================
 # Summary

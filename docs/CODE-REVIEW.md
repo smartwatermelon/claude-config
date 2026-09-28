@@ -128,6 +128,13 @@ progress (dev-env#35):
    branch+file-set are carried forward into the next retry's prompt as
    PRIOR ROUND FEEDBACK, so code-reviewer doesn't re-flag an
    already-addressed issue with a new remedy each time.
+   Each carried finding is checked against the real tree first (#488). A
+   finding whose LOCATION names only files that exist nowhere (not in the
+   diff, the working tree, or the index) is dropped. A finding whose file
+   exists but whose quoted code is gone is kept and marked stale. Every
+   drop or mark adds a `stale-prior-round:` line to the review log. The
+   check never reads SEVERITY and never touches the current round's own
+   findings, so a real security finding raised fresh still blocks.
 3. **Arbitration**: when code-reviewer's BLOCKING FAIL disagrees with a
    clean adversarial-reviewer PASS, a third arbiter call (Sonnet) decides
    which is correct instead of code-reviewer's verdict winning by default.
