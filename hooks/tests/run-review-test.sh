@@ -61,6 +61,12 @@
 #       tree before they reach the prompt (#488): a nonexistent file is
 #       dropped, an existing file (in or out of the diff) is kept, gone quoted
 #       code is marked stale, and undecidable cases keep the old behavior
+#   69-72. Round memory is keyed on the reviewed diff's own paths, not the cwd
+#       index (#622): two unrelated piped --no-file diffs from one clean repo
+#       and branch share nothing (69, known-bad on 1e34f4e), a commit-mode
+#       retry on the same files still gets its prior round (70), files under
+#       the old key scheme are never read (71), and an empty path list gets
+#       no round memory (72)
 
 set -euo pipefail
 
@@ -1815,7 +1821,31 @@ stage_small_change
 # (smartwatermelon/claude-config#447).
 # shellcheck source=hooks/lib-review-context.sh
 source "${SCRIPT_DIR}/../lib-review-context.sh"
-TEST29_ROUND_KEY="$(cd "${REPO_DIR}" && round_history_key "foo.sh")"
+# The key is derived from the reviewed diff's own header paths (#622), so the
+# production path extractor is pulled out of run-review.sh too, the same way
+# tests/test_unverifiable_claim_downgrade.bats does.
+_dcp_src=$(sed -n '/^diff_changed_paths() {/,/^}/p' "${SUBJECT}")
+[[ -n "${_dcp_src}" ]] || {
+  echo "could not extract diff_changed_paths from ${SUBJECT}" >&2
+  exit 1
+}
+eval "${_dcp_src}"
+unset _dcp_src
+
+# The round-history key run-review.sh computes for text $1 (a diff), when
+# run from REPO_DIR. Each step runs separately so a failure is not masked.
+round_key_for_diff() {
+  local _paths
+  _paths=$(diff_changed_paths "$1")
+  (cd "${REPO_DIR}" && round_history_key "${_paths}")
+}
+# The same, for REPO_DIR's staged diff: what a pre-commit run reviews.
+staged_round_key() {
+  local _diff
+  _diff=$(cd "${REPO_DIR}" && git diff --cached)
+  round_key_for_diff "${_diff}"
+}
+TEST29_ROUND_KEY="$(staged_round_key)"
 TEST29_CACHE_DIR="${REPO_DIR}/.git/claude-review-cache"
 mkdir -p "${TEST29_CACHE_DIR}"
 cat >"${TEST29_CACHE_DIR}/round-history-${TEST29_ROUND_KEY}" <<'EOF'
@@ -3589,10 +3619,15 @@ assert_eq "#489 control: a real BLOCKING cross-file finding still blocks the pus
 echo ""
 echo "=== Test 64-68: prior-round findings are checked against the tree (#488) ==="
 
-# Seeds round history under the key run-review.sh will compute for foo.sh.
+# Seeds round history under the key run-review.sh will compute for the staged
+# diff (#622: the key comes from the reviewed diff's own paths).
 seed_round_history() {
   local key
-  key="$(cd "${REPO_DIR}" && round_history_key "foo.sh")"
+  key="$(staged_round_key)"
+  [[ "${key}" != "noround" ]] || {
+    echo "seed_round_history: no key for the staged diff" >&2
+    return 1
+  }
   mkdir -p "${REPO_DIR}/.git/claude-review-cache"
   printf '%s\n' "$1" >"${REPO_DIR}/.git/claude-review-cache/round-history-${key}"
 }
@@ -3723,6 +3758,154 @@ SEVERITY: BLOCKING
 LOCATION: example.sh.disabled:12
 DETAILS: SENTINEL_PIPED" "${REPO_DIR}" ".claude/hooks/extensions/example.sh.disabled" "")
 assert_contains "#488: a path the current diff names counts as existing even if not on disk" "SENTINEL_PIPED" "${out68d}"
+
+# =========================================================
+# TEST 69-72: the round-history key comes from the reviewed diff (#622)
+#
+# The key used to come from the cwd repo's staged index. A piped `--no-file`
+# review from a clean checkout has an empty index, so every piped diff on a
+# branch shared one slot, and a FAIL on one diff was injected into the next,
+# unrelated diff's prompt (the cause of #488). #621's filter cannot stop that
+# when the carried finding names a file that exists in the cwd repo, so the
+# findings below all name foo.sh, which setup_repo commits.
+# =========================================================
+echo ""
+echo "=== Test 69-72: round memory is keyed on the reviewed diff's own paths (#622) ==="
+
+# Both reviewers FAIL with a BLOCKING finding on foo.sh, so no arbiter runs and
+# round history is written and kept. It is a credential finding, like #488's,
+# so the outside-the-diff downgrade (security-exempt) leaves it blocking.
+# $1 = mock dir, $2 = a sentinel for DETAILS.
+make_blocking_fail_stub() {
+  local d="$1" sentinel="$2"
+  mkdir -p "${d}"
+  cat >"${d}/claude" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+cat >/dev/null
+echo "VERDICT: FAIL
+
+ISSUE: Hardcoded API token in foo.sh
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: ${sentinel} remove the literal token."
+exit 0
+EOF
+  chmod +x "${d}/claude"
+}
+
+# A new-file diff for a path that exists nowhere, as a piped review of another
+# repo's change would carry.
+synthetic_new_file_diff() {
+  local name="$1"
+  printf 'diff --git a/%s b/%s\nnew file mode 100644\nindex 0000000..1111111\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1,2 @@\n+#!/usr/bin/env bash\n+echo %s\n' \
+    "${name}" "${name}" "${name}" "${name}"
+}
+
+# --- 69 (known-bad): two unrelated piped --no-file diffs, same clean repo and
+# branch. The second prompt must carry nothing from the first review.
+setup_repo
+make_blocking_fail_stub "${TMPDIR_TEST}/mock69a" "SENTINEL_FIRST_DIFF"
+make_prompt_recorder "${TMPDIR_TEST}/mock69b"
+cd "${REPO_DIR}"
+staged69="$(git diff --cached --name-only)"
+exit69a=0
+synthetic_new_file_diff alpha.sh | REVIEW_LOG="${TMPDIR_TEST}/test69a-review.log" \
+  CLAUDE_CLI="${TMPDIR_TEST}/mock69a/claude" bash "${SUBJECT}" --no-file >/dev/null 2>&1 || exit69a=$?
+saved69="$(grep -l SENTINEL_FIRST_DIFF .git/claude-review-cache/round-history-* 2>/dev/null | wc -l | tr -d ' ')"
+t69_stderr=$(synthetic_new_file_diff beta.sh | REVIEW_LOG="${TMPDIR_TEST}/test69b-review.log" \
+  CLAUDE_CLI="${TMPDIR_TEST}/mock69b/claude" bash "${SUBJECT}" --no-file 2>&1 >/dev/null || true)
+cd - >/dev/null
+received69="$(cat "${TMPDIR_TEST}/mock69b/received_prompt.txt" 2>/dev/null || echo "")"
+assert_eq "#622 precondition: the index is clean, as in the #488 run" "" "${staged69}"
+assert_eq "#622 precondition: the first diff's review blocked" "1" "${exit69a}"
+assert_eq "#622 precondition: the first review's findings were saved to round history" "1" "${saved69}"
+assert_contains "#622 precondition: the second review ran and its prompt was recorded" "beta.sh" "${received69}"
+assert_not_contains "#622: the second diff's prompt carries none of the first review's findings" "SENTINEL_FIRST_DIFF" "${received69}"
+assert_not_contains "#622: ...and no PRIOR ROUND section at all" "PRIOR ROUND FEEDBACK" "${received69}"
+assert_not_contains "#622: the second diff is not treated as a retry" "Retry after a prior FAIL" "${t69_stderr}"
+
+# --- 70: a commit-mode retry on the same files still gets its previous round.
+setup_repo
+stage_small_change
+make_blocking_fail_stub "${TMPDIR_TEST}/mock70a" "SENTINEL_RETRY_ROUND"
+make_prompt_recorder "${TMPDIR_TEST}/mock70b"
+cd "${REPO_DIR}"
+exit70a=0
+REVIEW_LOG="${TMPDIR_TEST}/test70a-review.log" CLAUDE_CLI="${TMPDIR_TEST}/mock70a/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) >/dev/null 2>&1 || exit70a=$?
+# The retry edits the same file, so the diff (and DIFF_HASH) changes but the
+# file set does not.
+echo "echo retry" >>foo.sh
+git add foo.sh
+t70_stderr=$(REVIEW_LOG="${TMPDIR_TEST}/test70b-review.log" CLAUDE_CLI="${TMPDIR_TEST}/mock70b/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>&1 >/dev/null || true)
+cd - >/dev/null
+received70="$(cat "${TMPDIR_TEST}/mock70b/received_prompt.txt" 2>/dev/null || echo "")"
+assert_eq "#622 precondition: the first round blocked" "1" "${exit70a}"
+assert_contains "#622: a commit-mode retry on the same files gets PRIOR ROUND feedback" "PRIOR ROUND FEEDBACK" "${received70}"
+assert_contains "#622: ...carrying the previous round's finding" "SENTINEL_RETRY_ROUND" "${received70}"
+assert_contains "#622: ...and is treated as a retry" "Retry after a prior FAIL" "${t70_stderr}"
+
+# --- 71: round-history files written under the OLD key scheme are never read.
+# legacy_round_history_key is origin/main's round_history_key (1e34f4e),
+# copied verbatim rather than approximated (see Test 29's note on drift).
+legacy_round_history_key() {
+  local changed_files="$1"
+  local branch hash
+  branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
+  hash=$(printf '%s\n%s\n' "${branch}" "$(sort <<<"${changed_files}" || true)" \
+    | { shasum -a 256 2>/dev/null || true; } | awk '{print $1}')
+  printf '%s\n' "${hash:-noround}"
+}
+setup_repo
+stage_small_change
+mkdir -p "${REPO_DIR}/.git/claude-review-cache"
+for _legacy_files in "" "foo.sh"; do
+  _legacy_key="$(cd "${REPO_DIR}" && legacy_round_history_key "${_legacy_files}")"
+  printf '%s\n' "VERDICT: FAIL
+ISSUE: Legacy finding
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: SENTINEL_LEGACY_KEY quote the expansion." >"${REPO_DIR}/.git/claude-review-cache/round-history-${_legacy_key}"
+done
+unset _legacy_files _legacy_key
+make_prompt_recorder "${TMPDIR_TEST}/mock71a"
+make_prompt_recorder "${TMPDIR_TEST}/mock71b"
+cd "${REPO_DIR}"
+# Commit mode on foo.sh: the old key was hash(branch + "foo.sh").
+REVIEW_LOG="${TMPDIR_TEST}/test71a-review.log" CLAUDE_CLI="${TMPDIR_TEST}/mock71a/claude" \
+  bash "${SUBJECT}" < <(git diff --cached || true) >/dev/null 2>&1 || true
+# Piped review from a clean index: the old key was hash(branch + "").
+git reset -q
+synthetic_new_file_diff gamma.sh | REVIEW_LOG="${TMPDIR_TEST}/test71b-review.log" \
+  CLAUDE_CLI="${TMPDIR_TEST}/mock71b/claude" bash "${SUBJECT}" --no-file >/dev/null 2>&1 || true
+cd - >/dev/null
+received71a="$(cat "${TMPDIR_TEST}/mock71a/received_prompt.txt" 2>/dev/null || echo "")"
+received71b="$(cat "${TMPDIR_TEST}/mock71b/received_prompt.txt" 2>/dev/null || echo "")"
+assert_contains "#622 precondition: both reviews ran" "gamma.sh" "${received71b}"
+assert_not_contains "#622: an old-key file for the same staged files is not read" "SENTINEL_LEGACY_KEY" "${received71a}"
+assert_not_contains "#622: the old shared empty-index slot is not read by a piped review" "SENTINEL_LEGACY_KEY" "${received71b}"
+
+# --- 72: unit checks on the key itself.
+key72_empty="$(cd "${REPO_DIR}" && round_history_key "")"
+assert_eq "#622: an empty path list gets no round memory (it was the shared slot)" "noround" "${key72_empty}"
+diff72_alpha="$(synthetic_new_file_diff alpha.sh)"
+diff72_beta="$(synthetic_new_file_diff beta.sh)"
+key72_alpha="$(round_key_for_diff "${diff72_alpha}")"
+key72_beta="$(round_key_for_diff "${diff72_beta}")"
+key72_ab="$(cd "${REPO_DIR}" && round_history_key "b.sh
+a.sh")"
+key72_ba="$(cd "${REPO_DIR}" && round_history_key "a.sh
+
+b.sh")"
+same72="false"
+[[ "${key72_alpha}" == "${key72_beta}" ]] && same72="true"
+assert_eq "#622: diffs touching different files get different keys" "false" "${same72}"
+assert_eq "#622: the key ignores path order and blank lines" "${key72_ab}" "${key72_ba}"
 
 # =========================================================
 # Summary

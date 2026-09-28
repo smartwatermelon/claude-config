@@ -128,6 +128,11 @@ progress (dev-env#35):
    branch+file-set are carried forward into the next retry's prompt as
    PRIOR ROUND FEEDBACK, so code-reviewer doesn't re-flag an
    already-addressed issue with a new remedy each time.
+   The file-set is the set of paths in the reviewed diff's own headers, not
+   the current directory's staged index (#622). A piped review from a clean
+   checkout used to share one slot with every other piped review on that
+   branch; now two diffs share memory only when they touch the same files.
+   A diff with no file paths in its headers gets no round memory.
    Each carried finding is checked against the real tree first (#488). A
    finding whose LOCATION names only files that exist nowhere (not in the
    diff, the working tree, or the index) is dropped. A finding whose file
