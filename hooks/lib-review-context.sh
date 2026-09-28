@@ -57,18 +57,41 @@ extract_file_header_context() {
 # Derive a stable cache key for round-over-round feedback tracking. Diff
 # hashes change on every retry (the developer edits the code), so DIFF_HASH
 # can't key this — key on the more stable "which branch, which files are
-# in flight" identity instead. Args: $1 = CHANGED_FILES (newline-separated).
+# in flight" identity instead.
+#
+# Args: $1 = the paths the REVIEWED DIFF touches, newline-separated. Callers
+# pass the diff's own header paths (diff_changed_paths in run-review.sh), not
+# the cwd repo's staged index (#622). A piped `--no-file` review from a clean
+# checkout has an empty index, so the old index-based key was
+# hash(branch + "") for every piped diff: unrelated diffs shared one memory
+# slot, and one diff's findings were injected into another's review (#488).
+# In a normal pre-commit run the diff IS `git diff --cached`, so a retry on
+# the same files still gets the same key.
+#
+# An empty path list returns "noround" (no round memory). An empty list is
+# exactly the shared slot described above, so no key is safer than one.
+#
+# The "round-key-v2" line salts the hash so no key computed here can equal a
+# key from the old index-based scheme. A round-history file written before
+# this change is therefore never read again; the cache's 30-day mtime sweep
+# in run-review.sh removes it.
+#
 # Captures the hash before falling back, since a pipeline's exit status is
 # the LAST command's (awk, which exits 0 even on empty stdin) — `|| echo`
 # on the pipeline itself would never fire on a shasum failure.
 round_history_key() {
-  local changed_files="$1"
-  local branch hash
+  local reviewed_paths="$1"
+  local branch hash sorted
+  sorted=$(grep -v '^$' <<<"${reviewed_paths}" | sort -u || true)
+  if [[ -z "${sorted}" ]]; then
+    printf 'noround\n'
+    return 0
+  fi
   branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
   # The `|| true` below satisfies SC2312 and changes nothing: the fallback
   # here is value-based (`${hash:-noround}`), not status-based, exactly as
   # the comment above describes.
-  hash=$(printf '%s\n%s\n' "${branch}" "$(sort <<<"${changed_files}" || true)" \
+  hash=$(printf 'round-key-v2\n%s\n%s\n' "${branch}" "${sorted}" \
     | { shasum -a 256 2>/dev/null || true; } | awk '{print $1}')
   printf '%s\n' "${hash:-noround}"
 }
