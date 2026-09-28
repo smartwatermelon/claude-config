@@ -15,7 +15,8 @@
 # covered here for the same reason.
 #
 # WRITE-ONLY, DELIBERATELY. Reading from these dirs must pass. The whole
-# intended workflow is `git commit -F ~/.claude/gate-review/approved/<name>`:
+# intended workflow is
+# `git commit -F ~/.claude/gate-review/approved/<repo>-<branch>/<name>`:
 # the approved bytes are what commits, so a blanket ban on naming the path
 # would block the one command the gate exists to permit. Only writes are
 # matched.
@@ -110,7 +111,7 @@ printf '%s BLOCKED GATE-DIR WRITE (%s)\n' \
   echo 'what these directories exist to prevent.'
   echo ''
   echo 'Reading from these directories is allowed and is the normal path:'
-  echo '  git commit -F ~/.claude/gate-review/approved/<name>'
+  echo '  git commit -F ~/.claude/gate-review/approved/<repo>-<branch>/<name>'
   echo ''
   echo 'To get something approved, stage it and ask him to review:'
   echo '  gate-review.sh stage <label> <file> && gate-review.sh open'
