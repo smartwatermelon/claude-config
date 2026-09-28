@@ -3092,8 +3092,26 @@ fi
 # which noticed the cache was stale but sided with a fabricated
 # code-reviewer claim anyway rather than treating "no fresh evidence" as a
 # reason to force a live check.
-_prior_round_feedback_present=""
-[[ -n "${ROUND_HISTORY_FILE}" ]] && _prior_round_feedback_present=$(read_round_feedback "${ROUND_HISTORY_FILE}")
+#
+# The history is checked against the real tree before it is used, here and
+# for the prompt below (#488): a carried-forward finding whose file does not
+# exist is dropped, and one whose quoted code is gone is marked stale. See
+# filter_prior_round_feedback in lib-review-context.sh. Only the previous
+# round's output is filtered; this round's findings are not.
+PRIOR_ROUND_FEEDBACK=""
+if [[ -n "${ROUND_HISTORY_FILE}" ]]; then
+  _prior_raw=$(read_round_feedback "${ROUND_HISTORY_FILE}")
+  if [[ -n "${_prior_raw}" ]]; then
+    _review_top=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    PRIOR_ROUND_FEEDBACK=$(filter_prior_round_feedback "${_prior_raw}" "${_review_top}" "${REVIEWED_PATHS}" "${REVIEW_LOG}")
+    if [[ -z "${PRIOR_ROUND_FEEDBACK}" ]]; then
+      log_info "Prior-round feedback named only files that do not exist; not carrying it forward"
+    fi
+    unset _review_top
+  fi
+  unset _prior_raw
+fi
+_prior_round_feedback_present="${PRIOR_ROUND_FEEDBACK}"
 if [[ -n "${_prior_round_feedback_present}" ]]; then
   log_info "Retry after a prior FAIL on this branch/file-set -- forcing a live adversarial-reviewer check (bypassing cache)"
   ADVERSARIAL_CACHE="" # empty = invoke_agent always runs live, never caches
@@ -3134,7 +3152,7 @@ unset _cf _cf_header
 # inject them so retries build on prior findings instead of re-litigating.
 PRIOR_ROUND_SECTION=""
 if [[ -n "${ROUND_HISTORY_FILE}" ]]; then
-  _prior_feedback=$(read_round_feedback "${ROUND_HISTORY_FILE}")
+  _prior_feedback="${PRIOR_ROUND_FEEDBACK}"
   if [[ -n "${_prior_feedback}" ]]; then
     if grep -qE "^VERDICT: (PASS|FAIL|REVISE)" <<<"${_prior_feedback}"; then
       PRIOR_ROUND_SECTION="PRIOR ROUND FEEDBACK (from up to 2 previous FAILed review attempts on this branch/file-set — do NOT re-flag an issue below unless it is still genuinely present in the current diff; do not propose a different remedy for something already addressed):

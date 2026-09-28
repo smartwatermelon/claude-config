@@ -135,3 +135,238 @@ clear_round_feedback() {
   local history_file="$1"
   rm -f "${history_file}"
 }
+
+# --- Checking carried-forward findings against the real tree (#488) ---
+#
+# Round history is injected into the next review as PRIOR ROUND FEEDBACK.
+# Nothing checked it, so a finding against a file that does not exist was
+# handed to the next reviewer as established fact, and that reviewer
+# re-raised it as BLOCKING. #488's `tally.sh` finding arrived this way: the
+# blocking output says "Prior-round feedback flagged tally.sh:3".
+#
+# filter_prior_round_feedback checks each carried-forward ISSUE block before
+# it reaches the prompt:
+#   - Every concrete path its LOCATION names is missing from the reviewed diff,
+#     the working tree, and the index: the block is DROPPED.
+#   - A named file exists but none of the code the block quotes (a backtick
+#     span of 6+ characters) appears in it: the block is kept and MARKED
+#     stale. A developer who fixed the finding produces exactly this state,
+#     and round memory exists to tell the next round that it was addressed.
+#   - Anything else, including every case this cannot decide (no concrete
+#     path, no repo, a git error): the block is kept unchanged. That is the
+#     behavior before this check existed.
+#
+# SEVERITY is never read. The filter applies only to the PREVIOUS round's
+# output, so the current round's own findings are untouched, and a real
+# security finding raised fresh still blocks.
+#
+# A round whose ISSUE blocks were all dropped is omitted. A round with no
+# ISSUE blocks (a bare "VERDICT: FAIL (timeout)") passes through unchanged.
+#
+# Args: $1 = round-history text (rounds separated by "---ROUND---")
+#       $2 = repo top level (empty = cannot check; everything is kept)
+#       $3 = newline-separated paths the current diff touches (may be empty)
+#       $4 = log file for one "stale-prior-round:" line per dropped or marked
+#            block (optional; empty = no log)
+# Echoes: the filtered text. Empty when no round survives.
+
+# Concrete file paths a LOCATION value names, one per line. Backticks,
+# markdown emphasis, parentheticals, ":<line>" suffixes and a leading "./" are
+# removed. A token counts as a path only if it contains "/" or ends in an
+# extension, so "N/A", "general" and "multiple files" name nothing. A path
+# under "~" is skipped, which keeps the block when it is the only path.
+_prior_location_paths() {
+  local loc="$1" tok
+  local -a toks=()
+  loc="${loc//\`/}"
+  loc="${loc//\*/}"
+  loc=$(sed -E 's/\([^)]*\)//g' <<<"${loc}" || true)
+  read -ra toks <<<"${loc//[,;]/ }"
+  for tok in "${toks[@]}"; do
+    tok="${tok%%:*}"
+    tok="${tok%.}"
+    tok="${tok#./}"
+    [[ -n "${tok}" ]] || continue
+    [[ "${tok}" =~ ^[A-Za-z0-9._/@+~-]+$ ]] || continue
+    [[ "${tok,,}" == "n/a" ]] && continue
+    # A home-relative path is outside the repo, so this cannot check it.
+    [[ "${tok}" == "~"* ]] && continue
+    [[ "${tok}" == */* || "${tok}" =~ \.[A-Za-z0-9]+$ ]] || continue
+    printf '%s\n' "${tok}"
+  done
+}
+
+# Does path $1 exist for this review? A path the current diff names counts,
+# exactly or by basename, even when it is not on disk (a diff piped in from
+# another checkout). Otherwise the working tree and the index under top level
+# $2 decide. Prints the on-disk file to use for the quote check, if any.
+# Returns 0 = exists, 1 = missing, 2 = cannot tell (treated as exists).
+_prior_path_status() {
+  local path="$1" top="$2" reviewed="$3" base rp ls_out in_diff=0
+  base="${path##*/}"
+  if [[ -n "${reviewed}" ]]; then
+    # diff_changed_paths lists each header path with and without its a/, b/
+    # (or mnemonic i/, w/) prefix, so keep looking for the entry on disk.
+    while IFS= read -r rp; do
+      [[ -z "${rp}" ]] && continue
+      if [[ "${rp}" == "${path}" || "${rp##*/}" == "${base}" ]]; then
+        in_diff=1
+        if [[ -n "${top}" && -f "${top}/${rp}" ]]; then
+          printf '%s\n' "${top}/${rp}"
+          return 0
+        fi
+      fi
+    done <<<"${reviewed}"
+  fi
+  if [[ -z "${top}" || ! -d "${top}" ]]; then
+    [[ "${in_diff}" -eq 1 ]] && return 0
+    return 2
+  fi
+  if [[ "${path}" == /* ]]; then
+    if [[ -e "${path}" ]]; then
+      [[ -f "${path}" ]] && printf '%s\n' "${path}"
+      return 0
+    fi
+    [[ "${in_diff}" -eq 1 ]] && return 0
+    return 1
+  fi
+  if [[ -e "${top}/${path}" ]]; then
+    [[ -f "${top}/${path}" ]] && printf '%s\n' "${top}/${path}"
+    return 0
+  fi
+  # Reviewers often cite a basename ("collect.sh:152") for a file deeper in
+  # the tree. --cached covers a staged add, --others an untracked file.
+  if ! ls_out=$(git -C "${top}" ls-files --cached --others --exclude-standard \
+    -- "${path}" "*/${path}" 2>/dev/null); then
+    return 2
+  fi
+  if [[ -z "${ls_out}" ]]; then
+    [[ "${in_diff}" -eq 1 ]] && return 0
+    return 1
+  fi
+  rp=$(head -n 1 <<<"${ls_out}")
+  [[ -f "${top}/${rp}" ]] && printf '%s\n' "${top}/${rp}"
+  return 0
+}
+
+# Decide one ISSUE block. Echoes "keep", "drop <paths>" or "stale <paths>".
+_prior_block_decision() {
+  local block="$1" top="$2" reviewed="$3"
+  local loc paths p status file span
+  local -a files=() missing=() spans=()
+  loc=$(grep -m 1 -iE '^[[:space:]*-]*LOCATION[*]*:' <<<"${block}" \
+    | sed -E 's/^[[:space:]*-]*[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn][*]*:[[:space:]]*//' || true)
+  paths=$(_prior_location_paths "${loc}")
+  if [[ -z "${paths}" ]]; then
+    printf 'keep\n'
+    return 0
+  fi
+  local found=0
+  while IFS= read -r p; do
+    [[ -z "${p}" ]] && continue
+    status=0
+    file=$(_prior_path_status "${p}" "${top}" "${reviewed}") || status=$?
+    if [[ "${status}" -eq 1 ]]; then
+      missing+=("${p}")
+    else
+      found=1
+      [[ -n "${file}" ]] && files+=("${file}")
+    fi
+  done <<<"${paths}"
+  if [[ "${found}" -eq 0 ]]; then
+    printf 'drop %s\n' "${missing[*]}"
+    return 0
+  fi
+  # Quote check, only against files actually on disk.
+  if [[ ${#files[@]} -gt 0 ]]; then
+    # $'\x60' is a backtick, kept out of single quotes for SC2016.
+    local bt=$'\x60'
+    while IFS= read -r span; do
+      span="${span#"${bt}"}"
+      span="${span%"${bt}"}"
+      [[ ${#span} -ge 6 ]] && spans+=("${span}")
+    done < <(grep -oE "${bt}[^${bt}]+${bt}" <<<"${block}" || true)
+    if [[ ${#spans[@]} -gt 0 ]]; then
+      for span in "${spans[@]}"; do
+        if grep -qF -- "${span}" "${files[@]}" 2>/dev/null; then
+          printf 'keep\n'
+          return 0
+        fi
+      done
+      printf 'stale %s\n' "${files[*]#"${top}"/}"
+      return 0
+    fi
+  fi
+  printf 'keep\n'
+}
+
+filter_prior_round_feedback() {
+  local feedback="$1" top="$2" reviewed="${3:-}" log="${4:-}"
+  local -a rounds=()
+  local current="" line
+  [[ -n "${feedback}" ]] || return 0
+  if [[ -z "${top}" ]]; then
+    printf '%s\n' "${feedback}"
+    return 0
+  fi
+  while IFS= read -r line; do
+    if [[ "${line}" == "---ROUND---" ]]; then
+      rounds+=("${current}")
+      current=""
+    else
+      current+="${line}"$'\n'
+    fi
+  done <<<"${feedback}"
+  rounds+=("${current}")
+
+  local round out="" first=1
+  for round in "${rounds[@]}"; do
+    local hdr="" block="" kept="" had_issue=0 kept_issue=0 decision
+    local -a blocks=()
+    while IFS= read -r line; do
+      if [[ "${line}" =~ ^[[:space:]*-]*ISSUE[*]*: ]]; then
+        had_issue=1
+        [[ -n "${block}" ]] && blocks+=("${block}")
+        block="${line}"$'\n'
+      elif [[ -n "${block}" ]]; then
+        block+="${line}"$'\n'
+      else
+        hdr+="${line}"$'\n'
+      fi
+    done <<<"${round%$'\n'}"
+    [[ -n "${block}" ]] && blocks+=("${block}")
+
+    if [[ "${had_issue}" -eq 0 ]]; then
+      [[ -n "${hdr//[[:space:]]/}" ]] || continue
+      kept="${hdr}"
+    else
+      kept="${hdr}"
+      for block in "${blocks[@]}"; do
+        decision=$(_prior_block_decision "${block}" "${top}" "${reviewed}")
+        case "${decision}" in
+          drop\ *)
+            [[ -n "${log}" ]] && printf 'stale-prior-round: dropped (no such file: %s)\n' "${decision#drop }" >>"${log}" 2>/dev/null || true
+            ;;
+          stale\ *)
+            kept_issue=1
+            [[ -n "${log}" ]] && printf 'stale-prior-round: marked (quoted code not found in %s)\n' "${decision#stale }" >>"${log}" 2>/dev/null || true
+            kept+="[STALE: the code this finding quoted no longer appears in ${decision#stale }. It was probably addressed. Re-raise it only if the current diff still shows the problem.]"$'\n'"${block}"
+            ;;
+          *)
+            kept_issue=1
+            kept+="${block}"
+            ;;
+        esac
+      done
+      [[ "${kept_issue}" -eq 1 ]] || continue
+    fi
+    if [[ "${first}" -eq 1 ]]; then
+      first=0
+    else
+      out+="---ROUND---"$'\n'
+    fi
+    out+="${kept}"
+  done
+  [[ -n "${out}" ]] && printf '%s' "${out}"
+  return 0
+}
