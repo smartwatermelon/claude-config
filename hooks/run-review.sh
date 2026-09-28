@@ -3071,12 +3071,22 @@ fi
 
 # Build cache keys
 CODE_REVIEWER_CACHE="${CACHE_DIR}/code-reviewer-${DIFF_HASH}"
-ROUND_HISTORY_KEY=$(round_history_key "${CHANGED_FILES}")
+# Round memory is keyed on the paths the reviewed diff itself touches, not on
+# CHANGED_FILES (the cwd repo's staged index). A piped `--no-file` review from
+# a clean checkout has an empty index, so an index-based key put every piped
+# diff in one shared slot and unrelated diffs inherited each other's findings
+# (#622, cause of #488). Only this commit-mode path uses round memory: the
+# full-diff and codebase handlers above exit before reaching here.
+# If path extraction fails, the list is empty and the key is "noround": no
+# round memory, never the shared empty slot.
+_round_paths=$(diff_changed_paths "${DIFF}" || true)
+ROUND_HISTORY_KEY=$(round_history_key "${_round_paths}")
+unset _round_paths
 ROUND_HISTORY_FILE=""
 if [[ -n "${ROUND_HISTORY_KEY}" && "${ROUND_HISTORY_KEY}" != "noround" ]]; then
   ROUND_HISTORY_FILE="${CACHE_DIR}/round-history-${ROUND_HISTORY_KEY}"
 else
-  log_warn "Could not compute round-history key; this run's review will not carry prior-round feedback"
+  log_warn "Could not compute round-history key (no file paths in the diff headers, or no shasum); this run's review will not carry prior-round feedback"
 fi
 
 # adversarial-reviewer's cache is deliberately bypassed during a retry after a
