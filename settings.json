@@ -276,16 +276,21 @@
       "effortLevel": "medium"
     }
   },
-  "permissions": {},
-  "remoteControlAtStartup": true,
-  "skipDangerousModePermissionPrompt": true,
-  "spinnerTipsOverride": {
-    "excludeDefault": false,
-    "tips": [
-      "After pushing a PR, run /post-push-loop <pr-number> to monitor CI autonomously",
-      "Use the /copy command to copy Claude's output with no hard line-breaks or injected characters"
+  "permissions": {
+    "deny": [
+      "mcp__claude_ai_Asana__add_comment",
+      "mcp__claude_ai_Asana__create_project",
+      "mcp__claude_ai_Asana__create_project_from_template",
+      "mcp__claude_ai_Asana__create_project_status_update",
+      "mcp__claude_ai_Asana__create_task_from_template",
+      "mcp__claude_ai_Asana__create_tasks",
+      "mcp__claude_ai_Asana__delete_task",
+      "mcp__claude_ai_Asana__update_project",
+      "mcp__claude_ai_Asana__update_tasks"
     ]
   },
+  "remoteControlAtStartup": true,
+  "skipDangerousModePermissionPrompt": true,
   "statusLine": {
     "command": "~/.claude/scripts/status-line.sh",
     "type": "command"
