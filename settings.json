@@ -24,7 +24,7 @@
   "effortLevel": "medium",
   "enabledPlugins": {
     "apple-notes@apple-notes-mcp": false,
-    "asana@claude-plugins-official": true,
+    "asana@claude-plugins-official": false,
     "backend-development@claude-code-workflows": false,
     "ci-workflows@smartwatermelon-marketplace": true,
     "code-critic@smartwatermelon-marketplace": true,
