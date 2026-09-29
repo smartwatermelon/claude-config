@@ -291,8 +291,8 @@ _destination_for_segment() {
   if [[ "${CD_UNRESOLVED}" -eq 1 ]]; then
     _deny "an earlier cd in this command has a target the hook cannot resolve (bare cd, cd -, a variable or substitution); use git -C <dir> or gh -R <owner/name> so the destination is explicit" "${surface}"
   fi
-  if [[ "${CD_LEAKED}" -eq 1 ]]; then
-    _deny "a cd inside a ( ... ) group that already closed leaves the destination unclear; use git -C <dir> or gh -R <owner/name> so it is explicit" "${surface}"
+  if [[ "${CD_SEEN}" -eq 1 && "${_joined}" == *[\(\)]* ]]; then
+    _deny "a cd combined with parentheses leaves the destination unclear; use git -C <dir> or gh -R <owner/name> so it is explicit" "${surface}"
   fi
   base="${CD_DIR:-${hook_cwd}}"
   DEST_DIR="${base}"
@@ -426,36 +426,20 @@ _suspended() {
 # CD_DIR holds the last such target; CD_UNRESOLVED is set when the target cannot
 # be known (bare cd, `cd -`, a variable or substitution) and is cleared only by
 # a later target that does not depend on where we were. Subshells are not
-# scoped exactly. A cd inside a `( ... )` group applies to gated segments in
-# that group; once the group closes, the cd's effect is unknown to a regex
-# scanner (`(cd a && true); git commit` runs in the original directory), so
-# CD_LEAKED denies later gated segments rather than guess. DEPTH counts open
-# parentheses across segments (approximate: quotes are not read, so a stray
-# paren can only over-count, which errs toward denying).
+# scoped. A regex scanner cannot count parentheses through quotes and
+# expansions (`(cd a && echo "(x" && true); git commit` runs in the original
+# directory, but a quoted `(` hides the close), so it does not try: once any cd
+# has been seen, a command that contains `(` or `)` anywhere denies every gated
+# segment (CD_SEEN, checked in _destination_for_segment). Plain `cd X && ...`
+# with no parentheses still resolves to X.
 CD_DIR=""
 CD_UNRESOLVED=0
-CD_LEAKED=0
-CD_DEPTH=0
-DEPTH=0
-_track_depth() {
-  local seg="$1" opens closes
-  opens="${seg//[^(]/}"
-  closes="${seg//[^)]/}"
-  DEPTH=$((DEPTH + ${#opens} - ${#closes}))
-  ((DEPTH >= 0)) || DEPTH=0
-  if ((CD_DEPTH > DEPTH)); then
-    CD_LEAKED=1
-    CD_DIR=""
-    CD_DEPTH=0
-  fi
-}
+CD_SEEN=0
 _track_cd() {
-  local seg="$1" rest arg lead opens
+  local seg="$1" rest arg
   rest="$(printf '%s\n' "${seg}" | sed -E 's/^[[:space:]({]*((then|do)[[:space:]]+)?//')"
-  lead="${seg%"${rest}"}"
-  opens="${lead//[^(]/}"
   case "${rest}" in
-    cd | cd[[:space:]]* | pushd | pushd[[:space:]]*) ;;
+    cd | cd[[:space:]]* | pushd | pushd[[:space:]]*) CD_SEEN=1 ;;
     *) return 0 ;;
   esac
   rest="${rest#cd}"
@@ -484,14 +468,11 @@ _track_cd() {
     /*)
       CD_DIR="${arg}"
       CD_UNRESOLVED=0
-      CD_LEAKED=0
-      CD_DEPTH=$((DEPTH + ${#opens}))
       ;;
     *)
       # Relative to a directory we may not know: only resolvable when we do.
       if [[ "${CD_UNRESOLVED}" -eq 0 ]]; then
         CD_DIR="${CD_DIR:-${hook_cwd}}/${arg}"
-        CD_DEPTH=$((DEPTH + ${#opens}))
       fi
       ;;
   esac
@@ -522,11 +503,6 @@ while IFS= read -r seg; do
       _verify_api_segment "${seg}"
     fi
   fi
-  # Deliberately AFTER the checks above: a gated segment inside its own group
-  # (`( cd X && git commit -F f )`) must still see X, and only the closing `)`
-  # in this segment ends the group for the segments that follow. _deny exits,
-  # so a leaked state never survives a denied segment.
-  _track_depth "${seg}"
 done < <(_segments)
 
 exit 0

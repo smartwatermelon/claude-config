@@ -143,7 +143,7 @@ _case "cd <pangram repo> && git commit follows the cd" 2 "no Pangram check ran" 
   "cd ${BEACON} && git commit -F ${TXT}"
 _case "cd <pangram repo> && gh pr create follows the cd" 2 "no Pangram check ran" "${PERSONAL}" \
   "cd ${BEACON} && gh pr create --title t --body-file ${TXT}"
-_case "cd inside a subshell follows the cd" 2 "no Pangram check ran" "${PERSONAL}" \
+_case "cd inside a subshell denies (parentheses with a cd)" 2 "cd combined with parentheses" "${PERSONAL}" \
   "(cd ${BEACON} && git commit -F ${TXT} )"
 _case "relative cd resolves against the cwd" 2 "no Pangram check ran" "${TMP}" \
   "cd beacon && git commit -F ${TXT}"
@@ -177,18 +177,24 @@ _case "GIT_WORK_TREE= prefix blocks" 2 "use git -C" "${PERSONAL}" \
 _case "env GIT_DIR= prefix blocks" 2 "use git -C" "${PERSONAL}" \
   "env GIT_DIR=${BEACON}/.git git commit -F ${TXT}"
 
-# Fix round 2: subshell scope. A cd in a group that already closed must not
-# route a later gated segment (it runs in the original directory).
-_case "cd in a closed subshell, then commit from a pangram cwd: blocked" 2 "already closed" "${BEACON}" \
+# Fix round 3: a cd combined with parentheses anywhere in the command denies
+# every gated segment (a regex cannot count parens through quotes).
+_case "cd in a closed subshell, then commit from a pangram cwd: blocked" 2 "cd combined with parentheses" "${BEACON}" \
   "(cd ${PERSONAL} && true); git commit -F ${TXT}"
-_case "cd in a closed subshell, then gh pr create: blocked" 2 "already closed" "${BEACON}" \
+_case "cd in a closed subshell, then gh pr create: blocked" 2 "cd combined with parentheses" "${BEACON}" \
   "(cd ${PERSONAL} && true); gh pr create --title t --body-file ${TXT}"
-_case "commit inside the same subshell as its cd follows the cd" 2 "no Pangram check ran" "${PERSONAL}" \
+_case "quoted unbalanced ( inside the subshell cannot mask the close" 2 "cd combined with parentheses" "${BEACON}" \
+  "(cd ${PERSONAL} && echo \"(x\" && true); git commit -F ${TXT}"
+_case "commit in the same group as its cd now denies" 2 "cd combined with parentheses" "${PERSONAL}" \
   "( cd ${BEACON} && git commit -F ${TXT} )"
-_case "commit inside its cd's subshell resolves to a visual target" 0 "" "${BEACON}" \
-  "( cd ${PERSONAL} && git commit -F ${TXT} )"
-_case "a later absolute cd after a closed subshell re-resolves" 0 "" "${BEACON}" \
-  "(cd ${BEACON} && true); cd ${PERSONAL} && git commit -F ${TXT}"
+_case "plain cd, no parentheses, still resolves to the target (pangram)" 2 "no Pangram check ran" "${PERSONAL}" \
+  "cd ${BEACON} && git commit -F ${TXT}"
+_case "plain cd, no parentheses, still resolves to the target (visual)" 0 "" "${BEACON}" \
+  "cd ${PERSONAL} && git commit -F ${TXT}"
+_case "parentheses with no cd are unaffected" 0 "" "${PERSONAL}" \
+  "(echo hi) && git commit -F ${TXT}"
+_case "parentheses with no cd are unaffected (pangram still routes by cwd)" 2 "no Pangram check ran" "${BEACON}" \
+  "(echo hi) && git commit -F ${TXT}"
 
 # Unchanged behaviour.
 _norec
