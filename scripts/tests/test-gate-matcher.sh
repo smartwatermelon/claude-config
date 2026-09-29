@@ -218,6 +218,30 @@ gh pr create --title \"a; b\" --body-file ${APPROVED_TEXT}")" 0
 _case "${PERSONIFY}" "cd, then a quoted ; in a title, APPROVED" \
   "$(_b64 "cd /tmp && gh pr create --title \"a; b\" --body-file ${APPROVED_TEXT}")" 2
 
+echo "=== personify: env -C and xargs wrappers (claude-config#626) ==="
+# Both run the verb somewhere the hook cannot read: env -C in another
+# directory, xargs with arguments that arrive on stdin. Neither matched the
+# wrapper list, so the verb was never seen. They deny, approved or not.
+_case "${PERSONIFY}" "env -C <dir> commit, APPROVED" \
+  "$(_b64 "env -C /tmp git commit -F ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "env --chdir=<dir> commit, APPROVED" \
+  "$(_b64 "env --chdir=/tmp git commit -F ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "env -C<dir> attached, gh body, APPROVED" \
+  "$(_b64 "env -C/tmp gh pr create --title t --body-file ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "xargs commit, APPROVED" \
+  "$(_b64 "echo /tmp | xargs -I{} git -C {} commit -F ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "xargs gh with a body file, APPROVED" \
+  "$(_b64 "echo 5 | xargs gh pr comment --body-file ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "xargs gh api with a body field, APPROVED" \
+  "$(_b64 "echo 5 | xargs gh api repos/o/r/issues/5/comments -F body=@${APPROVED_TEXT}")" 2
+# Unaffected: a body-less gh call under xargs, and env without -C.
+_case "${PERSONIFY}" "xargs gh with no body" \
+  "$(_b64 "echo 5 | xargs gh pr edit --add-label bug")" 0
+_case "${PERSONIFY}" "env without -C, APPROVED" \
+  "$(_b64 "env FOO=1 git commit -F ${APPROVED_TEXT}")" 0
+_case "${PERSONIFY}" "xargs on an unrelated command" \
+  "$(_b64 "echo a | xargs echo")" 0
+
 echo "=== personify: gh pr review carries a body (claude-config#548) ==="
 # Review bodies reach another person exactly as a PR comment does. The event
 # flags (--approve, --request-changes, --comment) carry no text; only a body

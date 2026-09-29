@@ -747,8 +747,26 @@ _track_cd() {
 # no-message-file branch and block. That is the decided behaviour (2026-09-18):
 # the simple rule first, revisit if it fires repeatedly on genuinely unchanged
 # text.
+# A verb run through `xargs`, or through `env -C/--chdir <dir>`, never matches
+# the wrapper list above, so it was never seen (claude-config#626). Neither can
+# be verified anyway: xargs adds arguments from stdin, and env -C moves the
+# destination. Found loosely (the verb word anywhere after the wrapper) and
+# denied, approved or not. A gh call counts only when it carries a body, the
+# same rule as below.
+_wrapped_verb_re="(^|[^[:alnum:]_.-])(git[[:space:]](.*[[:space:]])?commit([[:space:]]|$)|gh[[:space:]](.*[[:space:]])?((pr|issue)[[:space:]]+(create|comment|edit|review)|api)[[:space:]](.*[[:space:]])?((-b|--body|-F|--body-file)([[:space:]]|=)|[^[:space:]]*body=))"
+_wrapper_re="(^|[^[:alnum:]_.-])(xargs([[:space:]]|$)|env[[:space:]]+([^[:space:]]+[[:space:]]+)*(-C|--chdir)([[:space:]]|=|/))"
+
 _gate_segment() {
-  local seg="$1"
+  local seg="$1" pre
+  if printf '%s\n' "${seg}" | grep -qE "${_wrapped_verb_re}"; then
+    # Only a wrapper before the verb counts: `git commit -F f | xargs echo` is
+    # not wrapped.
+    pre="$(printf '%s\n' "${seg}" | sed -E 's/(^|[^[:alnum:]_.-])(git|gh)[[:space:]].*$//')"
+    if printf '%s\n' "${pre}" | grep -qE "${_wrapper_re}"; then
+      _suspended && exit 0
+      _deny "xargs and env -C run the command with arguments or a directory the hook cannot see; run git -C <dir> commit or gh -R <owner/name> directly" "commit message or PR/issue body"
+    fi
+  fi
   if printf '%s\n' "${seg}" | grep -qE "${commit_re}"; then
     _suspended && exit 0
     _verify_segment "${seg}" "commit message" '-m|--message' '-F|--file' commit
