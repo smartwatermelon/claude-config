@@ -153,6 +153,101 @@ _case "${PERSONIFY}" "approved then unapproved" \
   "$(_b64 "git commit -F ${APPROVED_TEXT} && gh pr create --body-file ${UNAPPROVED_TEXT}")" 2
 _case "${PERSONIFY}" "approved then approved" \
   "$(_b64 "git commit -F ${APPROVED_TEXT} && gh pr create --body-file ${APPROVED_TEXT}")" 0
+# Inside one quoted bash -c string both commands still verify: an approved
+# first path must not vouch for an unapproved second one, in either order.
+_case "${PERSONIFY}" "bash -c: approved then unapproved" \
+  "$(_b64 "bash -c \"git commit -F ${APPROVED_TEXT}; git commit -F ${UNAPPROVED_TEXT}\"")" 2
+_case "${PERSONIFY}" "bash -c: unapproved then approved" \
+  "$(_b64 "bash -c \"git commit -F ${UNAPPROVED_TEXT}; git commit -F ${APPROVED_TEXT}\"")" 2
+
+echo "=== personify: separators inside quoted arguments (claude-config#626) ==="
+# A ; && || or | inside a quoted title is text, not a separator. Splitting on it
+# left no segment holding both the verb and the body file, so nothing was
+# checked and an unapproved body published.
+_case "${PERSONIFY}" "quoted ; in a title, NOT approved" \
+  "$(_b64 "gh pr create --title \"a; b\" --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "quoted && in a title, NOT approved" \
+  "$(_b64 "gh pr create --title \"a && b\" --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "quoted || in a title, NOT approved" \
+  "$(_b64 "gh pr create --title \"a || b\" --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "single-quoted | in a title, NOT approved" \
+  "$(_b64 "gh pr create --title 'a | b' --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "quoted ; in a title spanning two lines, NOT approved" \
+  "$(_b64 "gh pr create --title \"a;
+b\" --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "gh api: quoted ; in another field, NOT approved body" \
+  "$(_b64 "gh api repos/o/r/issues/5/comments -f title=\"a; b\" -F body=@${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "commit: quoted ; in --author, NOT approved" \
+  "$(_b64 "git commit --author \"x; y\" -F ${UNAPPROVED_TEXT}")" 2
+# A backslash-escaped separator is text too, quoted or not.
+_case "${PERSONIFY}" "escaped ; inside double quotes, NOT approved" \
+  "$(_b64 "gh pr create --title \"a \\; b\" --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "escaped ; unquoted, NOT approved" \
+  "$(_b64 "gh pr create --title a\\;b --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "escaped | unquoted, NOT approved" \
+  "$(_b64 "gh pr create --title a\\|b --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "escaped ; inside \$'...', NOT approved" \
+  "$(_b64 "gh pr create --title \$'a\\;b' --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "escaped ; unquoted, APPROVED" \
+  "$(_b64 "gh pr create --title a\\;b --body-file ${APPROVED_TEXT}")" 0
+# The fix must not turn a quoted separator into a false block.
+_case "${PERSONIFY}" "quoted ; in a title, APPROVED" \
+  "$(_b64 "gh pr create --title \"a; b\" --body-file ${APPROVED_TEXT}")" 0
+_case "${PERSONIFY}" "quoted ; in a title spanning two lines, APPROVED" \
+  "$(_b64 "gh pr create --title \"a;
+b\" --body-file ${APPROVED_TEXT}")" 0
+# Known false block, kept: the quote-blind piece `git commit --author "x` names
+# no message file and denies. The whole-segment check only adds checks, and
+# dropping cut pieces would let `bash -c "...A; ...U"` through (above).
+_case "${PERSONIFY}" "commit: quoted ; in --author, APPROVED (false block, fails closed)" \
+  "$(_b64 "git commit --author \"x; y\" -F ${APPROVED_TEXT}")" 2
+# An apostrophe in heredoc prose is not a quote; it must not swallow the
+# command after the heredoc.
+_case "${PERSONIFY}" "heredoc with an apostrophe, then NOT approved gh" \
+  "$(_b64 "cat >/dev/null <<'EOF'
+don't; stop
+EOF
+gh pr create --title t --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "heredoc with an apostrophe, then APPROVED gh" \
+  "$(_b64 "cat >/dev/null <<'EOF'
+don't; stop
+EOF
+gh pr create --title \"a; b\" --body-file ${APPROVED_TEXT}")" 0
+# A cd earlier in the command moves the destination, and the whole-segment
+# check cannot place itself in cd order: deny rather than guess.
+_case "${PERSONIFY}" "cd, then a quoted ; in a title, APPROVED" \
+  "$(_b64 "cd /tmp && gh pr create --title \"a; b\" --body-file ${APPROVED_TEXT}")" 2
+
+echo "=== personify: env -C and xargs wrappers (claude-config#626) ==="
+# Both run the verb somewhere the hook cannot read: env -C in another
+# directory, xargs with arguments that arrive on stdin. Neither matched the
+# wrapper list, so the verb was never seen. They deny, approved or not.
+_case "${PERSONIFY}" "env -C <dir> commit, APPROVED" \
+  "$(_b64 "env -C /tmp git commit -F ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "env --chdir=<dir> commit, APPROVED" \
+  "$(_b64 "env --chdir=/tmp git commit -F ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "env -C<dir> attached, gh body, APPROVED" \
+  "$(_b64 "env -C/tmp gh pr create --title t --body-file ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "xargs commit, APPROVED" \
+  "$(_b64 "echo /tmp | xargs -I{} git -C {} commit -F ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "xargs gh with a body file, APPROVED" \
+  "$(_b64 "echo 5 | xargs gh pr comment --body-file ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "xargs gh api with a body field, APPROVED" \
+  "$(_b64 "echo 5 | xargs gh api repos/o/r/issues/5/comments -F body=@${APPROVED_TEXT}")" 2
+# A git or gh command earlier in the pipe must not hide the wrapper.
+_case "${PERSONIFY}" "git output piped to xargs commit, APPROVED" \
+  "$(_b64 "git rev-parse HEAD | xargs git commit -F ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "gh output piped to xargs gh with a body, APPROVED" \
+  "$(_b64 "gh pr list -q .x | xargs gh pr comment --body-file ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "bash -c: git piped to xargs commit, APPROVED" \
+  "$(_b64 "bash -c \"git rev-parse HEAD | xargs git commit -F ${APPROVED_TEXT}\"")" 2
+# Unaffected: a body-less gh call under xargs, and env without -C.
+_case "${PERSONIFY}" "xargs gh with no body" \
+  "$(_b64 "echo 5 | xargs gh pr edit --add-label bug")" 0
+_case "${PERSONIFY}" "env without -C, APPROVED" \
+  "$(_b64 "env FOO=1 git commit -F ${APPROVED_TEXT}")" 0
+_case "${PERSONIFY}" "xargs on an unrelated command" \
+  "$(_b64 "echo a | xargs echo")" 0
 
 echo "=== personify: gh pr review carries a body (claude-config#548) ==="
 # Review bodies reach another person exactly as a PR comment does. The event

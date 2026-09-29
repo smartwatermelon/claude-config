@@ -92,8 +92,12 @@ default_lock() {
 # A typo must authorize nothing. Partial authorization from a malformed list is
 # the failure mode these tests exist to prevent.
 
+# NAME#N (owner from the cwd) and #N (same as N) became valid in #607, so
+# `notarepo#7` and `#7` no longer make a token malformed. These two cases use
+# tokens that are still malformed under that grammar; the valid short forms
+# are covered in test_merge_lock_notation.bats.
 @test "a malformed token rejects the whole batch" {
-  run bash "${SCRIPT}" auth "octo/tools#42,notarepo#7" "wave 3"
+  run bash "${SCRIPT}" auth "octo/tools#42,bad!repo#7" "wave 3"
   [ "${status}" -ne 0 ]
   [ ! -f "$(qualified_lock octo/tools 42)" ]
 }
@@ -116,8 +120,8 @@ default_lock() {
   [ ! -f "$(qualified_lock octo/tools 42)" ]
 }
 
-@test "an empty repo before the hash rejects the whole batch" {
-  run bash "${SCRIPT}" auth "octo/tools#42,#7" "wave 3"
+@test "an empty owner before the hash rejects the whole batch" {
+  run bash "${SCRIPT}" auth "octo/tools#42,/tools#7" "wave 3"
   [ "${status}" -ne 0 ]
   [ ! -f "$(qualified_lock octo/tools 42)" ]
 }
