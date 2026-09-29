@@ -31,7 +31,7 @@ _load_rules_inner() {
   RULE_VALUE=()
   RULE_OUTCOME=()
   if [[ ! -r "${file}" || ! -f "${file}" ]]; then
-    echo "gate-route: rules file not found or unreadable: ${file}" >&2
+    echo "gate-route: rules file not found or unreadable: ${file} (to deploy it, run install.sh --sync in the claude-config repo)" >&2
     return 4
   fi
   while IFS= read -r line || [[ -n "${line}" ]]; do
