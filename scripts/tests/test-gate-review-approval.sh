@@ -22,6 +22,12 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 
 export GATE_REVIEW_DIR="${TMP}/gate"
+# stage routes by destination. These cases predate routing and assume every
+# stage needs a check record, so pin the rules to that; the routing itself is
+# covered by test-gate-review-route.sh.
+export GATE_RULES_FILE="${TMP}/rules.conf"
+printf '* pangram\n' >"${GATE_RULES_FILE}"
+export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-/Users/andrewrich/Developer/dotfiles/bash/gh-wrapper.sh}"
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
 # The buffer the _split_batch cases hand it directly. Any path works: the
 # per-batch naming under batches/ is exercised through _cmd_open below.
@@ -55,6 +61,9 @@ _load() {
   # _write_approved clears the staged copy via ${PENDING:?}, which aborts under
   # set -u if unset.
   export PENDING="${PENDING_ROOT}"
+  # The router path is set above _die(), outside the sed range.
+  ROUTE_SCRIPT="$(dirname "${GATE}")/gate-route.sh"
+  export ROUTE_SCRIPT
   # The TTL constants sit above _die(), outside the sed range. Take the real
   # lines rather than copies, so the defaults under test are the shipped ones.
   local ttl_line var

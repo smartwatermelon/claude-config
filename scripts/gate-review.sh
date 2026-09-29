@@ -51,6 +51,16 @@ APPROVED_ROOT="${GATE_DIR}/approved"
 PENDING="${PENDING_ROOT}"
 APPROVED="${APPROVED_ROOT}"
 GATE_KEY=""
+# The router sits beside this script. Resolve the real path first: the deployed
+# copy is reached through a symlink under ~/.claude/scripts.
+_self="${BASH_SOURCE[0]}"
+if [[ -L "${_self}" ]]; then
+  _target="$(readlink "${_self}")"
+  [[ "${_target}" == /* ]] || _target="$(dirname "${_self}")/${_target}"
+  _self="${_target}"
+fi
+ROUTE_SCRIPT="$(cd "$(dirname "${_self}")" 2>/dev/null && pwd)/gate-route.sh"
+unset _self _target
 EDITOR_APP="${GATE_REVIEW_EDITOR:-BBEdit}"
 POLL_TIMEOUT="${GATE_REVIEW_TIMEOUT:-1800}"
 APPROVAL_TTL="${GATE_REVIEW_APPROVAL_TTL:-1800}"
@@ -151,11 +161,22 @@ _record_path() {
 }
 
 # One header line per item. Never fails: a missing or unreadable record is
-# shown, not fatal, because stage already enforced that the check ran.
+# shown, not fatal. A record always wins. With none, a `visual` route sidecar
+# (written by stage) turns "no record" into the banner, so the reviewer sees
+# why this item skipped the check. The line starts with `#`, so it is never
+# approved and never enters the hash.
 _verdict_line() {
-  local name="$1" file="$2" record line
+  local name="$1" file="$2" record line route outcome rule reason
   record="$(_record_path "${file}")"
   if [[ ! -f "${record}" ]]; then
+    route="${file%/*}/.route/${name}"
+    if [[ -f "${route}" ]]; then
+      IFS=$'\t' read -r outcome rule reason <"${route}" || true
+      if [[ "${outcome}" == "visual" ]]; then
+        printf '# %s: NOT PANGRAM REVIEWED (rule %s: %s)\n' "${name}" "${rule}" "${reason}"
+        return 0
+      fi
+    fi
     printf '# %s: NO RECORD\n' "${name}"
     return 0
   fi
@@ -170,16 +191,30 @@ _verdict_line() {
   fi
 }
 
+# Delete a pending item and its route sidecar together, so a re-staged item
+# never shows a stale banner.
+_remove_pending() {
+  local dir="$1" name="$2"
+  rm -f "${dir:?}/${name}" "${dir:?}/.route/${name}"
+}
+
 _cmd_stage() {
-  local name="$1" file="$2" record
+  local name="$1" file="$2" record route outcome rule reason here
   [[ -f "${file}" ]] || _die "no such file: ${file}"
   [[ "${name}" =~ ^[A-Za-z0-9._-]+$ ]] || _die "bad artifact name: ${name}"
-  # The reviewer should see what Pangram said before approving, so a text the
-  # check never saw is not staged. Any result counts, FAIL and SKIPPED
-  # included: this proves the check ran, it does not require a pass.
   _prune_expired
+  # Route by destination, from the repo this shell is in. Staging only
+  # informs; the publish-time hook recomputes the outcome from the real
+  # command. A router error (rules file missing or bad) refuses to stage.
+  here="$(pwd)"
+  route="$("${ROUTE_SCRIPT}" --dir "${here}")" || _die "gate-route failed; nothing staged"
+  IFS=$'\t' read -r outcome rule reason <<<"${route}"
+  # The reviewer should see what Pangram said before approving, so a text the
+  # check never saw is not staged when the destination is Pangram-gated. Any
+  # result counts, FAIL and SKIPPED included: this proves the check ran, it
+  # does not require a pass.
   record="$(_record_path "${file}")"
-  if [[ ! -f "${record}" ]]; then
+  if [[ "${outcome}" == "pangram" && ! -f "${record}" ]]; then
     local hint
     hint="$(_check_hint "${file}")"
     {
@@ -191,7 +226,9 @@ _cmd_stage() {
     exit 1
   fi
   _use_key
+  mkdir -p "${PENDING}/.route"
   cp "${file}" "${PENDING}/${name}"
+  printf '%s\t%s\t%s\n' "${outcome}" "${rule}" "${reason}" >"${PENDING}/.route/${name}"
   printf 'staged: %s (for %s)\n' "${name}" "${GATE_KEY}"
 }
 
@@ -383,7 +420,7 @@ _cmd_open() {
 
   _use_key
   _note_legacy_pending
-  count=$(find "${PENDING}" -type f | wc -l | tr -d ' ')
+  count=$(find "${PENDING}" -maxdepth 1 -type f | wc -l | tr -d ' ')
   if ((count == 0)); then
     local others
     others="$(_other_keys_with_pending)"
@@ -418,7 +455,7 @@ _cmd_open() {
   # staged item names is a candidate; the newest one wins.
   local work want cand prior="" skipped=() batch_items=()
   work="$(mktemp -d)"
-  want="$(find "${PENDING}" -type f -exec basename {} \; | sort)"
+  want="$(find "${PENDING}" -maxdepth 1 -type f -exec basename {} \; | sort)"
   local i=0
   while IFS= read -r cand; do
     [[ -n "${cand}" && "${cand}" != "${batch}" ]] || continue
@@ -784,7 +821,7 @@ _write_approved() {
   trimmed="$(printf '%s' "${body}" | sed -e '/^[[:space:]]*$/d')"
   [[ -n "${trimmed}" ]] || return 0
   printf '%s' "${body}" >"${APPROVED}/${name}"
-  rm -f "${PENDING:?}/${name}"
+  _remove_pending "${PENDING}" "${name}"
 }
 
 # Age comes from mtime, not a TIMESTAMP line as in merge-lock: the approved
