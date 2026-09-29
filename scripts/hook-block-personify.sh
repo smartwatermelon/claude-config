@@ -284,14 +284,29 @@ _verify_segment() {
 # cannot expand (a variable or command substitution) blocks: routing it as an
 # unresolved destination would fall to the visual rule, weaker than pangram.
 _destination_for_segment() {
-  local seg="$1" kind="$2" surface="${3:-}" pre dir="" repo=""
-  DEST_DIR="${hook_cwd}"
+  local seg="$1" kind="$2" surface="${3:-}" pre dir="" repo="" base rpath
+  # A `cd` earlier in the same command moves the destination (_track_cd). One
+  # the hook cannot follow leaves it unknown, and unknown must not fall to the
+  # weaker rule.
+  if [[ "${CD_UNRESOLVED}" -eq 1 ]]; then
+    _deny "an earlier cd in this command has a target the hook cannot resolve (bare cd, cd -, a variable or substitution); use git -C <dir> or gh -R <owner/name> so the destination is explicit" "${surface}"
+  fi
+  base="${CD_DIR:-${hook_cwd}}"
+  DEST_DIR="${base}"
   DEST_REPO=""
   case "${kind}" in
     commit)
       # Only the words before `commit` are git global options; `commit -C <sha>`
       # is not a directory.
       pre="$(printf '%s\n' "${seg}" | sed -E 's/[[:space:]]commit([[:space:]].*|$)//')"
+      # --git-dir, --work-tree and the GIT_DIR / GIT_WORK_TREE variables point
+      # git somewhere other than -C or the cwd, and origin would then be read
+      # from the wrong place. The variables are looked for in the whole command
+      # (_joined), since _scan has had leading assignments stripped.
+      if printf '%s\n' "${pre}" | grep -qE -- '[[:space:]]--(git-dir|work-tree)([[:space:]]|=)' ||
+        printf '%s\n' "${_joined}" | tr '\n' ' ' | grep -qE '(^|[^A-Za-z0-9_])GIT_(DIR|WORK_TREE)='; then
+        _deny "--git-dir, --work-tree, GIT_DIR and GIT_WORK_TREE hide the destination repository; use git -C <dir> instead" "${surface}"
+      fi
       dir="$(_extract_path "${pre}" '-C')"
       if [[ -n "${dir}" ]]; then
         case "${dir}" in
@@ -304,12 +319,20 @@ _destination_for_segment() {
         fi
         case "${dir}" in
           /*) DEST_DIR="${dir}" ;;
-          *) DEST_DIR="${hook_cwd}/${dir}" ;;
+          *) DEST_DIR="${base}/${dir}" ;;
         esac
       fi
       ;;
     gh | api)
       repo="$(_extract_path "${seg}" '-R|--repo')"
+      rpath=""
+      if [[ "${kind}" == "api" ]]; then
+        rpath="$(printf '%s\n' "${seg}" | sed -En "s#.*repos/([^[:space:]\"']*).*#\1#p" | head -1)"
+      fi
+      case "${repo}${rpath}" in
+        *'$'* | *"${bt}"*) _deny "cannot resolve the repository from '${repo:-repos/${rpath}}'; name it literally" "${surface}" ;;
+        *) ;;
+      esac
       if [[ -z "${repo}" && "${kind}" == "api" ]]; then
         repo="$(printf '%s\n' "${seg}" | sed -En "s#.*[[:space:]\"'/]repos/([^/[:space:]\"']+/[^/[:space:]\"']+).*#\1#p" | head -1)"
       fi
@@ -395,6 +418,59 @@ _suspended() {
   [[ -x "${GATE}" ]] && "${GATE}" suspended
 }
 
+# A literal `cd <dir>` or `pushd <dir>` in an earlier segment of the same
+# command changes where a later gated segment runs (`cd repo && git commit`).
+# CD_DIR holds the last such target; CD_UNRESOLVED is set when the target cannot
+# be known (bare cd, `cd -`, a variable or substitution) and is cleared only by
+# a later target that does not depend on where we were. Subshells are not
+# scoped: `(cd a); git commit` is read as if the cd took effect, the stricter
+# reading whenever `a` routes to pangram.
+CD_DIR=""
+CD_UNRESOLVED=0
+_track_cd() {
+  local seg="$1" rest arg
+  rest="$(printf '%s\n' "${seg}" | sed -E 's/^[[:space:]({]*((then|do)[[:space:]]+)?//')"
+  case "${rest}" in
+    cd | cd[[:space:]]* | pushd | pushd[[:space:]]*) ;;
+    *) return 0 ;;
+  esac
+  rest="${rest#cd}"
+  rest="${rest#pushd}"
+  # Skip option words (`cd -P dir`), but a lone `-` is the previous directory.
+  while [[ "${rest}" =~ ^[[:space:]]+-[A-Za-z-]+([[:space:]]|$) ]]; do
+    rest="$(printf '%s\n' "${rest}" | sed -E 's/^[[:space:]]+-[A-Za-z-]+//')"
+  done
+  rest="${rest#"${rest%%[![:space:]]*}"}"
+  case "${rest}" in
+    \"*) arg="${rest:1}"; arg="${arg%%\"*}" ;;
+    "'"*) arg="${rest:1}"; arg="${arg%%\'*}" ;;
+    *) arg="${rest%%[[:space:]\)\}]*}" ;;
+  esac
+  case "${arg}" in
+    '' | - | *'$'* | *"${bt}"*)
+      CD_UNRESOLVED=1
+      return 0
+      ;;
+    *) ;;
+  esac
+  if [[ "${arg:0:1}" == "~" && ( ${#arg} -eq 1 || "${arg:1:1}" == "/" ) ]]; then
+    arg="${HOME}${arg:1}"
+  fi
+  case "${arg}" in
+    /*)
+      CD_DIR="${arg}"
+      CD_UNRESOLVED=0
+      ;;
+    *)
+      # Relative to a directory we may not know: only resolvable when we do.
+      if [[ "${CD_UNRESOLVED}" -eq 0 ]]; then
+        CD_DIR="${CD_DIR:-${hook_cwd}}/${arg}"
+      fi
+      ;;
+  esac
+  return 0
+}
+
 # `git commit --amend --no-edit` and `-C <sha>` reuse an existing message and
 # author no new text, but they name no file either, so they fall to the
 # no-message-file branch and block. That is the decided behaviour (2026-09-18):
@@ -402,6 +478,7 @@ _suspended() {
 # text.
 while IFS= read -r seg; do
   [[ -n "${seg}" ]] || continue
+  _track_cd "${seg}"
   if printf '%s\n' "${seg}" | grep -qE "${commit_re}"; then
     _suspended && exit 0
     _verify_segment "${seg}" "commit message" '-m|--message' '-F|--file' commit

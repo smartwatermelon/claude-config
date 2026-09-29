@@ -128,6 +128,55 @@ _rec
 _case "same, once a record exists: passes" 0 "" "${TMP}" \
   "git -C ${BEACON} commit -F ${TXT}"
 
+# Fix round 1: destinations the hook cannot resolve must not fall to the weaker
+# rule. Each of these runs from a visual cwd with no record, so a silent
+# fallthrough would pass (rc 0).
+_norec
+_case "gh -R with a variable blocks" 2 "cannot resolve the repository" "${PERSONAL}" \
+  "gh pr create --title t --body-file ${TXT} -R \$REPO"
+_case "gh api repos/\$OWNER/\$NAME blocks" 2 "cannot resolve the repository" "${PERSONAL}" \
+  "gh api repos/\$OWNER/\$NAME/issues/1/comments -F body=@${TXT}"
+_case "gh api repos/\$SLUG blocks" 2 "cannot resolve the repository" "${PERSONAL}" \
+  "gh api repos/\${SLUG}/issues/1/comments -F body=@${TXT}"
+
+_case "cd <pangram repo> && git commit follows the cd" 2 "no Pangram check ran" "${PERSONAL}" \
+  "cd ${BEACON} && git commit -F ${TXT}"
+_case "cd <pangram repo> && gh pr create follows the cd" 2 "no Pangram check ran" "${PERSONAL}" \
+  "cd ${BEACON} && gh pr create --title t --body-file ${TXT}"
+_case "cd inside a subshell follows the cd" 2 "no Pangram check ran" "${PERSONAL}" \
+  "(cd ${BEACON} && git commit -F ${TXT} )"
+_case "relative cd resolves against the cwd" 2 "no Pangram check ran" "${TMP}" \
+  "cd beacon && git commit -F ${TXT}"
+_case "pushd follows the cd" 2 "no Pangram check ran" "${PERSONAL}" \
+  "pushd ${BEACON} && git commit -F ${TXT}"
+_case "last cd wins (back to a visual repo)" 0 "" "${BEACON}" \
+  "cd ${BEACON} && cd ${PERSONAL} && git commit -F ${TXT}"
+_case "cd to a visual repo from a pangram cwd passes" 0 "" "${BEACON}" \
+  "cd ${PERSONAL} && git commit -F ${TXT}"
+_case "git -C after cd resolves against the cd target" 2 "no Pangram check ran" "${TMP}" \
+  "cd ${TMP} && git -C beacon commit -F ${TXT}"
+_case "cd with a variable target blocks" 2 "cannot resolve" "${PERSONAL}" \
+  "cd \$DIR && git commit -F ${TXT}"
+_case "bare cd blocks" 2 "cannot resolve" "${PERSONAL}" \
+  "cd && git commit -F ${TXT}"
+_case "cd - blocks" 2 "cannot resolve" "${PERSONAL}" \
+  "cd - && gh pr create --title t --body-file ${TXT}"
+_case "a cd with no gated segment after it is fine" 0 "" "${PERSONAL}" \
+  "cd \$DIR && ls"
+
+_case "--git-dir blocks" 2 "use git -C" "${PERSONAL}" \
+  "git --git-dir=${BEACON}/.git commit -F ${TXT}"
+_case "--git-dir separate arg blocks" 2 "use git -C" "${PERSONAL}" \
+  "git --git-dir ${BEACON}/.git commit -F ${TXT}"
+_case "--work-tree blocks" 2 "use git -C" "${PERSONAL}" \
+  "git --work-tree=${BEACON} commit -F ${TXT}"
+_case "GIT_DIR= prefix blocks" 2 "use git -C" "${PERSONAL}" \
+  "GIT_DIR=${BEACON}/.git git commit -F ${TXT}"
+_case "GIT_WORK_TREE= prefix blocks" 2 "use git -C" "${PERSONAL}" \
+  "GIT_WORK_TREE=${BEACON} git commit -F ${TXT}"
+_case "env GIT_DIR= prefix blocks" 2 "use git -C" "${PERSONAL}" \
+  "env GIT_DIR=${BEACON}/.git git commit -F ${TXT}"
+
 # Unchanged behaviour.
 _norec
 _case "inline -m still blocks" 2 "text given inline" "${PERSONAL}" \
