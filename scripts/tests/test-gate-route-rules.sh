@@ -86,5 +86,17 @@ err="$(_match_rule "x/y" "z" 2>&1 >/dev/null)"
 rc=$?
 if [[ ${rc} -eq 4 && "${err}" == *"no rule matched"* ]]; then ok; else bad "no match: rc=${rc} err='${err}'"; fi
 
+# A parse error leaves the rule arrays empty, never a truncated set.
+_load_rules "${TMP}/badoutcome.conf" 2>/dev/null
+rule_arrays=(RULE_KIND RULE_VALUE RULE_OUTCOME)
+dump="$(declare -p "${rule_arrays[@]}")"
+check "arrays reset on error" "${dump//$'\n'/;}" "declare -a RULE_KIND=();declare -a RULE_VALUE=();declare -a RULE_OUTCOME=()"
+
+# _match_rule tolerates a missing second argument under set -u.
+_load_rules "${ROOT}/gate-rules.conf"
+out="$(_match_rule "x/y" 2>&1)"
+IFS="${TAB}" read -r o_outcome o_rule _ <<<"${out}"
+check "one-arg match" "${o_outcome}${TAB}${o_rule}" "${V}${TAB}3"
+
 echo "passed=${PASS} failed=${FAIL}"
 [[ ${FAIL} -eq 0 ]]

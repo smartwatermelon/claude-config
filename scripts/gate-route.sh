@@ -14,8 +14,18 @@ RULE_OUTCOME=()
 
 # _load_rules <file>
 # Fill RULE_KIND, RULE_VALUE, RULE_OUTCOME. Return 4 with a stderr message
-# naming the file (and 1-based line number) on any error.
+# naming the file (and 1-based line number) on any error. On error the arrays
+# are left empty, so a caller never routes on a truncated rule set.
 _load_rules() {
+  _load_rules_inner "$@" || {
+    RULE_KIND=()
+    RULE_VALUE=()
+    RULE_OUTCOME=()
+    return 4
+  }
+}
+
+_load_rules_inner() {
   local file="$1" line lineno=0 matcher outcome extra kind value
   RULE_KIND=()
   RULE_VALUE=()
@@ -70,7 +80,9 @@ _load_rules() {
 # Print "<outcome>\t<rule number>\t<reason>" for the first matching rule.
 # Return 4 if no rule matches.
 _match_rule() {
-  local repo="${1,,}" author="${2,,}" i
+  local repo="${1:-}" author="${2:-}" i
+  repo="${repo,,}"
+  author="${author,,}"
   for i in "${!RULE_KIND[@]}"; do
     case "${RULE_KIND[i]}" in
       repo)
@@ -99,10 +111,59 @@ _match_rule() {
   return 4
 }
 
+# _repo_from_dir <dir>
+# Print lowercase owner/name from <dir>'s origin URL, or nothing.
+_repo_from_dir() {
+  local dir="$1" url
+  url="$(git -C "${dir}" config --get remote.origin.url 2>/dev/null || true)"
+  [[ -n "${url}" ]] || return 0
+  url="$(printf '%s\n' "${url}" | sed -E 's#^(git@[^:]+:|[a-zA-Z]+://[^/]+/)##; s#\.git/?$##; s#/$##')"
+  printf '%s\n' "${url,,}"
+}
+
+# _author_for_repo <owner/name> <dir>
+# Print the gh identity for the repo's owner, or nothing. Sources the gh
+# wrapper in a subshell so its state never leaks into this process.
+_author_for_repo() {
+  local repo="$1" dir="$2" lib="${GH_WRAPPER_LIB:-${HOME}/.config/bash/gh-wrapper.sh}"
+  [[ -n "${repo}" && -r "${lib}" ]] || return 0
+  (
+    # shellcheck source=/dev/null
+    source "${lib}" >/dev/null 2>&1 || exit 0
+    [[ -d "${dir}" ]] && cd "${dir}"
+    _gh_wrapper_identity_for_owner "${repo%%/*}" 2>/dev/null
+  ) || true
+}
+
 main() {
   set -euo pipefail
-  echo "usage: gate-route.sh (CLI not implemented yet)" >&2
-  exit 2
+  local repo="" dir="." author rules_file result
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo)
+        [[ $# -ge 2 ]] || { echo "gate-route: --repo needs a value" >&2; exit 2; }
+        repo="${2,,}"
+        shift 2
+        ;;
+      --dir)
+        [[ $# -ge 2 ]] || { echo "gate-route: --dir needs a value" >&2; exit 2; }
+        dir="$2"
+        shift 2
+        ;;
+      *)
+        echo "usage: gate-route.sh [--repo owner/name] [--dir path]" >&2
+        exit 2
+        ;;
+    esac
+  done
+  rules_file="${GATE_RULES_FILE:-${HOME}/.claude/gate-rules.conf}"
+  _load_rules "${rules_file}" || exit 4
+  [[ -n "${repo}" ]] || repo="$(_repo_from_dir "${dir}")"
+  [[ -n "${repo}" ]] || echo "gate-route: repo unresolved" >&2
+  author="$(_author_for_repo "${repo}" "${dir}")"
+  [[ -n "${author}" ]] || echo "gate-route: author unresolved" >&2
+  result="$(_match_rule "${repo}" "${author}")" || exit 4
+  printf '%s\n' "${result}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
