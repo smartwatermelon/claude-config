@@ -153,6 +153,59 @@ _case "${PERSONIFY}" "approved then unapproved" \
   "$(_b64 "git commit -F ${APPROVED_TEXT} && gh pr create --body-file ${UNAPPROVED_TEXT}")" 2
 _case "${PERSONIFY}" "approved then approved" \
   "$(_b64 "git commit -F ${APPROVED_TEXT} && gh pr create --body-file ${APPROVED_TEXT}")" 0
+# Inside one quoted bash -c string both commands still verify: an approved
+# first path must not vouch for an unapproved second one, in either order.
+_case "${PERSONIFY}" "bash -c: approved then unapproved" \
+  "$(_b64 "bash -c \"git commit -F ${APPROVED_TEXT}; git commit -F ${UNAPPROVED_TEXT}\"")" 2
+_case "${PERSONIFY}" "bash -c: unapproved then approved" \
+  "$(_b64 "bash -c \"git commit -F ${UNAPPROVED_TEXT}; git commit -F ${APPROVED_TEXT}\"")" 2
+
+echo "=== personify: separators inside quoted arguments (claude-config#626) ==="
+# A ; && || or | inside a quoted title is text, not a separator. Splitting on it
+# left no segment holding both the verb and the body file, so nothing was
+# checked and an unapproved body published.
+_case "${PERSONIFY}" "quoted ; in a title, NOT approved" \
+  "$(_b64 "gh pr create --title \"a; b\" --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "quoted && in a title, NOT approved" \
+  "$(_b64 "gh pr create --title \"a && b\" --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "quoted || in a title, NOT approved" \
+  "$(_b64 "gh pr create --title \"a || b\" --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "single-quoted | in a title, NOT approved" \
+  "$(_b64 "gh pr create --title 'a | b' --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "quoted ; in a title spanning two lines, NOT approved" \
+  "$(_b64 "gh pr create --title \"a;
+b\" --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "gh api: quoted ; in another field, NOT approved body" \
+  "$(_b64 "gh api repos/o/r/issues/5/comments -f title=\"a; b\" -F body=@${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "commit: quoted ; in --author, NOT approved" \
+  "$(_b64 "git commit --author \"x; y\" -F ${UNAPPROVED_TEXT}")" 2
+# The fix must not turn a quoted separator into a false block.
+_case "${PERSONIFY}" "quoted ; in a title, APPROVED" \
+  "$(_b64 "gh pr create --title \"a; b\" --body-file ${APPROVED_TEXT}")" 0
+_case "${PERSONIFY}" "quoted ; in a title spanning two lines, APPROVED" \
+  "$(_b64 "gh pr create --title \"a;
+b\" --body-file ${APPROVED_TEXT}")" 0
+# Known false block, kept: the quote-blind piece `git commit --author "x` names
+# no message file and denies. The whole-segment check only adds checks, and
+# dropping cut pieces would let `bash -c "...A; ...U"` through (above).
+_case "${PERSONIFY}" "commit: quoted ; in --author, APPROVED (false block, fails closed)" \
+  "$(_b64 "git commit --author \"x; y\" -F ${APPROVED_TEXT}")" 2
+# An apostrophe in heredoc prose is not a quote; it must not swallow the
+# command after the heredoc.
+_case "${PERSONIFY}" "heredoc with an apostrophe, then NOT approved gh" \
+  "$(_b64 "cat >/dev/null <<'EOF'
+don't; stop
+EOF
+gh pr create --title t --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "heredoc with an apostrophe, then APPROVED gh" \
+  "$(_b64 "cat >/dev/null <<'EOF'
+don't; stop
+EOF
+gh pr create --title \"a; b\" --body-file ${APPROVED_TEXT}")" 0
+# A cd earlier in the command moves the destination, and the whole-segment
+# check cannot place itself in cd order: deny rather than guess.
+_case "${PERSONIFY}" "cd, then a quoted ; in a title, APPROVED" \
+  "$(_b64 "cd /tmp && gh pr create --title \"a; b\" --body-file ${APPROVED_TEXT}")" 2
 
 echo "=== personify: gh pr review carries a body (claude-config#548) ==="
 # Review bodies reach another person exactly as a PR comment does. The event

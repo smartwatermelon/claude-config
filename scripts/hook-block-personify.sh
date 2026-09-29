@@ -198,6 +198,75 @@ _segments() {
   printf '%s\n' "${_scan}" | sed -E 's/(&&|\|\||;|\|)/\n/g'
 }
 
+# _segments splits without reading quotes, which is what keeps two commands
+# inside one `bash -c "a; b"` string apart. It also cuts a quoted argument that
+# holds a separator (`--title "a; b"`), and then no segment holds both the verb
+# and its body file, so nothing was checked (claude-config#626). This second
+# split reads quotes the way _join_continuations does (same state machine,
+# heredoc bodies skipped, a newline inside quotes becomes a space) and prints
+# only the segments that have a separator inside quotes. Those are verified
+# whole, in addition to the quote-blind pieces, so the fix adds checks and
+# removes none. A command with no quoted separator prints nothing here.
+_quoted_segments() {
+  printf '%s\n' "${_scan}" | awk '
+    function emit() { if (flag) print seg; seg = ""; flag = 0 }
+    BEGIN { q = 0; hd = 0; np = 0; seg = ""; flag = 0 }
+    {
+      line = $0
+      if (hd) {
+        chk = line
+        if (hstrip[hd]) sub(/^\t+/, "", chk)
+        if (chk == hdelim[hd]) { hd++; if (hd > np) { hd = 0; np = 0 } }
+        next
+      }
+      n = length(line); i = 1
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (q == 1) {
+          seg = seg c; if (c == "\047") q = 0; else if (c ~ /[;&|]/) flag = 1
+          i++; continue
+        }
+        if (q == 3) {
+          if (c == "\\") { seg = seg substr(line, i, 2); i += 2; continue }
+          seg = seg c; if (c == "\047") q = 0; else if (c ~ /[;&|]/) flag = 1
+          i++; continue
+        }
+        if (c == "\\") { seg = seg substr(line, i, 2); i += 2; continue }
+        if (q == 2) {
+          seg = seg c; if (c == "\"") q = 0; else if (c ~ /[;&|]/) flag = 1
+          i++; continue
+        }
+        prev = (seg == "") ? "" : substr(seg, length(seg), 1)
+        if (c == "#" && (prev == "" || prev ~ /[[:space:];&|()<>]/)) break
+        nx = substr(line, i + 1, 1)
+        if (c == "\047") { q = 1; seg = seg c; i++; continue }
+        if (c == "\"") { q = 2; seg = seg c; i++; continue }
+        if (c == "$" && nx == "\047") { q = 3; seg = seg "$\047"; i += 2; continue }
+        if (c == "<" && nx == "<" && prev != "<" && substr(line, i + 2, 1) != "<") {
+          rest = substr(line, i + 2); strip = 0
+          if (substr(rest, 1, 1) == "-") { strip = 1; rest = substr(rest, 2) }
+          sub(/^[ \t]+/, "", rest)
+          if (match(rest, /^[^ \t;&|()<>]+/)) {
+            w = substr(rest, 1, RLENGTH)
+            gsub(/[\047"\\]/, "", w)
+            if (w != "") { np++; hdelim[np] = w; hstrip[np] = strip }
+          }
+          seg = seg "<<"; i += 2; continue
+        }
+        if ((c == "&" && nx == "&") || (c == "|" && nx == "|")) { emit(); i += 2; continue }
+        if (c == ";" || c == "|") { emit(); i++; continue }
+        seg = seg c; i++
+      }
+      if (q) seg = seg " "; else emit()
+      if (q == 0 && np > 0) hd = 1
+    }
+    END { emit() }
+  '
+}
+
+# Set while the loop over _quoted_segments runs; see _destination_for_segment.
+QUOTED_PASS=0
+
 _deny() {
   local reason="$1" surface="$2"
   {
@@ -422,6 +491,11 @@ _destination_for_segment() {
   fi
   if [[ "${CD_SEEN}" -eq 1 && "${_joined}" == *[\(\)]* ]]; then
     _deny "a cd combined with parentheses leaves the destination unclear; use git -C <dir> or gh -R <owner/name> so it is explicit" "${surface}"
+  fi
+  # A whole segment from _quoted_segments is checked after every piece, so it
+  # cannot tell which cd came before it. Any cd word in the command denies.
+  if [[ "${QUOTED_PASS}" -eq 1 && "${CD_WORDS}" -gt 0 ]]; then
+    _deny "a cd combined with a quoted ; && || or | leaves the destination unclear; use git -C <dir> or gh -R <owner/name> so it is explicit" "${surface}"
   fi
   base="${CD_DIR:-${hook_cwd}}"
   DEST_DIR="${base}"
@@ -669,9 +743,8 @@ _track_cd() {
 # no-message-file branch and block. That is the decided behaviour (2026-09-18):
 # the simple rule first, revisit if it fires repeatedly on genuinely unchanged
 # text.
-while IFS= read -r seg; do
-  [[ -n "${seg}" ]] || continue
-  _track_cd "${seg}"
+_gate_segment() {
+  local seg="$1"
   if printf '%s\n' "${seg}" | grep -qE "${commit_re}"; then
     _suspended && exit 0
     _verify_segment "${seg}" "commit message" '-m|--message' '-F|--file' commit
@@ -688,6 +761,23 @@ while IFS= read -r seg; do
       _verify_api_segment "${seg}"
     fi
   fi
+  return 0
+}
+
+while IFS= read -r seg; do
+  [[ -n "${seg}" ]] || continue
+  _track_cd "${seg}"
+  _gate_segment "${seg}"
 done < <(_segments)
+
+# Whole segments whose quoted arguments hold a separator (claude-config#626).
+# No _track_cd here: the pieces above already counted every cd, and counting
+# one twice could hide an untracked one.
+QUOTED_PASS=1
+quoted="$(_quoted_segments)"
+while IFS= read -r seg; do
+  [[ -n "${seg}" ]] || continue
+  _gate_segment "${seg}"
+done <<<"${quoted}"
 
 exit 0
