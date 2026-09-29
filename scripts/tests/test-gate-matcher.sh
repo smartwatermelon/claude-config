@@ -234,6 +234,13 @@ _case "${PERSONIFY}" "xargs gh with a body file, APPROVED" \
   "$(_b64 "echo 5 | xargs gh pr comment --body-file ${APPROVED_TEXT}")" 2
 _case "${PERSONIFY}" "xargs gh api with a body field, APPROVED" \
   "$(_b64 "echo 5 | xargs gh api repos/o/r/issues/5/comments -F body=@${APPROVED_TEXT}")" 2
+# A git or gh command earlier in the pipe must not hide the wrapper.
+_case "${PERSONIFY}" "git output piped to xargs commit, APPROVED" \
+  "$(_b64 "git rev-parse HEAD | xargs git commit -F ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "gh output piped to xargs gh with a body, APPROVED" \
+  "$(_b64 "gh pr list -q .x | xargs gh pr comment --body-file ${APPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "bash -c: git piped to xargs commit, APPROVED" \
+  "$(_b64 "bash -c \"git rev-parse HEAD | xargs git commit -F ${APPROVED_TEXT}\"")" 2
 # Unaffected: a body-less gh call under xargs, and env without -C.
 _case "${PERSONIFY}" "xargs gh with no body" \
   "$(_b64 "echo 5 | xargs gh pr edit --add-label bug")" 0
