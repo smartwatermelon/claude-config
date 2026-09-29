@@ -32,7 +32,7 @@
     "pr-review@pr-review": true,
     "react-native-3d@smartwatermelon-marketplace": false,
     "security-compliance@claude-code-workflows": false,
-    "slack@claude-plugins-official": true,
+    "slack@claude-plugins-official": false,
     "superpowers@superpowers-marketplace": true,
     "tdd-workflows@claude-code-workflows": false,
     "team-collaboration@claude-code-workflows": false,
