@@ -140,16 +140,36 @@ _raw_sha() {
 # 2.0.1 has no Keychain lookup, so on 2026-09-24 it reported "no Pangram API
 # key found" on a machine whose key was in the Keychain. Computed per call so a
 # test can point CLAUDE_CONFIG_DIR at a fixture.
+#
+# A local install wins over a copy synced from claude.ai, because that is the
+# one Claude Code loads when both exist. Without a local install, the synced
+# copy is found through each bucket's manifest.json: a re-upload leaves the old
+# directory beside the new one (`name` and `name~g<generation>`), and only the
+# manifest's `generation` says which one loads.
 _check_hint() {
-  local file="$1" plugins install_path
-  plugins="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/plugins/installed_plugins.json"
+  local file="$1" root plugins install_path manifest dir
+  root="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/plugins"
+  plugins="${root}/installed_plugins.json"
   install_path="$(jq -er '.plugins["personify@personify"][0].installPath // empty' \
     "${plugins}" 2>/dev/null)" || install_path=""
-  if [[ -n "${install_path}" && -f "${install_path}/scripts/pangram_check.py" ]]; then
+  if [[ -z "${install_path}" || ! -f "${install_path}/scripts/pangram_check.py" ]]; then
+    install_path=""
+    for manifest in "${root}"/synced/*/manifest.json; do
+      [[ -f "${manifest}" ]] || continue
+      dir="$(jq -er '.plugins[] | select(.name == "personify")
+          | if .generation then "personify~g\(.generation)" else "personify" end' \
+        "${manifest}" 2>/dev/null | head -1)" || continue
+      if [[ -n "${dir}" && -f "${manifest%/*}/${dir}/scripts/pangram_check.py" ]]; then
+        install_path="${manifest%/*}/${dir}"
+        break
+      fi
+    done
+  fi
+  if [[ -n "${install_path}" ]]; then
     printf 'python3 %s/scripts/pangram_check.py < %s\n' "${install_path}" "${file}"
   else
-    printf 'personify is not installed (no personify@personify with scripts/pangram_check.py in %s); install it with: claude plugin install personify@personify\n' \
-      "${plugins}"
+    printf 'personify is not installed (no personify@personify with scripts/pangram_check.py in %s, and no synced copy under %s/synced); sync it from claude.ai, or install it with: claude plugin install personify@personify\n' \
+      "${plugins}" "${root}"
   fi
 }
 

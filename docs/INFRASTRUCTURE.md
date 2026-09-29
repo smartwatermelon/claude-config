@@ -117,7 +117,11 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   `personify@personify` from `~/.claude/plugins/installed_plugins.json`. Use
   that path, not a directory picked from the plugin cache: the cache keeps
   every past version, and an old one can lack features (2.0.1 has no
-  Keychain key lookup).
+  Keychain key lookup). With no local install, it names the copy synced from
+  claude.ai under `~/.claude/plugins/synced/<bucket>/`, picking the directory
+  (`personify` or `personify~g<generation>`) from that bucket's
+  `manifest.json`. personify and pr-review load from claude.ai sync on
+  purpose, to dogfood the upload path; they are not in `enabledPlugins`.
 - `open` shows one Pangram line per item in the header, read from that
   item's check record.
 - `gate-rules.conf` (repo root, linked by `install.sh` to
