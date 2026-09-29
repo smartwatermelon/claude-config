@@ -41,7 +41,10 @@ _no() {
 }
 
 _load() {
-  eval "$(sed -n '/^_die()/,$p' "${GATE}" | sed '/^case "${1:-}"/,$d')"
+  local src
+  src="$(sed -n '/^_die()/,$p' "${GATE}" || true)"
+  src="$(sed '/^case "${1:-}"/,$d' <<<"${src}" || true)"
+  eval "${src}"
   GATE_DIR="${GATE_REVIEW_DIR}"
   export PENDING_ROOT="${GATE_DIR}/pending" APPROVED_ROOT="${GATE_DIR}/approved"
   export GATE_KEY="" PENDING="${PENDING_ROOT}" APPROVED="${APPROVED_ROOT}"
@@ -208,6 +211,83 @@ if [[ ! -e "${VPEND}/vtext" && ! -e "${VPEND}/.route/vtext" ]]; then
 else
   _no "_remove_pending deletes the item and its sidecar"
 fi
+
+# --- check: route-aware -------------------------------------------------------
+CHK_RULES="${TMP}/check-rules.conf"
+printf 'repo=beacon-biosignals/x pangram\nrepo=andrewmrich/beacon-workspace exempt\n* visual\n' >"${CHK_RULES}"
+CHK_TXT="${TMP}/chk.txt"
+printf 'fix(x): approved text for check\n' >"${CHK_TXT}"
+CHK_SHA="$(_raw_sha "${CHK_TXT}")"
+CHK_REC="${XDG_CONFIG_HOME}/personify/checks/${CHK_SHA}.json"
+rm -f "${APPROVED_ROOT}"/*/* 2>/dev/null || true
+
+_approve_chk() { # approve the fixture bytes under a key
+  mkdir -p "${APPROVED_ROOT}/k1"
+  cp "${CHK_TXT}" "${APPROVED_ROOT}/k1/chk"
+}
+_unapprove_chk() { rm -f "${APPROVED_ROOT}/k1/chk"; }
+_rec() { printf '{"status":"%s","verdict":"%s","fraction_ai":0.0,"word_count":120}\n' "$1" "$2" >"${CHK_REC}"; }
+# GATE_RULES_FILE is already exported at the top of this file, so the inline
+# override below reaches the router subprocess.
+_check_case() { # <label> <want-rc> <want-substring-or-empty> <args...>
+  local label="$1" wrc="$2" wsub="$3" out rc
+  shift 3
+  out="$(GATE_RULES_FILE="${CHK_RULES}" _cmd_check "${CHK_TXT}" "$@" 2>&1 >/dev/null)"
+  rc=$?
+  if ((rc == wrc)) && [[ "${out}" == *"${wsub}"* ]]; then
+    _ok "${label}"
+  else
+    _no "${label} (rc=${rc}): ${out}"
+  fi
+}
+
+_approve_chk
+_check_case "pangram rule, approved, no record: refused, no check ran" 1 \
+  "gate-review: rule 1 (pangram): no Pangram check ran on these bytes" --repo beacon-biosignals/x
+_rec FAIL AI
+_check_case "pangram rule, approved, FAIL record: passes" 0 "" --repo beacon-biosignals/x
+_unapprove_chk
+_check_case "pangram rule, record but unapproved: verdict recorded line" 1 \
+  "gate-review: rule 1 (pangram): verdict AI recorded; no visual approval matches" --repo beacon-biosignals/x
+rm -f "${CHK_REC}"
+_check_case "pangram rule, unapproved, no record: no check ran" 1 \
+  "rule 1 (pangram): no Pangram check ran on these bytes" --repo beacon-biosignals/x
+_approve_chk
+_check_case "visual rule, approved, no record: passes" 0 "" --repo twistedmelonman/y
+_unapprove_chk
+_check_case "visual rule, unapproved: refused" 1 \
+  "gate-review: rule 3 (visual): no visual approval matches" --repo twistedmelonman/y
+_approve_chk
+_check_case "beacon-workspace (exempt), approved, no record: passes" 0 "" --repo andrewmrich/beacon-workspace
+_unapprove_chk
+_check_case "exempt skips the approval too" 0 "" --repo andrewmrich/beacon-workspace
+_approve_chk
+_check_case "no flags, approved: passes silently" 0 ""
+# no flags: the caller's cwd must not pick the route
+out="$(cd "${PANG}" && GATE_RULES_FILE="${CHK_RULES}" _cmd_check "${CHK_TXT}" 2>&1)"
+rc=$?
+if ((rc == 0)) && [[ -z "${out}" ]]; then
+  _ok "no flags: cwd is ignored and stderr is quiet"
+else
+  _no "no flags: cwd is ignored and stderr is quiet (rc=${rc}): ${out}"
+fi
+_unapprove_chk
+_check_case "no flags, unapproved: refused as visual" 1 "(visual): no visual approval matches"
+_approve_chk
+# --dir routes by the checkout's origin
+_mkrepo "${TMP}/bb" beacon-biosignals/x
+_check_case "--dir routes by origin (pangram, no record)" 1 "no Pangram check ran" --dir "${TMP}/bb"
+# broken rules file
+printf 'repo=a/b bogus\n' >"${TMP}/bad-rules.conf"
+out="$(GATE_RULES_FILE="${TMP}/bad-rules.conf" _cmd_check "${CHK_TXT}" --repo a/b 2>&1 >/dev/null)"
+rc=$?
+if ((rc == 1)) && [[ "${out}" == *"bad-rules.conf:1"* ]]; then
+  _ok "broken rules file: exit 1 naming the file and line"
+else
+  _no "broken rules file: exit 1 naming the file and line (rc=${rc}): ${out}"
+fi
+rm -f "${CHK_REC}"
+_unapprove_chk
 
 echo ""
 echo "passed: ${pass}  failed: ${fail}"

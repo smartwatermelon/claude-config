@@ -213,6 +213,7 @@ _cmd_stage() {
   # check never saw is not staged when the destination is Pangram-gated. Any
   # result counts, FAIL and SKIPPED included: this proves the check ran, it
   # does not require a pass.
+  # _record_path (defined above, near _verdict_line) keys on the raw bytes.
   record="$(_record_path "${file}")"
   if [[ "${outcome}" == "pangram" && ! -f "${record}" ]]; then
     local hint
@@ -853,20 +854,88 @@ _prune_expired() {
 # age instead: an approval expires APPROVAL_TTL (30 minutes) after it was
 # written, the same window merge-lock gives a lock.
 _cmd_check() {
-  local file="$1" want
+  local file="" repo="" dir="" flagged=0 want route outcome rule reason record
+  while (($# > 0)); do
+    case "$1" in
+      --repo)
+        (($# >= 2)) || _die "check: --repo needs a value"
+        repo="$2"
+        flagged=1
+        shift 2
+        ;;
+      --dir)
+        (($# >= 2)) || _die "check: --dir needs a value"
+        dir="$2"
+        flagged=1
+        shift 2
+        ;;
+      *)
+        [[ -z "${file}" ]] || _die "check: unexpected argument: $1"
+        file="$1"
+        shift
+        ;;
+    esac
+  done
+  [[ -n "${file}" ]] || _die "check: no file given"
   _prune_expired
   [[ -f "${file}" ]] || return 1
+  # Route by destination. With neither flag the destination is unresolved:
+  # rule 3 (visual), no record needed, and no router call at all, so neither the
+  # caller's cwd nor the rules file can change what existing callers see.
+  if ((flagged == 0)); then
+    outcome="visual"
+    rule=3
+  else
+    local -a route_args=()
+    [[ -z "${repo}" ]] || route_args+=(--repo "${repo}")
+    [[ -z "${dir}" ]] || route_args+=(--dir "${dir}")
+    # The router's own stderr passes through: a rules error names its file
+    # and line, and an unresolved repo or author is worth seeing.
+    route="$("${ROUTE_SCRIPT}" "${route_args[@]}")" || return 1
+    IFS=$'\t' read -r outcome rule reason <<<"${route}"
+  fi
+  # exempt skips both the check and the visual review.
+  [[ "${outcome}" == "exempt" ]] && return 0
   want="$(_hash "${file}")"
   # Every key, not only the caller's: the hook calls check from the Bash
   # tool's cwd, which for `git -C <repo> commit -F ...` is some other repo.
   # The key scopes what a reviewer is shown; the hash is what binds. Old flat
   # approvals count too, until they expire (see _prune_expired).
-  local approval
+  local approval matched=0
   for approval in "${APPROVED_ROOT}"/* "${APPROVED_ROOT}"/*/*; do
     [[ -f "${approval}" ]] || continue
-    [[ "$(_hash "${approval}")" == "${want}" ]] && return 0
+    [[ "$(_hash "${approval}")" == "${want}" ]] || continue
+    matched=1
+    break
   done
-  return 1
+  if ((matched == 0)); then
+    if [[ "${outcome}" == "pangram" ]]; then
+      _check_fail_pangram "${file}" "${rule}"
+    else
+      echo "gate-review: rule ${rule} (${outcome}): no visual approval matches" >&2
+    fi
+    return 1
+  fi
+  # _record_path (defined above, near _verdict_line) keys on the raw bytes.
+  record="$(_record_path "${file}")"
+  if [[ "${outcome}" == "pangram" && ! -f "${record}" ]]; then
+    echo "gate-review: rule ${rule} (pangram): no Pangram check ran on these bytes" >&2
+    return 1
+  fi
+  return 0
+}
+
+# Pangram-gated and unapproved: say whether a check ran, so an unchecked text
+# and a checked one that was never approved do not read the same.
+_check_fail_pangram() {
+  local file="$1" rule="$2" record verdict
+  record="$(_record_path "${file}")"
+  if [[ -f "${record}" ]]; then
+    verdict="$(jq -er '.verdict // .status' "${record}" 2>/dev/null || echo unknown)"
+    echo "gate-review: rule ${rule} (pangram): verdict ${verdict} recorded; no visual approval matches" >&2
+  else
+    echo "gate-review: rule ${rule} (pangram): no Pangram check ran on these bytes" >&2
+  fi
 }
 
 # A real calendar date, checked in bash rather than by date(1): BSD `date -j -f`
@@ -921,5 +990,5 @@ case "${1:-}" in
   hash) shift; _hash "$1" ;;
   check) shift; _cmd_check "$@" ;;
   suspended) _cmd_suspended ;;
-  *) _die "usage: gate-review.sh {stage <name> <file>|open|hash <file>|check <file>|suspended}" ;;
+  *) _die "usage: gate-review.sh {stage <name> <file>|open|hash <file>|check <file> [--repo owner/name] [--dir path]|suspended}" ;;
 esac
