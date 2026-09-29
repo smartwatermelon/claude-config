@@ -33,6 +33,11 @@ trap 'rm -rf "${TMP}"' EXIT
 # into the dir it is testing the protection of.
 export GATE_REVIEW_DIR="${TMP}/gate"
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
+# The hook now routes by destination and a missing rules file blocks. This suite
+# tests the matcher, not the routing, so every destination is one visual rule
+# (routing has its own suite: test-hook-personify-route.sh).
+export GATE_RULES_FILE="${TMP}/gate-rules.conf"
+printf '* visual\n' >"${GATE_RULES_FILE}"
 
 APPROVED_TEXT="${TMP}/approved-body.txt"
 UNAPPROVED_TEXT="${TMP}/unapproved-body.txt"
@@ -69,6 +74,14 @@ _case() {
 }
 
 _b64() { printf '%s' "$1" | base64; }
+
+# _bcase <hook> <desc> <plain command> <want>: _case with the encoding done
+# here, so call sites need no command substitution.
+_bcase() {
+  local enc
+  enc="$(_b64 "$3")" || return 1
+  _case "$1" "$2" "${enc}" "$4"
+}
 
 echo "=== personify: unverifiable text must BLOCK (exit 2) ==="
 _case "${PERSONIFY}" "inline -m message" \
@@ -567,6 +580,32 @@ _case "${DIRWRITE}" "prose containing 'vuln' near the dir" \
 _case "${DIRWRITE}" "a real rm after && is still blocked" \
   "$(_b64 "echo done \&\& rm ${HOME}/.claude/gate-review/approved/commit-1")" 2
 
+# gate-rules.conf decides which destinations skip the Pangram check, so an
+# agent that can rewrite it can exempt itself. It is a FILE, not a directory,
+# so it has its own alternative in the pattern.
+_bcase "${DIRWRITE}" "cp over the deployed rules file" \
+  'cp x ~/.claude/gate-rules.conf' 2
+_bcase "${DIRWRITE}" "redirect over the deployed rules file" \
+  'echo x > ~/.claude/gate-rules.conf' 2
+_bcase "${DIRWRITE}" "append to the deployed rules file (home spelled out)" \
+  "echo x >> ${HOME}/.claude/gate-rules.conf" 2
+_bcase "${DIRWRITE}" "tee the deployed rules file" \
+  'echo x | tee ~/.claude/gate-rules.conf' 2
+_bcase "${DIRWRITE}" "sed -i the deployed rules file" \
+  "sed -i '' s/visual/exempt/ ~/.claude/gate-rules.conf" 2
+_bcase "${DIRWRITE}" "mv over the deployed rules file" \
+  'mv /tmp/x ~/.claude/gate-rules.conf' 2
+_bcase "${DIRWRITE}" "rm the deployed rules file" \
+  'rm ~/.claude/gate-rules.conf' 2
+_bcase "${DIRWRITE}" "cat the deployed rules file (read)" \
+  'cat ~/.claude/gate-rules.conf' 0
+_bcase "${DIRWRITE}" "cp OUT of the deployed rules file (read)" \
+  'cp ~/.claude/gate-rules.conf /tmp/rules.bak' 0
+_bcase "${DIRWRITE}" "a notes file that only shares the prefix" \
+  'echo x > ~/.claude/scripts/gate-rules-notes.md' 0
+_bcase "${DIRWRITE}" "the repo copy of the rules file stays editable" \
+  'sed -i "" s/a/b/ /Users/andrewrich/Developer/claude-config/gate-rules.conf' 0
+
 echo "=== merge-locks-write (Write/Edit hook): file_path cases ==="
 # This hook reads tool_input.file_path, not a command string, so it gets its
 # own payload builder. A temp HOME with no .claude/ stands in for a fresh
@@ -619,6 +658,15 @@ _wcase "the voice guide beside checks/ stays writable" \
   "${HOME}/.config/personify/VOICE.md" 0
 _wcase "a file merely named after the dir" \
   "/tmp/gate-review.log" 0
+_tilde="~"
+_wcase "Write the deployed rules file" \
+  "${HOME}/.claude/gate-rules.conf" 2
+_wcase "Write the deployed rules file, tilde-spelled" \
+  "${_tilde}/.claude/gate-rules.conf" 2
+_wcase "a notes file that only shares the rules-file prefix" \
+  "${HOME}/.claude/scripts/gate-rules-notes.md" 0
+_wcase "the repo copy of the rules file stays writable" \
+  "/Users/andrewrich/Developer/claude-config/gate-rules.conf" 0
 
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]

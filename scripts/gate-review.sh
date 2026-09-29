@@ -51,6 +51,16 @@ APPROVED_ROOT="${GATE_DIR}/approved"
 PENDING="${PENDING_ROOT}"
 APPROVED="${APPROVED_ROOT}"
 GATE_KEY=""
+# The router sits beside this script. Resolve the real path first: the deployed
+# copy is reached through a symlink under ~/.claude/scripts.
+_self="${BASH_SOURCE[0]}"
+if [[ -L "${_self}" ]]; then
+  _target="$(readlink "${_self}")"
+  [[ "${_target}" == /* ]] || _target="$(dirname "${_self}")/${_target}"
+  _self="${_target}"
+fi
+ROUTE_SCRIPT="$(cd "$(dirname "${_self}")" 2>/dev/null && pwd)/gate-route.sh"
+unset _self _target
 EDITOR_APP="${GATE_REVIEW_EDITOR:-BBEdit}"
 POLL_TIMEOUT="${GATE_REVIEW_TIMEOUT:-1800}"
 APPROVAL_TTL="${GATE_REVIEW_APPROVAL_TTL:-1800}"
@@ -171,11 +181,22 @@ _record_path() {
 }
 
 # One header line per item. Never fails: a missing or unreadable record is
-# shown, not fatal, because stage already enforced that the check ran.
+# shown, not fatal. A record always wins. With none, a `visual` route sidecar
+# (written by stage) turns "no record" into the banner, so the reviewer sees
+# why this item skipped the check. The line starts with `#`, so it is never
+# approved and never enters the hash.
 _verdict_line() {
-  local name="$1" file="$2" record line
+  local name="$1" file="$2" record line route outcome rule reason
   record="$(_record_path "${file}")"
   if [[ ! -f "${record}" ]]; then
+    route="${file%/*}/.route/${name}"
+    if [[ -f "${route}" ]]; then
+      IFS=$'\t' read -r outcome rule reason <"${route}" || true
+      if [[ "${outcome}" == "visual" ]]; then
+        printf '# %s: NOT PANGRAM REVIEWED (rule %s: %s)\n' "${name}" "${rule}" "${reason}"
+        return 0
+      fi
+    fi
     printf '# %s: NO RECORD\n' "${name}"
     return 0
   fi
@@ -190,16 +211,31 @@ _verdict_line() {
   fi
 }
 
+# Delete a pending item and its route sidecar together, so a re-staged item
+# never shows a stale banner.
+_remove_pending() {
+  local dir="$1" name="$2"
+  rm -f "${dir:?}/${name}" "${dir:?}/.route/${name}"
+}
+
 _cmd_stage() {
-  local name="$1" file="$2" record
+  local name="$1" file="$2" record route outcome rule reason here
   [[ -f "${file}" ]] || _die "no such file: ${file}"
   [[ "${name}" =~ ^[A-Za-z0-9._-]+$ ]] || _die "bad artifact name: ${name}"
-  # The reviewer should see what Pangram said before approving, so a text the
-  # check never saw is not staged. Any result counts, FAIL and SKIPPED
-  # included: this proves the check ran, it does not require a pass.
   _prune_expired
+  # Route by destination, from the repo this shell is in. Staging only
+  # informs; the publish-time hook recomputes the outcome from the real
+  # command. A router error (rules file missing or bad) refuses to stage.
+  here="$(pwd)"
+  route="$("${ROUTE_SCRIPT}" --dir "${here}")" || _die "gate-route failed; nothing staged"
+  IFS=$'\t' read -r outcome rule reason <<<"${route}"
+  # The reviewer should see what Pangram said before approving, so a text the
+  # check never saw is not staged when the destination is Pangram-gated. Any
+  # result counts, FAIL and SKIPPED included: this proves the check ran, it
+  # does not require a pass.
+  # _record_path (defined above, near _verdict_line) keys on the raw bytes.
   record="$(_record_path "${file}")"
-  if [[ ! -f "${record}" ]]; then
+  if [[ "${outcome}" == "pangram" && ! -f "${record}" ]]; then
     local hint
     hint="$(_check_hint "${file}")"
     {
@@ -211,7 +247,9 @@ _cmd_stage() {
     exit 1
   fi
   _use_key
+  mkdir -p "${PENDING}/.route"
   cp "${file}" "${PENDING}/${name}"
+  printf '%s\t%s\t%s\n' "${outcome}" "${rule}" "${reason}" >"${PENDING}/.route/${name}"
   printf 'staged: %s (for %s)\n' "${name}" "${GATE_KEY}"
 }
 
@@ -403,7 +441,7 @@ _cmd_open() {
 
   _use_key
   _note_legacy_pending
-  count=$(find "${PENDING}" -type f | wc -l | tr -d ' ')
+  count=$(find "${PENDING}" -maxdepth 1 -type f | wc -l | tr -d ' ')
   if ((count == 0)); then
     local others
     others="$(_other_keys_with_pending)"
@@ -438,7 +476,7 @@ _cmd_open() {
   # staged item names is a candidate; the newest one wins.
   local work want cand prior="" skipped=() batch_items=()
   work="$(mktemp -d)"
-  want="$(find "${PENDING}" -type f -exec basename {} \; | sort)"
+  want="$(find "${PENDING}" -maxdepth 1 -type f -exec basename {} \; | sort)"
   local i=0
   while IFS= read -r cand; do
     [[ -n "${cand}" && "${cand}" != "${batch}" ]] || continue
@@ -804,7 +842,7 @@ _write_approved() {
   trimmed="$(printf '%s' "${body}" | sed -e '/^[[:space:]]*$/d')"
   [[ -n "${trimmed}" ]] || return 0
   printf '%s' "${body}" >"${APPROVED}/${name}"
-  rm -f "${PENDING:?}/${name}"
+  _remove_pending "${PENDING}" "${name}"
 }
 
 # Age comes from mtime, not a TIMESTAMP line as in merge-lock: the approved
@@ -836,20 +874,92 @@ _prune_expired() {
 # age instead: an approval expires APPROVAL_TTL (30 minutes) after it was
 # written, the same window merge-lock gives a lock.
 _cmd_check() {
-  local file="$1" want
+  local file="" repo="" dir="" flagged=0 want route outcome rule reason record
+  while (($# > 0)); do
+    case "$1" in
+      --repo)
+        (($# >= 2)) || _die "check: --repo needs a value"
+        repo="$2"
+        flagged=1
+        shift 2
+        ;;
+      --dir)
+        (($# >= 2)) || _die "check: --dir needs a value"
+        dir="$2"
+        flagged=1
+        shift 2
+        ;;
+      *)
+        [[ -z "${file}" ]] || _die "check: unexpected argument: $1"
+        file="$1"
+        shift
+        ;;
+    esac
+  done
+  [[ -n "${file}" ]] || _die "check: no file given"
   _prune_expired
   [[ -f "${file}" ]] || return 1
+  # Route by destination. With neither flag the destination is unresolved:
+  # rule 3 (visual), no record needed, and no router call at all, so neither the
+  # caller's cwd nor the rules file can change what existing callers see.
+  # This path hardcodes visual / rule 3 and never reads the rules file, so a
+  # future edit that makes the catch-all `* pangram` will NOT reach callers
+  # that pass no destination (gh-wrapper.sh until it passes one). Change this
+  # when the wrapper does.
+  if ((flagged == 0)); then
+    outcome="visual"
+    rule=3
+  else
+    local -a route_args=()
+    [[ -z "${repo}" ]] || route_args+=(--repo "${repo}")
+    [[ -z "${dir}" ]] || route_args+=(--dir "${dir}")
+    # The router's own stderr passes through: a rules error names its file
+    # and line, and an unresolved repo or author is worth seeing.
+    route="$("${ROUTE_SCRIPT}" "${route_args[@]}")" || return 1
+    IFS=$'\t' read -r outcome rule reason <<<"${route}"
+  fi
+  # exempt skips both the check and the visual review.
+  [[ "${outcome}" == "exempt" ]] && return 0
   want="$(_hash "${file}")"
   # Every key, not only the caller's: the hook calls check from the Bash
   # tool's cwd, which for `git -C <repo> commit -F ...` is some other repo.
   # The key scopes what a reviewer is shown; the hash is what binds. Old flat
   # approvals count too, until they expire (see _prune_expired).
-  local approval
+  local approval matched=0
   for approval in "${APPROVED_ROOT}"/* "${APPROVED_ROOT}"/*/*; do
     [[ -f "${approval}" ]] || continue
-    [[ "$(_hash "${approval}")" == "${want}" ]] && return 0
+    [[ "$(_hash "${approval}")" == "${want}" ]] || continue
+    matched=1
+    break
   done
-  return 1
+  if ((matched == 0)); then
+    if [[ "${outcome}" == "pangram" ]]; then
+      _check_fail_pangram "${file}" "${rule}"
+    else
+      echo "gate-review: rule ${rule} (${outcome}): no visual approval matches" >&2
+    fi
+    return 1
+  fi
+  # _record_path (defined above, near _verdict_line) keys on the raw bytes.
+  record="$(_record_path "${file}")"
+  if [[ "${outcome}" == "pangram" && ! -f "${record}" ]]; then
+    echo "gate-review: rule ${rule} (pangram): no Pangram check ran on these bytes" >&2
+    return 1
+  fi
+  return 0
+}
+
+# Pangram-gated and unapproved: say whether a check ran, so an unchecked text
+# and a checked one that was never approved do not read the same.
+_check_fail_pangram() {
+  local file="$1" rule="$2" record verdict
+  record="$(_record_path "${file}")"
+  if [[ -f "${record}" ]]; then
+    verdict="$(jq -er '.verdict // .status' "${record}" 2>/dev/null || echo unknown)"
+    echo "gate-review: rule ${rule} (pangram): verdict ${verdict} recorded; no visual approval matches" >&2
+  else
+    echo "gate-review: rule ${rule} (pangram): no Pangram check ran on these bytes" >&2
+  fi
 }
 
 # A real calendar date, checked in bash rather than by date(1): BSD `date -j -f`
@@ -903,6 +1013,9 @@ case "${1:-}" in
   open) _cmd_open ;;
   hash) shift; _hash "$1" ;;
   check) shift; _cmd_check "$@" ;;
+  # The command that writes a check record for <file>; the Bash-tool hook
+  # prints it when check blocks a Pangram-gated text for want of a record.
+  hint) shift; _check_hint "${1:?usage: gate-review.sh hint <file>}" ;;
   suspended) _cmd_suspended ;;
-  *) _die "usage: gate-review.sh {stage <name> <file>|open|hash <file>|check <file>|suspended}" ;;
+  *) _die "usage: gate-review.sh {stage <name> <file>|open|hash <file>|check <file> [--repo owner/name] [--dir path]|hint <file>|suspended}" ;;
 esac

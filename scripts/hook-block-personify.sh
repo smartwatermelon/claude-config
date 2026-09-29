@@ -54,6 +54,11 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 
 [[ -n "${cmd}" ]] || exit 0
 
+# Where the tool call runs. The destination of a `git commit` without `-C` and
+# of every `gh` call is this directory (gate-route.sh reads its origin).
+hook_cwd=$(printf '%s\n' "${input}" | jq -r '.cwd // empty')
+[[ -n "${hook_cwd}" ]] || hook_cwd="${PWD}"
+
 # KNOWN LIMITATION -- READ BEFORE RELYING ON THIS AS A SECURITY BOUNDARY.
 # This is a regex approximation of shell syntax, not a shell parser, and it is
 # BYPASSABLE, in the same ways and for the same reasons as the equivalent
@@ -250,7 +255,7 @@ _extract_path() {
 # ask gate-review. Every exit from here is a decision; falling through the end
 # without one would be a silent pass.
 _verify_segment() {
-  local seg="$1" surface="$2" inline_flags="$3" file_flags="$4" path
+  local seg="$1" surface="$2" inline_flags="$3" file_flags="$4" kind="$5" path
 
   # An inline string cannot be hashed from the command line at all.
   if printf '%s\n' "${seg}" | grep -qE "[[:space:]](${inline_flags})([[:space:]]|=)"; then
@@ -263,7 +268,203 @@ _verify_segment() {
     _deny "no message file named" "${surface}"
   fi
 
+  _destination_for_segment "${seg}" "${kind}" "${surface}"
   _verify_path "${path}" "${surface}"
+}
+
+# Work out where this segment's text will be published, from the command
+# itself. Sets DEST_DIR and DEST_REPO (either may be empty), which _verify_path
+# hands to `gate-review.sh check` so the route follows the real destination.
+# A label given at staging is never consulted.
+#   commit: DEST_DIR is the `-C <dir>` global option, else the hook's cwd.
+#   gh/api: see _gh_destination. DEST_DIR is the hook's cwd (or cd target).
+# A `-C` dir is resolved against the hook's cwd when relative. A value the hook
+# cannot expand (a variable or command substitution) blocks: routing it as an
+# unresolved destination would fall to the visual rule, weaker than pangram.
+DEST_DIR=""
+DEST_REPO=""
+DEST_ALSO_CWD=0
+
+# Reduce a repository spelling to lowercase owner/name: strip quotes, a
+# scheme, a leading github.com/, a trailing slash and .git. Prints the result
+# only when it is exactly owner/name; anything else (another host, a URL with a
+# path left over, an empty part) prints nothing, and the caller denies.
+_norm_repo() {
+  local v="$1"
+  v="${v//\"/}"
+  v="${v//\'/}"
+  v="${v,,}"
+  v="${v#https://}"
+  v="${v#http://}"
+  v="${v#github.com/}"
+  v="${v%/}"
+  v="${v%.git}"
+  [[ "${v}" =~ ^[a-z0-9._-]+/[a-z0-9._-]+$ ]] && printf '%s\n' "${v}"
+  return 0
+}
+
+# Count the case-insensitive matches of <regex> in <text>.
+_count_re() {
+  local n
+  n="$(printf '%s\n' "$2" | grep -oiE -- "$1" || true)"
+  [[ -n "${n}" ]] || { printf '0\n'; return 0; }
+  printf '%s\n' "${n}" | wc -l | tr -d ' '
+}
+
+# Resolve the repository a gh or gh api segment publishes to. gh takes it from
+# -R/--repo, from a github.com URL given as the PR or issue argument, from
+# GH_REPO, or from the checkout it runs in; gh api from the endpoint's
+# repos/<owner>/<name>. Every one of those is read, and every way the hook
+# could read the wrong one fails closed:
+#   - GH_REPO anywhere in the command: denied (the hook cannot tell which gh
+#     call it reaches, and it also fills gh api's {owner}/{repo}).
+#   - attached `-Rowner/name` or `-R=owner/name`: denied.
+#   - a -R/--repo or github.com/ inside quoted text: denied. A quoted title
+#     can carry `-R other/repo`, and the scanner cannot tell a title from an
+#     option, so it takes neither.
+#   - more than one distinct repository among the candidates: denied.
+#   - a candidate that is not plain owner/name after normalizing: denied.
+#   - gh api repositories/<id>: denied, a numeric id names no owner/name.
+# A -R/--repo value or a repos/ endpoint is the destination. A github.com URL
+# with no -R is the destination only if it is the PR/issue argument, which the
+# scanner cannot tell from a flag value, so both it and the cwd are checked
+# (DEST_ALSO_CWD) and the text must satisfy the stricter of the two. The same
+# holds for gh api's repos/{owner}/{repo}, which gh fills from the checkout.
+# A repos/ endpoint is read only where a word starts with it (optionally after
+# a quote, a leading /, or an https://host), so `-F body=@/tmp/repos/o/n/msg`
+# is not mistaken for one.
+_gh_destination() {
+  local seg="$1" kind="$2" surface="$3" blank flags urls paths c n placeholder=0
+  local -a cands=()
+  if printf '%s\n' "${_joined}" | tr '\n' ' ' | grep -qE '(^|[^A-Za-z0-9_])GH_REPO='; then
+    _deny "GH_REPO sets the destination repository outside the command; drop it and use gh -R <owner/name>" "${surface}"
+  fi
+  if printf '%s\n' "${seg}" | grep -qE -- '[[:space:]]-R[^[:space:]]'; then
+    _deny "attached -R<value> form; write -R <owner/name> with a space" "${surface}"
+  fi
+  blank="$(printf '%s\n' "${seg}" | sed -E "s/\"[^\"]*\"/\"\"/g; s/'[^']*'/''/g")"
+  for c in '[[:space:]](-R|--repo)([[:space:]]|=|$)' 'github\.com/'; do
+    n="$(_count_re "${c}" "${seg}")"
+    if [[ "${n}" != "$(_count_re "${c}" "${blank}" || true)" ]]; then
+      _deny "a repository (-R, --repo or github.com/) appears inside quoted text; the hook cannot tell it from the real option; name the repository outside quotes and keep it out of titles" "${surface}"
+    fi
+  done
+  if [[ "${kind}" == "api" ]] && printf '%s\n' "${seg}" | grep -qE -- "(^|[[:space:]\"'/])repositories/"; then
+    _deny "gh api repositories/<id> names the repository by number; use repos/<owner>/<name>" "${surface}"
+  fi
+  flags="$(printf '%s\n' "${seg}" |
+    grep -oE -- "[[:space:]](-R|--repo)(=|[[:space:]]+)(\"[^\"]*\"|'[^']*'|[^[:space:]]+)" |
+    sed -E 's/^[[:space:]]*(-R|--repo)(=|[[:space:]]+)//' || true)"
+  urls="$(printf '%s\n' "${seg}" |
+    grep -oiE -- "(^|[^.[:alnum:]-])github\.com/[^[:space:]\"'/]+/[^[:space:]\"'/]+" |
+    sed -E 's#^.*[Gg][Ii][Tt][Hh][Uu][Bb]\.[Cc][Oo][Mm]/##' || true)"
+  paths=""
+  if [[ "${kind}" == "api" ]]; then
+    paths="$(printf '%s\n' "${seg}" |
+      grep -oE -- "(^|[[:space:]])[\"']?(https?://[^/[:space:]\"']+)?/?repos/[^[:space:]\"']*" |
+      sed -E "s#^[[:space:]]*[\"']?(https?://[^/[:space:]\"']+)?/?repos/##" || true)"
+  fi
+  case "${flags}${urls}${paths}" in
+    *'$'* | *"${bt}"*)
+      c="${flags}${urls}${paths}"
+      _deny "cannot resolve the repository from '${c//$'\n'/ }'; name it literally" "${surface}"
+      ;;
+    *) ;;
+  esac
+  while IFS= read -r c; do
+    [[ -n "${c}" ]] || continue
+    # gh api fills {owner}/{repo} from the checkout (GH_REPO is denied above).
+    if [[ "${c}" == '{owner}/{repo}'* ]]; then
+      placeholder=1
+      continue
+    fi
+    if [[ "${c}" != */* ]]; then
+      _deny "cannot resolve the repository from 'repos/${c}'" "${surface}"
+    fi
+    # An endpoint path runs on past owner/name (repos/o/n/issues/1/comments).
+    if [[ "${c}" == */*/* ]]; then
+      c="${c%%/*}/$(n="${c#*/}"; printf '%s' "${n%%/*}")"
+    fi
+    cands+=("${c}")
+  done <<<"${paths}"
+  while IFS= read -r c; do
+    [[ -n "${c}" ]] && cands+=("${c}")
+  done <<<"${flags}"$'\n'"${urls}"
+  DEST_REPO=""
+  DEST_ALSO_CWD=0
+  for c in "${cands[@]}"; do
+    n="$(_norm_repo "${c}")"
+    [[ -n "${n}" ]] || _deny "cannot resolve '${c}' to a single owner/name repository" "${surface}"
+    if [[ -n "${DEST_REPO}" && "${DEST_REPO}" != "${n}" ]]; then
+      _deny "the command names more than one repository (${DEST_REPO}, ${n}); name exactly one" "${surface}"
+    fi
+    DEST_REPO="${n}"
+  done
+  if [[ -n "${DEST_REPO}" ]] && [[ "${placeholder}" -eq 1 || ( -z "${flags}" && -z "${paths}" ) ]]; then
+    DEST_ALSO_CWD=1
+  fi
+  return 0
+}
+
+_destination_for_segment() {
+  local seg="$1" kind="$2" surface="${3:-}" pre dir="" base
+  # A `cd` earlier in the same command moves the destination (_track_cd). One
+  # the hook cannot follow leaves it unknown, and unknown must not fall to the
+  # weaker rule. That includes every cd/pushd/popd word _track_cd did not
+  # consume: one inside `$(...)`, backticks or `bash -c "..."`, or after `!`,
+  # `if`, `builtin` or `command`. Counted over the whole command, so a cd
+  # after the gated segment denies too (fail closed).
+  if ((CD_WORDS > CD_TRACKED)); then
+    CD_UNRESOLVED=1
+  fi
+  if [[ "${CD_UNRESOLVED}" -eq 1 ]]; then
+    _deny "this command has a cd the hook cannot resolve (bare cd, cd -, a variable or substitution, a popd, or a cd/pushd inside a command substitution, backticks, bash -c, or after !, if, builtin or command); use git -C <dir> or gh -R <owner/name> so the destination is explicit" "${surface}"
+  fi
+  if [[ "${CD_SEEN}" -eq 1 && "${_joined}" == *[\(\)]* ]]; then
+    _deny "a cd combined with parentheses leaves the destination unclear; use git -C <dir> or gh -R <owner/name> so it is explicit" "${surface}"
+  fi
+  base="${CD_DIR:-${hook_cwd}}"
+  DEST_DIR="${base}"
+  DEST_REPO=""
+  case "${kind}" in
+    commit)
+      # Only the words before `commit` are git global options; `commit -C <sha>`
+      # is not a directory.
+      pre="$(printf '%s\n' "${seg}" | sed -E 's/[[:space:]]commit([[:space:]].*|$)//')"
+      # --git-dir, --work-tree and the GIT_DIR / GIT_WORK_TREE variables point
+      # git somewhere other than -C or the cwd, and origin would then be read
+      # from the wrong place. The variables are looked for in the whole command
+      # (_joined), since _scan has had leading assignments stripped.
+      if printf '%s\n' "${pre}" | grep -qE -- '[[:space:]]--(git-dir|work-tree)([[:space:]]|=)' ||
+        printf '%s\n' "${_joined}" | tr '\n' ' ' | grep -qE '(^|[^A-Za-z0-9_])GIT_(DIR|WORK_TREE)='; then
+        _deny "--git-dir, --work-tree, GIT_DIR and GIT_WORK_TREE hide the destination repository; use git -C <dir> instead" "${surface}"
+      fi
+      # git applies several -C options cumulatively (`-C a -C ../b` is b's
+      # sibling of a), and _extract_path would read only one of them.
+      if (($(printf '%s\n' "${pre}" | tr -s '[:space:]' '\n' | grep -cx -- '-C' || true) > 1)); then
+        _deny "more than one git -C option; git applies them cumulatively and the hook reads one; give a single -C <dir>" "${surface}"
+      fi
+      dir="$(_extract_path "${pre}" '-C')"
+      if [[ -n "${dir}" ]]; then
+        case "${dir}" in
+          *'$'* | *"${bt}"*) _deny "cannot resolve the repository from git -C '${dir}'" "${surface}" ;;
+          *) ;;
+        esac
+        # A bare or leading `~` is the user's home, as the shell would expand it.
+        if [[ "${dir:0:1}" == "~" && ( ${#dir} -eq 1 || "${dir:1:1}" == "/" ) ]]; then
+          dir="${HOME}${dir:1}"
+        fi
+        case "${dir}" in
+          /*) DEST_DIR="${dir}" ;;
+          *) DEST_DIR="${base}/${dir}" ;;
+        esac
+      fi
+      ;;
+    gh | api)
+      _gh_destination "${seg}" "${kind}" "${surface}"
+      ;;
+    *) _deny "internal error: unknown destination kind '${kind}'" "${surface}" ;;
+  esac
 }
 
 # The shared tail of every file form: the path must be absolute, exist, and
@@ -279,8 +480,62 @@ _verify_path() {
 
   [[ -x "${GATE}" ]] || _deny "gate-review.sh missing at ${GATE}; cannot verify" "${surface}"
 
-  "${GATE}" check "${path}" ||
-    _deny "the bytes in ${path} do not match anything approved" "${surface}"
+  local -a dest=()
+  [[ -z "${DEST_REPO:-}" ]] || dest+=(--repo "${DEST_REPO}")
+  [[ -z "${DEST_DIR:-}" ]] || dest+=(--dir "${DEST_DIR}")
+
+  _check_one "${path}" "${surface}" "${dest[@]}"
+  # A github.com URL with no -R may be a flag value rather than the PR/issue
+  # argument, so the checkout's own route must pass as well (_gh_destination).
+  if [[ "${DEST_ALSO_CWD:-0}" -eq 1 && -n "${DEST_DIR:-}" ]]; then
+    _check_one "${path}" "${surface}" --dir "${DEST_DIR}"
+  fi
+}
+
+# Run `gate-review.sh check` once and turn its one-line failure reason into the
+# deny. A Pangram-gated text with no check record gets the command that writes
+# the record, not the visual-approval steps, which would not help.
+_check_one() {
+  local path="$1" surface="$2" err line reason=""
+  shift 2
+  if err="$("${GATE}" check "${path}" "$@" 2>&1 >/dev/null)"; then
+    [[ -z "${err}" ]] || printf '%s\n' "${err}" >&2
+    return 0
+  fi
+  # Router notes (repo or author unresolved) stay visible above the block;
+  # the last gate-review/gate-route line is the reason.
+  while IFS= read -r line; do
+    case "${line}" in
+      gate-review:* | gate-route:*) reason="${line}" ;;
+      *) ;;
+    esac
+  done <<<"${err}"
+  [[ -z "${err}" ]] || printf '%s\n' "${err}" | grep -vxF -- "${reason:-}" >&2 || true
+  case "${reason}" in
+    *'no Pangram check ran'*) _deny_unchecked "${reason}" "${path}" "${surface}" ;;
+    '') _deny "the bytes in ${path} do not match anything approved" "${surface}" ;;
+    *) _deny "${reason}" "${surface}" ;;
+  esac
+}
+
+_deny_unchecked() {
+  local reason="$1" path="$2" surface="$3" hint
+  hint="$("${GATE}" hint "${path}" 2>/dev/null)" || hint="(gate-review.sh hint failed; run personify's scripts/pangram_check.py < ${path})"
+  {
+    echo '🛑 BLOCKED: this text goes to a Pangram-gated destination and no Pangram check ran on it.'
+    echo ''
+    echo "  surface: ${surface}"
+    echo "  reason:  ${reason}"
+    echo ''
+    echo 'Run the personify check on this exact file:'
+    echo ''
+    echo "  ${hint}"
+    echo ''
+    echo 'PASS, FAIL and SKIPPED all leave a record; an error does not. Then'
+    echo 're-run the same command. If these bytes were never approved, the'
+    echo 'next attempt will say so.'
+  } >&2
+  exit 2
 }
 
 # Is this `gh api` segment writing prose? A `body` field or a GraphQL mutation
@@ -308,6 +563,7 @@ _gql_has_body() {
 # posts the literal string and is inline text like any other value.
 _verify_api_segment() {
   local seg="$1" surface="API body" m flag val matches
+  _destination_for_segment "${seg}" api "${surface}"
   if _gql_has_body "${seg}"; then
     _deny "GraphQL mutation carries its body inline; use gh pr/issue comment --body-file" "${surface}"
   fi
@@ -337,6 +593,77 @@ _suspended() {
   [[ -x "${GATE}" ]] && "${GATE}" suspended
 }
 
+# A literal `cd <dir>` or `pushd <dir>` in an earlier segment of the same
+# command changes where a later gated segment runs (`cd repo && git commit`).
+# CD_DIR holds the last such target; CD_UNRESOLVED is set when the target cannot
+# be known (bare cd, `cd -`, a variable or substitution) and is cleared only by
+# a later target that does not depend on where we were. Subshells are not
+# scoped. A regex scanner cannot count parentheses through quotes and
+# expansions (`(cd a && echo "(x" && true); git commit` runs in the original
+# directory, but a quoted `(` hides the close), so it does not try: once any cd
+# has been seen, a command that contains `(` or `)` anywhere denies every gated
+# segment (CD_SEEN, checked in _destination_for_segment). Plain `cd X && ...`
+# with no parentheses still resolves to X.
+#
+# CD_WORDS counts every cd, pushd and popd word in the whole command (a word
+# being a run of letters, digits and `_./-`, so /tmp/cd/x is not one);
+# CD_TRACKED counts the ones _track_cd followed. Any word it did not follow
+# (inside `$(...)`, backticks or `bash -c "..."`, after `!`, `if`, `builtin`
+# or `command`, and every popd) makes the destination unknown, and
+# _destination_for_segment denies. A quoted title that says "cd" denies too;
+# that is the fail-closed direction.
+CD_DIR=""
+CD_UNRESOLVED=0
+CD_SEEN=0
+CD_TRACKED=0
+CD_WORDS="$(printf '%s\n' "${_joined}" | tr -c '[:alnum:]_./-' '\n' | grep -cxE 'cd|pushd|popd' || true)"
+_track_cd() {
+  local seg="$1" rest arg
+  rest="$(printf '%s\n' "${seg}" | sed -E 's/^[[:space:]({]*((then|do)[[:space:]]+)?//')"
+  case "${rest}" in
+    cd | cd[[:space:]]* | pushd | pushd[[:space:]]*)
+      CD_SEEN=1
+      CD_TRACKED=$((CD_TRACKED + 1))
+      ;;
+    *) return 0 ;;
+  esac
+  rest="${rest#cd}"
+  rest="${rest#pushd}"
+  # Skip option words (`cd -P dir`), but a lone `-` is the previous directory.
+  while [[ "${rest}" =~ ^[[:space:]]+-[A-Za-z-]+([[:space:]]|$) ]]; do
+    rest="$(printf '%s\n' "${rest}" | sed -E 's/^[[:space:]]+-[A-Za-z-]+//')"
+  done
+  rest="${rest#"${rest%%[![:space:]]*}"}"
+  case "${rest}" in
+    \"*) arg="${rest:1}"; arg="${arg%%\"*}" ;;
+    "'"*) arg="${rest:1}"; arg="${arg%%\'*}" ;;
+    *) arg="${rest%%[[:space:]\)\}]*}" ;;
+  esac
+  case "${arg}" in
+    '' | - | *'$'* | *"${bt}"*)
+      CD_UNRESOLVED=1
+      return 0
+      ;;
+    *) ;;
+  esac
+  if [[ "${arg:0:1}" == "~" && ( ${#arg} -eq 1 || "${arg:1:1}" == "/" ) ]]; then
+    arg="${HOME}${arg:1}"
+  fi
+  case "${arg}" in
+    /*)
+      CD_DIR="${arg}"
+      CD_UNRESOLVED=0
+      ;;
+    *)
+      # Relative to a directory we may not know: only resolvable when we do.
+      if [[ "${CD_UNRESOLVED}" -eq 0 ]]; then
+        CD_DIR="${CD_DIR:-${hook_cwd}}/${arg}"
+      fi
+      ;;
+  esac
+  return 0
+}
+
 # `git commit --amend --no-edit` and `-C <sha>` reuse an existing message and
 # author no new text, but they name no file either, so they fall to the
 # no-message-file branch and block. That is the decided behaviour (2026-09-18):
@@ -344,15 +671,16 @@ _suspended() {
 # text.
 while IFS= read -r seg; do
   [[ -n "${seg}" ]] || continue
+  _track_cd "${seg}"
   if printf '%s\n' "${seg}" | grep -qE "${commit_re}"; then
     _suspended && exit 0
-    _verify_segment "${seg}" "commit message" '-m|--message' '-F|--file'
+    _verify_segment "${seg}" "commit message" '-m|--message' '-F|--file' commit
   elif printf '%s\n' "${seg}" | grep -qE "${gh_re}"; then
     # Titles and labels carry no body text. Gate only when a body flag is
     # present, per the locked decision that PR titles stay ungated.
     if printf '%s\n' "${seg}" | grep -qE '[[:space:]](-b|--body|-F|--body-file)([[:space:]]|=)'; then
       _suspended && exit 0
-      _verify_segment "${seg}" "PR/issue body" '-b|--body' '-F|--body-file'
+      _verify_segment "${seg}" "PR/issue body" '-b|--body' '-F|--body-file' gh
     fi
   elif printf '%s\n' "${seg}" | grep -qE "${api_re}"; then
     if _api_is_gated "${seg}"; then
