@@ -882,6 +882,10 @@ _cmd_check() {
   # Route by destination. With neither flag the destination is unresolved:
   # rule 3 (visual), no record needed, and no router call at all, so neither the
   # caller's cwd nor the rules file can change what existing callers see.
+  # This path hardcodes visual / rule 3 and never reads the rules file, so a
+  # future edit that makes the catch-all `* pangram` will NOT reach callers
+  # that pass no destination (gh-wrapper.sh until it passes one). Change this
+  # when the wrapper does.
   if ((flagged == 0)); then
     outcome="visual"
     rule=3
@@ -989,6 +993,9 @@ case "${1:-}" in
   open) _cmd_open ;;
   hash) shift; _hash "$1" ;;
   check) shift; _cmd_check "$@" ;;
+  # The command that writes a check record for <file>; the Bash-tool hook
+  # prints it when check blocks a Pangram-gated text for want of a record.
+  hint) shift; _check_hint "${1:?usage: gate-review.sh hint <file>}" ;;
   suspended) _cmd_suspended ;;
-  *) _die "usage: gate-review.sh {stage <name> <file>|open|hash <file>|check <file> [--repo owner/name] [--dir path]|suspended}" ;;
+  *) _die "usage: gate-review.sh {stage <name> <file>|open|hash <file>|check <file> [--repo owner/name] [--dir path]|hint <file>|suspended}" ;;
 esac
