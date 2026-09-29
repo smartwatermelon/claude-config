@@ -332,6 +332,55 @@ else
   _no "refusal says not installed when installPath is missing: ${got}"
 fi
 
+# No local install, but personify synced from claude.ai: the refusal names the
+# synced copy. The manifest, not a glob, picks the directory: a re-upload
+# leaves the old one beside it (pr-review and pr-review~g2 both existed on
+# 2026-09-29) and only `generation` says which one Claude Code loads.
+SYNCED="${PLUGINS}/synced/bucket-a"
+mkdir -p "${SYNCED}/personify/scripts" "${SYNCED}/personify~g2/scripts"
+touch "${SYNCED}/personify/scripts/pangram_check.py" \
+  "${SYNCED}/personify~g2/scripts/pangram_check.py"
+printf '{"plugins":{}}\n' >"${PLUGINS}/installed_plugins.json"
+printf '{"plugins":[{"name":"personify"}]}\n' >"${SYNCED}/manifest.json"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+if [[ "${got}" == *"python3 ${SYNCED}/personify/scripts/pangram_check.py < ${UNCHECKED}"* ]]; then
+  _ok "refusal names the synced pangram_check.py when nothing is installed locally"
+else
+  _no "refusal names the synced pangram_check.py when nothing is installed locally: ${got}"
+fi
+
+printf '{"plugins":[{"name":"personify","generation":2}]}\n' >"${SYNCED}/manifest.json"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+if [[ "${got}" == *"python3 ${SYNCED}/personify~g2/scripts/pangram_check.py < ${UNCHECKED}"* ]]; then
+  _ok "refusal names the synced generation the manifest lists"
+else
+  _no "refusal names the synced generation the manifest lists: ${got}"
+fi
+
+# Both present: the local install wins, because Claude Code loads it and skips
+# the synced copy ("... on this machine has the same name and takes
+# precedence"). The hint must name the copy that actually loads.
+printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
+  "${PLUGINS}/cache/personify/2.0.3" >"${PLUGINS}/installed_plugins.json"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+if [[ "${got}" == *"python3 ${PLUGINS}/cache/personify/2.0.3/scripts/pangram_check.py"* &&
+  "${got}" != *"synced"* ]]; then
+  _ok "refusal prefers the local install over the synced copy"
+else
+  _no "refusal prefers the local install over the synced copy: ${got}"
+fi
+
+# A manifest entry whose directory is gone is not a fallback.
+printf '{"plugins":{}}\n' >"${PLUGINS}/installed_plugins.json"
+printf '{"plugins":[{"name":"personify","generation":7}]}\n' >"${SYNCED}/manifest.json"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+if [[ "${got}" == *"personify is not installed"* && "${got}" != *"python3 "* ]]; then
+  _ok "refusal says not installed when the synced directory is missing"
+else
+  _no "refusal says not installed when the synced directory is missing: ${got}"
+fi
+rm -rf "${PLUGINS}/synced"
+
 CHECKED="${TMP}/checked.txt"
 printf 'fix(x): trailing whitespace is part of the key   \n\n' >"${CHECKED}"
 _seed_record "${CHECKED}" '{"status":"FAIL","verdict":"AI","fraction_ai":0.97,"word_count":212}'
