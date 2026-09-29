@@ -31,6 +31,7 @@
     "code-documentation@claude-code-workflows": false,
     "code-refactoring@claude-code-workflows": false,
     "comprehensive-review@claude-code-workflows": true,
+    "context7@claude-plugins-official": true,
     "debugging-toolkit@claude-code-workflows": false,
     "dependency-management@claude-code-workflows": false,
     "error-debugging@claude-code-workflows": false,

@@ -149,7 +149,7 @@ git push
 | **Adversarial Review** | `code-critic:adversarial-reviewer` | Every commit (via git hook) |
 | **Architecture Review** | `architect-review` | Structural changes, new patterns |
 | **Security Audit** | `security-auditor` | Auth, data handling, API security |
-| **Library Docs** | `mcp__context7__*` | Framework/library questions |
+| **Library Docs** | `mcp__plugin_context7_context7__*` (context7 plugin) | Framework/library questions |
 
 ### Agent Naming Conventions
 
