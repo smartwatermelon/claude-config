@@ -179,6 +179,17 @@ _case "${PERSONIFY}" "gh api: quoted ; in another field, NOT approved body" \
   "$(_b64 "gh api repos/o/r/issues/5/comments -f title=\"a; b\" -F body=@${UNAPPROVED_TEXT}")" 2
 _case "${PERSONIFY}" "commit: quoted ; in --author, NOT approved" \
   "$(_b64 "git commit --author \"x; y\" -F ${UNAPPROVED_TEXT}")" 2
+# A backslash-escaped separator is text too, quoted or not.
+_case "${PERSONIFY}" "escaped ; inside double quotes, NOT approved" \
+  "$(_b64 "gh pr create --title \"a \\; b\" --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "escaped ; unquoted, NOT approved" \
+  "$(_b64 "gh pr create --title a\\;b --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "escaped | unquoted, NOT approved" \
+  "$(_b64 "gh pr create --title a\\|b --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "escaped ; inside \$'...', NOT approved" \
+  "$(_b64 "gh pr create --title \$'a\\;b' --body-file ${UNAPPROVED_TEXT}")" 2
+_case "${PERSONIFY}" "escaped ; unquoted, APPROVED" \
+  "$(_b64 "gh pr create --title a\\;b --body-file ${APPROVED_TEXT}")" 0
 # The fix must not turn a quoted separator into a false block.
 _case "${PERSONIFY}" "quoted ; in a title, APPROVED" \
   "$(_b64 "gh pr create --title \"a; b\" --body-file ${APPROVED_TEXT}")" 0

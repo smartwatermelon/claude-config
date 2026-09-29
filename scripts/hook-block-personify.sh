@@ -226,12 +226,16 @@ _quoted_segments() {
           seg = seg c; if (c == "\047") q = 0; else if (c ~ /[;&|]/) flag = 1
           i++; continue
         }
+        # An escaped separator (a\;b, or inside double or dollar quotes) is
+        # text as well, and _segments cuts it all the same.
+        if (c == "\\") {
+          if (substr(line, i + 1, 1) ~ /[;&|]/) flag = 1
+          seg = seg substr(line, i, 2); i += 2; continue
+        }
         if (q == 3) {
-          if (c == "\\") { seg = seg substr(line, i, 2); i += 2; continue }
           seg = seg c; if (c == "\047") q = 0; else if (c ~ /[;&|]/) flag = 1
           i++; continue
         }
-        if (c == "\\") { seg = seg substr(line, i, 2); i += 2; continue }
         if (q == 2) {
           seg = seg c; if (c == "\"") q = 0; else if (c ~ /[;&|]/) flag = 1
           i++; continue
