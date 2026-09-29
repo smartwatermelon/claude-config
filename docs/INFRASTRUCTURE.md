@@ -46,7 +46,7 @@ entries are omitted here.
 | Event / matcher | Script |
 |-----------------|--------|
 | PreToolUse `Bash` | `~/.claude/scripts/hook-block-all.sh` (chain below) |
-| PreToolUse `Write`, `Edit` | `hook-block-merge-locks-write.sh`: blocks writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/` |
+| PreToolUse `Write`, `Edit` | `hook-block-merge-locks-write.sh`: blocks writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf` |
 | PreToolUse `EnterWorktree` | `hook-block-enter-worktree.sh` |
 | PostToolUse `Bash\|Read` | `hook-redact-secret-output.py`: redacts env secret values, gitleaks findings, vendor prefixes gitleaks lacks, and the whole stdout of credential-printing commands (`op read`, `security -w`, ...) |
 | Stop, SubagentStop | `hook-budget-guard.sh` |
@@ -54,7 +54,7 @@ entries are omitted here.
 `hook-block-all.sh` runs these in order and stops at the first block:
 
 1. `hook-block-secret-leak.sh` (first on purpose: the others log the full command when they block)
-2. `hook-block-gate-dir-write.sh` (Bash-path writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`)
+2. `hook-block-gate-dir-write.sh` (Bash-path writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf`)
 3. `hook-block-no-verify.sh`
 4. `hook-block-short-no-verify.sh`
 5. `hook-block-main-commit.sh`
@@ -124,6 +124,14 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   purpose, to dogfood the upload path; they are not in `enabledPlugins`.
 - `open` shows one Pangram line per item in the header, read from that
   item's check record.
+- `gate-rules.conf` (repo root, linked by `install.sh` to
+  `~/.claude/gate-rules.conf`) maps each destination to `pangram`, `visual`,
+  or `exempt`; `scripts/gate-route.sh` reads it. Whoever can edit it can
+  exempt a destination from the check, so both write hooks block writes to the
+  deployed path `~/.claude/gate-rules.conf`. Reads pass. The hooks match the
+  literal path and do not resolve symlinks, so the repo copy stays editable
+  through a reviewed PR, and a merged change reaches `~/.claude` on the next
+  `install.sh --sync`.
 
 ### Merge-Lock Subcommands
 

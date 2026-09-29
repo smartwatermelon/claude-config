@@ -5,6 +5,7 @@
 #   ~/.claude/gate-review/       commit/PR text approval
 #   ~/.config/personify/checks/  Pangram check records
 #   ~/.config/personify/stamps/  Human approval stamps
+#   ~/.claude/gate-rules.conf    destination routing rules (a file)
 #
 # THE HOLE THIS CLOSES. hook-block-merge-locks-write.sh is registered for the
 # Write and Edit matchers only, and reads tool_input.file_path. A Bash `cp`
@@ -47,7 +48,14 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # trailing `/` is required: without it the pattern also matches
 # `scripts/gate-review.sh`, the tool itself, and editing the gate became
 # impossible. Only paths INSIDE the directories are approval state.
-_dirs='(\.claude/(merge-locks|gate-review)/|\.config/personify/(checks|stamps)/)'
+#
+# `~/.claude/gate-rules.conf` is the one FILE guarded here. It decides which
+# destinations skip the Pangram check, so an agent that could rewrite it could
+# exempt itself. It has no trailing `/`; the literal name still leaves
+# `scripts/gate-rules-notes.md` and the repo's own `gate-rules.conf` (edited
+# through a human-reviewed PR) unmatched. The hook does not resolve symlinks,
+# so only the deployed spelling is covered.
+_dirs='(\.claude/(merge-locks|gate-review)/|\.config/personify/(checks|stamps)/|\.claude/gate-rules\.conf)'
 
 # A verb counts only in COMMAND POSITION -- at the start of the line or just
 # after a separator. Without this anchor the alternation matched the letters

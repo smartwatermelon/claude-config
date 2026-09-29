@@ -7,6 +7,8 @@
 #   ~/.claude/gate-review/       commit/PR text approval
 #   ~/.config/personify/checks/  Pangram check records
 #   ~/.config/personify/stamps/  Human approval stamps
+#   ~/.claude/gate-rules.conf    destination routing rules (a file; an agent
+#                                that could edit it could exempt itself)
 #
 # Covers the Write and Edit matchers. The Bash path -- `cp`, `tee`, `sed -i`,
 # redirects -- carries no file_path and is not visible here; it is covered by
@@ -31,12 +33,13 @@ file_path=$(printf '%s\n' "${input}" | jq -r '.tool_input.file_path // empty')
 # both end in that suffix). `personify/pangram-key` and `personify/VOICE.md`
 # sit beside those two directories, not inside either, so they still match
 # nothing here.
-if printf '%s\n' "${file_path}" | grep -qE '(^|[^a-zA-Z0-9_-])(merge-locks|gate-review|personify/(checks|stamps))/'; then
+if printf '%s\n' "${file_path}" | grep -qE '(^|[^a-zA-Z0-9_-])(merge-locks|gate-review|personify/(checks|stamps))/|\.claude/gate-rules\.conf$'; then
   printf '%s BLOCKED WRITE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${file_path}" >>"${HOME}/.claude/blocked-commands.log" || true
   printf '🛑 BLOCKED: Writing to an approval directory is forbidden.\n' >&2
   printf '\n' >&2
-  printf 'merge-locks/, gate-review/, personify/checks/, and personify/stamps/\n' >&2
-  printf 'hold decisions only Andrew makes, or what Pangram said.\n' >&2
+  printf 'merge-locks/, gate-review/, personify/checks/, personify/stamps/, and\n' >&2
+  printf 'the file .claude/gate-rules.conf hold decisions only Andrew makes, or what\n' >&2
+  printf 'Pangram said.\n' >&2
   printf 'Reading from them is allowed; writing them is not.\n' >&2
   exit 2
 fi
