@@ -40,8 +40,6 @@
     "git-pr-workflows@claude-code-workflows": false,
     "i-have-adhd@i-have-adhd": true,
     "incident-response@claude-code-workflows": false,
-    "personify@personify": true,
-    "pr-review@pr-review": true,
     "react-native-3d@smartwatermelon-marketplace": false,
     "security-compliance@claude-code-workflows": false,
     "slack@claude-plugins-official": false,
@@ -78,20 +76,6 @@
     "i-have-adhd": {
       "source": {
         "repo": "ayghri/i-have-adhd",
-        "source": "github"
-      }
-    },
-    "personify": {
-      "autoUpdate": true,
-      "source": {
-        "repo": "twistedmelonman/personify",
-        "source": "github"
-      }
-    },
-    "pr-review": {
-      "autoUpdate": true,
-      "source": {
-        "repo": "smartwatermelon/pr-review",
         "source": "github"
       }
     },
