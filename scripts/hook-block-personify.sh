@@ -54,6 +54,11 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 
 [[ -n "${cmd}" ]] || exit 0
 
+# Where the tool call runs. The destination of a `git commit` without `-C` and
+# of every `gh` call is this directory (gate-route.sh reads its origin).
+hook_cwd=$(printf '%s\n' "${input}" | jq -r '.cwd // empty')
+[[ -n "${hook_cwd}" ]] || hook_cwd="${PWD}"
+
 # KNOWN LIMITATION -- READ BEFORE RELYING ON THIS AS A SECURITY BOUNDARY.
 # This is a regex approximation of shell syntax, not a shell parser, and it is
 # BYPASSABLE, in the same ways and for the same reasons as the equivalent
@@ -250,7 +255,7 @@ _extract_path() {
 # ask gate-review. Every exit from here is a decision; falling through the end
 # without one would be a silent pass.
 _verify_segment() {
-  local seg="$1" surface="$2" inline_flags="$3" file_flags="$4" path
+  local seg="$1" surface="$2" inline_flags="$3" file_flags="$4" kind="$5" path
 
   # An inline string cannot be hashed from the command line at all.
   if printf '%s\n' "${seg}" | grep -qE "[[:space:]](${inline_flags})([[:space:]]|=)"; then
@@ -263,7 +268,55 @@ _verify_segment() {
     _deny "no message file named" "${surface}"
   fi
 
+  _destination_for_segment "${seg}" "${kind}" "${surface}"
   _verify_path "${path}" "${surface}"
+}
+
+# Work out where this segment's text will be published, from the command
+# itself. Sets DEST_DIR and DEST_REPO (either may be empty), which _verify_path
+# hands to `gate-review.sh check` so the route follows the real destination.
+# A label given at staging is never consulted.
+#   commit: DEST_DIR is the `-C <dir>` global option, else the hook's cwd.
+#   gh:     DEST_REPO is `-R`/`--repo`; DEST_DIR is the hook's cwd.
+#   api:    DEST_REPO is `-R`/`--repo`, else the owner/name of a `repos/o/n`
+#           path; DEST_DIR is the hook's cwd.
+# A `-C` dir is resolved against the hook's cwd when relative. A value the hook
+# cannot expand (a variable or command substitution) blocks: routing it as an
+# unresolved destination would fall to the visual rule, weaker than pangram.
+_destination_for_segment() {
+  local seg="$1" kind="$2" surface="${3:-}" pre dir="" repo=""
+  DEST_DIR="${hook_cwd}"
+  DEST_REPO=""
+  case "${kind}" in
+    commit)
+      # Only the words before `commit` are git global options; `commit -C <sha>`
+      # is not a directory.
+      pre="$(printf '%s\n' "${seg}" | sed -E 's/[[:space:]]commit([[:space:]].*|$)//')"
+      dir="$(_extract_path "${pre}" '-C')"
+      if [[ -n "${dir}" ]]; then
+        case "${dir}" in
+          *'$'* | *"${bt}"*) _deny "cannot resolve the repository from git -C '${dir}'" "${surface}" ;;
+          *) ;;
+        esac
+        # A bare or leading `~` is the user's home, as the shell would expand it.
+        if [[ "${dir:0:1}" == "~" && ( ${#dir} -eq 1 || "${dir:1:1}" == "/" ) ]]; then
+          dir="${HOME}${dir:1}"
+        fi
+        case "${dir}" in
+          /*) DEST_DIR="${dir}" ;;
+          *) DEST_DIR="${hook_cwd}/${dir}" ;;
+        esac
+      fi
+      ;;
+    gh | api)
+      repo="$(_extract_path "${seg}" '-R|--repo')"
+      if [[ -z "${repo}" && "${kind}" == "api" ]]; then
+        repo="$(printf '%s\n' "${seg}" | sed -En "s#.*[[:space:]\"'/]repos/([^/[:space:]\"']+/[^/[:space:]\"']+).*#\1#p" | head -1)"
+      fi
+      DEST_REPO="${repo}"
+      ;;
+    *) _deny "internal error: unknown destination kind '${kind}'" "${surface}" ;;
+  esac
 }
 
 # The shared tail of every file form: the path must be absolute, exist, and
@@ -279,7 +332,11 @@ _verify_path() {
 
   [[ -x "${GATE}" ]] || _deny "gate-review.sh missing at ${GATE}; cannot verify" "${surface}"
 
-  "${GATE}" check "${path}" ||
+  local -a dest=()
+  [[ -z "${DEST_REPO:-}" ]] || dest+=(--repo "${DEST_REPO}")
+  [[ -z "${DEST_DIR:-}" ]] || dest+=(--dir "${DEST_DIR}")
+
+  "${GATE}" check "${path}" "${dest[@]}" ||
     _deny "the bytes in ${path} do not match anything approved" "${surface}"
 }
 
@@ -308,6 +365,7 @@ _gql_has_body() {
 # posts the literal string and is inline text like any other value.
 _verify_api_segment() {
   local seg="$1" surface="API body" m flag val matches
+  _destination_for_segment "${seg}" api "${surface}"
   if _gql_has_body "${seg}"; then
     _deny "GraphQL mutation carries its body inline; use gh pr/issue comment --body-file" "${surface}"
   fi
@@ -346,13 +404,13 @@ while IFS= read -r seg; do
   [[ -n "${seg}" ]] || continue
   if printf '%s\n' "${seg}" | grep -qE "${commit_re}"; then
     _suspended && exit 0
-    _verify_segment "${seg}" "commit message" '-m|--message' '-F|--file'
+    _verify_segment "${seg}" "commit message" '-m|--message' '-F|--file' commit
   elif printf '%s\n' "${seg}" | grep -qE "${gh_re}"; then
     # Titles and labels carry no body text. Gate only when a body flag is
     # present, per the locked decision that PR titles stay ungated.
     if printf '%s\n' "${seg}" | grep -qE '[[:space:]](-b|--body|-F|--body-file)([[:space:]]|=)'; then
       _suspended && exit 0
-      _verify_segment "${seg}" "PR/issue body" '-b|--body' '-F|--body-file'
+      _verify_segment "${seg}" "PR/issue body" '-b|--body' '-F|--body-file' gh
     fi
   elif printf '%s\n' "${seg}" | grep -qE "${api_re}"; then
     if _api_is_gated "${seg}"; then

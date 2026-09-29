@@ -33,6 +33,11 @@ trap 'rm -rf "${TMP}"' EXIT
 # into the dir it is testing the protection of.
 export GATE_REVIEW_DIR="${TMP}/gate"
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
+# The hook now routes by destination and a missing rules file blocks. This suite
+# tests the matcher, not the routing, so every destination is one visual rule
+# (routing has its own suite: test-hook-personify-route.sh).
+export GATE_RULES_FILE="${TMP}/gate-rules.conf"
+printf '* visual\n' >"${GATE_RULES_FILE}"
 
 APPROVED_TEXT="${TMP}/approved-body.txt"
 UNAPPROVED_TEXT="${TMP}/unapproved-body.txt"
