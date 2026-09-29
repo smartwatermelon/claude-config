@@ -9,6 +9,17 @@
   },
   "autoCompactWindow": 400000,
   "autoContinueAtUsageLimit": true,
+  "deniedMcpServers": [
+    {
+      "serverName": "claude.ai Linear"
+    },
+    {
+      "serverName": "claude.ai Sentry"
+    },
+    {
+      "serverName": "claude.ai Slack"
+    }
+  ],
   "editorMode": "normal",
   "effortLevel": "medium",
   "enabledPlugins": {
