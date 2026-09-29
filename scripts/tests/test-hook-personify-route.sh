@@ -177,6 +177,19 @@ _case "GIT_WORK_TREE= prefix blocks" 2 "use git -C" "${PERSONAL}" \
 _case "env GIT_DIR= prefix blocks" 2 "use git -C" "${PERSONAL}" \
   "env GIT_DIR=${BEACON}/.git git commit -F ${TXT}"
 
+# Fix round 2: subshell scope. A cd in a group that already closed must not
+# route a later gated segment (it runs in the original directory).
+_case "cd in a closed subshell, then commit from a pangram cwd: blocked" 2 "already closed" "${BEACON}" \
+  "(cd ${PERSONAL} && true); git commit -F ${TXT}"
+_case "cd in a closed subshell, then gh pr create: blocked" 2 "already closed" "${BEACON}" \
+  "(cd ${PERSONAL} && true); gh pr create --title t --body-file ${TXT}"
+_case "commit inside the same subshell as its cd follows the cd" 2 "no Pangram check ran" "${PERSONAL}" \
+  "( cd ${BEACON} && git commit -F ${TXT} )"
+_case "commit inside its cd's subshell resolves to a visual target" 0 "" "${BEACON}" \
+  "( cd ${PERSONAL} && git commit -F ${TXT} )"
+_case "a later absolute cd after a closed subshell re-resolves" 0 "" "${BEACON}" \
+  "(cd ${BEACON} && true); cd ${PERSONAL} && git commit -F ${TXT}"
+
 # Unchanged behaviour.
 _norec
 _case "inline -m still blocks" 2 "text given inline" "${PERSONAL}" \
