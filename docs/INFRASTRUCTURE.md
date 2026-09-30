@@ -231,9 +231,10 @@ This enforcement exists because of two incidents on 2026-02-24:
 - `code-reviewer` and `adversarial-reviewer` run on EVERY commit automatically via the commit-msg hook, which calls `~/.claude/hooks/run-review.sh` with the in-progress message
 - adversarial-reviewer (code-critic plugin) uses a structured failure mode checklist, severity calibration, and domain awareness
 - Models (defaults; override with `git config review.model`, `review.adversarialModel`, `review.arbiterModel`):
-  - code-reviewer: `claude-haiku-4-5-20251001` for commits, `claude-sonnet-4-6` for `--mode=full-diff` and `--mode=codebase`
-  - adversarial-reviewer: `claude-sonnet-4-6` in every mode
-  - arbiter: `claude-sonnet-4-6`, invoked only when code-reviewer returns a BLOCKING FAIL and adversarial-reviewer returns PASS
+  - code-reviewer, commits: Haiku 5.5 or newer when the CLI's `haiku` alias resolves to one, otherwise `claude-sonnet-5-5`. The alias is probed at most once a day; the answer is cached in `~/.claude/cache/review-haiku-alias` (delete it to re-probe). Haiku 4.5 is never used: it made repeated false BLOCKING findings.
+  - code-reviewer, `--mode=full-diff` and `--mode=codebase`: `claude-sonnet-5-5`
+  - adversarial-reviewer: `claude-sonnet-5-5` in every mode
+  - arbiter: `claude-sonnet-5-5`, invoked only when code-reviewer returns a BLOCKING FAIL and adversarial-reviewer returns PASS
 - Size limits: `review.maxLines` (default 1000) is the full-review ceiling; above it, review is chunked per file. Above `review.skipThreshold` (default 2500) the commit is blocked and must be split.
 - commit-msg skips review when the subject starts with `fixup!`, `squash!`, `wip:`, `WIP:`, or `wip`/`WIP` followed by whitespace
 - The pre-push hook runs one `--mode=full-diff` review that must pass. It files no issues. `--mode=codebase` is weekly/on-demand only (see CHECKLISTS.md, "On-Demand Codebase Review").
