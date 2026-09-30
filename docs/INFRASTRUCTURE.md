@@ -68,14 +68,24 @@ entries are omitted here.
 
 Commit messages and PR/issue bodies need Andrew's visual approval.
 
-- `scripts/gate-review.sh stage <name> <file>` queues text. `open` shows the
+- `scripts/gate-review.sh stage --kind <kind> <name> <file>` queues text.
+  `--kind` is required: `commit`, `pr`, `issue`, `line-comment`,
+  `pr-comment`, `code-comment` or `docstring`. On every route but `exempt`,
+  stage runs personify's `scripts/length_check.py` first and refuses text
+  over that kind's cap, before the Pangram record check. `open` shows the
   batch in BBEdit and waits. Each batch gets its own file,
   `batches/<repo>-<branch>-<nonce>.txt`, removed once approved. Any other
   exit keeps it, and the next `open` for the same items starts from it;
   `open` removes buffers untouched for a day (`GATE_REVIEW_BUFFER_TTL`,
   seconds). Approval is changing `# STATUS: PENDING` to
   `APPROVED` and saving. `ABORT` revokes only that batch's own items.
-  `check <file>` exits 0 if the file matches any approval.
+  `check <file>` exits 0 if the file matches any approval. `check --kind
+  <kind> <file>` also measures the file against that kind's cap (not on
+  `exempt`); without `--kind` there is no length check.
+- The personify directory comes from `gate-review.sh personify-path`: the
+  local install in `installed_plugins.json`, else the claude.ai synced copy.
+  A missing personify, a missing `length_check.py`, or a checker error
+  (exit 5) refuses, and the message says it is a checker error.
 - Staged and approved text is kept per caller's repo and branch, taken from
   the current directory: `pending/<repo>-<branch>/<name>` and
   `approved/<repo>-<branch>/<name>` (`batch` outside a repo). `open` batches
@@ -95,7 +105,23 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   the same window as a merge-lock; `check` and `stage` delete expired ones.
 - Text must come from a file at an absolute path: `git commit -F` or
   `gh ... --body-file`. Inline `-m`/`--body`, relative paths, and `~`/`$VAR`
-  paths are blocked. PR and issue titles are not gated.
+  paths are blocked. PR and issue titles need no visual approval; they get
+  a length check only. The hook reads `-t`, `--title` and `--title=` on
+  `gh pr|issue create|edit` and runs the checker on the value. A title it
+  cannot measure (`$`, a backtick, a glob, attached `-t<value>`, or two
+  title flags) is denied. The hook measures titles through
+  `gate-review.sh measure --kind <kind> --title <value> [--repo R] [--dir D]
+  </dev/null`, the same checker path `stage` and `check` use. Like the
+  rest of the length check, it skips an `exempt` destination. Routing only
+  relaxes, so when the hook cannot pin the destination down (any `cd` in
+  the command, or a destination the body check would deny), the title is
+  measured without routing.
+- The hook derives the length kind from the command, not from `stage`:
+  `git commit` is `commit`; `gh pr create|edit` is `pr`; `gh issue
+  create|edit` is `issue`; `gh pr comment`, `gh issue comment` and `gh pr
+  review` are `pr-comment`; `gh api` to `pulls/<n>/comments` is
+  `line-comment`, and any other `gh api` body is `pr-comment`. A text
+  staged under one kind and published as another is measured again.
 - Gated surfaces: `git commit`; `gh pr create|comment|edit|review` and
   `gh issue create|comment|edit` when they carry a body flag; `gh api` when
   it sends a `body` field or a GraphQL mutation with a `body:` argument. The

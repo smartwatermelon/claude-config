@@ -20,10 +20,14 @@
 # through ungated. See claude-config#509 for the same unsolved remote case.
 #
 # Usage:
-#   gate-review.sh stage <name> <file>   queue one artifact for review (needs a Pangram check record)
+#   gate-review.sh stage --kind <kind> <name> <file>   queue one artifact (under its length cap) for review
 #   gate-review.sh open                  open the batch, wait for save
 #   gate-review.sh hash <file>           print the approved-bytes hash
-#   gate-review.sh check <file>          exit 0 if file matches ANY approval
+#   gate-review.sh check [--kind K] <file>   exit 0 if file matches ANY approval (and fits)
+#   gate-review.sh measure --kind K [--title T] [--repo R] [--dir D] <body
+#                                        length check only; body on stdin
+#                                        (</dev/null for a title alone)
+#   gate-review.sh personify-path        print personify's dir
 #   gate-review.sh suspended             exit 0 if the gate is suspended today
 #
 # `check` takes no name. It hashes the input and accepts if any approved
@@ -134,7 +138,7 @@ _raw_sha() {
   sha256sum "$1" | cut -d' ' -f1
 }
 
-# The command that writes a check record, with the path of the personify
+# The directory of the personify
 # version Claude Code has installed. The plugin cache keeps every past version
 # side by side, and a guessed one can predate a feature the check now needs:
 # 2.0.1 has no Keychain lookup, so on 2026-09-24 it reported "no Pangram API
@@ -146,8 +150,8 @@ _raw_sha() {
 # copy is found through each bucket's manifest.json: a re-upload leaves the old
 # directory beside the new one (`name` and `name~g<generation>`), and only the
 # manifest's `generation` says which one loads.
-_check_hint() {
-  local file="$1" root plugins install_path manifest dir
+_personify_path() {
+  local root plugins install_path manifest dir
   root="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/plugins"
   plugins="${root}/installed_plugins.json"
   install_path="$(jq -er '.plugins["personify@personify"][0].installPath // empty' \
@@ -166,11 +170,145 @@ _check_hint() {
     done
   fi
   if [[ -n "${install_path}" ]]; then
+    printf '%s\n' "${install_path}"
+    return 0
+  fi
+  printf 'personify is not installed (no personify@personify with scripts/pangram_check.py in %s, and no synced copy under %s/synced); sync it from claude.ai, or install it with: claude plugin install personify@personify\n' \
+    "${plugins}" "${root}" >&2
+  return 1
+}
+
+_check_hint() {
+  local file="$1" install_path
+  if install_path="$(_personify_path 2>&1)"; then
     printf 'python3 %s/scripts/pangram_check.py < %s\n' "${install_path}" "${file}"
   else
-    printf 'personify is not installed (no personify@personify with scripts/pangram_check.py in %s, and no synced copy under %s/synced); sync it from claude.ai, or install it with: claude plugin install personify@personify\n' \
-      "${plugins}" "${root}"
+    printf '%s\n' "${install_path}"
   fi
+}
+
+LENGTH_KINDS="commit pr issue line-comment pr-comment code-comment docstring"
+
+_valid_kind() {
+  [[ " ${LENGTH_KINDS} " == *" $1 "* ]]
+}
+
+# 0 under the cap, 1 over, 2 checker error; LENGTH_OUT holds the checker's lines, or the error reason.
+# The optional third argument is a title, measured with the body in <file>.
+# Safe under errexit whatever the calling context: every failing step is caught
+# here, so a silent checker is an error (2), never a shell exit that a hook
+# would read as "not blocked".
+LENGTH_OUT=""
+_length_check() {
+  local kind="$1" file="$2" dir checker rc=0 errf
+  local -a title_arg=()
+  (($# < 3)) || title_arg=("--title=$3")
+  if ! dir="$(_personify_path 2>&1)"; then
+    LENGTH_OUT="${dir}"
+    return 2
+  fi
+  checker="${dir}/scripts/length_check.py"
+  if [[ ! -f "${checker}" ]]; then
+    LENGTH_OUT="no ${checker}; personify 2.1.0 or later has it, so update personify"
+    return 2
+  fi
+  errf="$(mktemp)"
+  LENGTH_OUT="$(python3 "${checker}" --kind "${kind}" "${title_arg[@]}" <"${file}" 2>"${errf}")" || rc=$?
+  case "${rc}" in
+    0 | 1)
+      cat "${errf}" >&2
+      rm -f "${errf}"
+      return "${rc}"
+      ;;
+    *)
+      LENGTH_OUT="$(grep -v '^usage:' "${errf}" | tail -1 || true)"
+      [[ -n "${LENGTH_OUT}" ]] || LENGTH_OUT="length_check.py exited ${rc} with no message"
+      rm -f "${errf}"
+      return 2
+      ;;
+  esac
+}
+
+# measure --kind K [--title T] [--repo R] [--dir D]: the body is read from
+# stdin; give </dev/null to measure a title alone. No text at all is a usage
+# error. With --repo or --dir the destination is routed as in `check`, and an
+# `exempt` route measures nothing; with neither, the text is always measured.
+# Exit 0 fits, 1 over the cap (the checker's lines, prefixed gate-review:),
+# 2 checker error or a route that failed. This is the one path the hook uses
+# for titles, so the checker is called from _length_check only.
+_cmd_measure() {
+  local kind="" repo="" dir="" has_title=0 title="" flagged=0 tmp rc=0 line route outcome rule reason
+  while (($# > 0)); do
+    case "$1" in
+      --kind)
+        (($# >= 2)) || _die "measure: --kind needs a value"
+        kind="$2"
+        shift 2
+        ;;
+      --title)
+        (($# >= 2)) || _die "measure: --title needs a value"
+        title="$2"
+        has_title=1
+        shift 2
+        ;;
+      --title=*)
+        title="${1#--title=}"
+        has_title=1
+        shift
+        ;;
+      --repo)
+        (($# >= 2)) || _die "measure: --repo needs a value"
+        repo="$2"
+        flagged=1
+        shift 2
+        ;;
+      --dir)
+        (($# >= 2)) || _die "measure: --dir needs a value"
+        dir="$2"
+        flagged=1
+        shift 2
+        ;;
+      *) _die "measure: unexpected argument: $1" ;;
+    esac
+  done
+  [[ -n "${kind}" ]] || _die "measure: --kind is required, one of: ${LENGTH_KINDS}"
+  _valid_kind "${kind}" || _die "measure: unknown --kind '${kind}'; one of: ${LENGTH_KINDS}"
+  if ((flagged == 1)); then
+    local -a route_args=()
+    [[ -z "${repo}" ]] || route_args+=(--repo "${repo}")
+    [[ -z "${dir}" ]] || route_args+=(--dir "${dir}")
+    if ! route="$("${ROUTE_SCRIPT}" "${route_args[@]}")"; then
+      echo "gate-review: measure: gate-route failed, so nothing was measured" >&2
+      return 2
+    fi
+    IFS=$'\t' read -r outcome rule reason <<<"${route}"
+    [[ "${outcome}" != "exempt" ]] || return 0
+  fi
+  tmp="$(mktemp)"
+  cat >"${tmp}"
+  if [[ ! -s "${tmp}" ]] && ((has_title == 0)); then
+    rm -f "${tmp}"
+    _die "measure: no text; give the body on stdin, or --title with </dev/null"
+  fi
+  if ((has_title == 1)); then
+    _length_check "${kind}" "${tmp}" "${title}" || rc=$?
+  else
+    _length_check "${kind}" "${tmp}" || rc=$?
+  fi
+  rm -f "${tmp}"
+  case "${rc}" in
+    0) return 0 ;;
+    1)
+      while IFS= read -r line; do
+        printf 'gate-review: %s\n' "${line}" >&2
+      done <<<"${LENGTH_OUT}"
+      return 1
+      ;;
+    *)
+      echo "gate-review: length checker error, not a verdict on the text: ${LENGTH_OUT}" >&2
+      return 2
+      ;;
+  esac
 }
 
 _record_path() {
@@ -219,7 +357,29 @@ _remove_pending() {
 }
 
 _cmd_stage() {
-  local name="$1" file="$2" record route outcome rule reason here
+  local name="" file="" kind="" record route outcome rule reason here line
+  while (($# > 0)); do
+    case "$1" in
+      --kind)
+        (($# >= 2)) || _die "stage: --kind needs a value"
+        kind="$2"
+        shift 2
+        ;;
+      *)
+        if [[ -z "${name}" ]]; then
+          name="$1"
+        elif [[ -z "${file}" ]]; then
+          file="$1"
+        else
+          _die "stage: unexpected argument: $1"
+        fi
+        shift
+        ;;
+    esac
+  done
+  [[ -n "${kind}" ]] || _die "stage: --kind is required, one of: ${LENGTH_KINDS}"
+  _valid_kind "${kind}" || _die "stage: unknown --kind '${kind}'; one of: ${LENGTH_KINDS}"
+  [[ -n "${name}" && -n "${file}" ]] || _die "usage: gate-review.sh stage --kind <kind> <name> <file>"
   [[ -f "${file}" ]] || _die "no such file: ${file}"
   [[ "${name}" =~ ^[A-Za-z0-9._-]+$ ]] || _die "bad artifact name: ${name}"
   _prune_expired
@@ -229,6 +389,18 @@ _cmd_stage() {
   here="$(pwd)"
   route="$("${ROUTE_SCRIPT}" --dir "${here}")" || _die "gate-route failed; nothing staged"
   IFS=$'\t' read -r outcome rule reason <<<"${route}"
+  # Before the record check, so over-cap text never costs a Pangram call.
+  if [[ "${outcome}" != "exempt" ]]; then
+    _length_check "${kind}" "${file}" || case $? in
+      1)
+        while IFS= read -r line; do
+          printf 'gate-review: %s\n' "${line}" >&2
+        done <<<"${LENGTH_OUT}"
+        _die "over the ${kind} length cap; shorten ${file} and stage again. Nothing staged."
+        ;;
+      *) _die "length checker error, not a verdict on the text: ${LENGTH_OUT}. Nothing staged." ;;
+    esac
+  fi
   # The reviewer should see what Pangram said before approving, so a text the
   # check never saw is not staged when the destination is Pangram-gated. Any
   # result counts, FAIL and SKIPPED included: this proves the check ran, it
@@ -299,7 +471,7 @@ _note_legacy_pending() {
     for f in "${found[@]}"; do
       echo "gate-review:   ${f}"
     done
-    echo "gate-review: Restage any still wanted from its own repo: gate-review.sh stage <name> <file>."
+    echo "gate-review: Restage any still wanted from its own repo: gate-review.sh stage --kind <kind> <name> <file>."
     echo "gate-review: Andrew can delete these files by hand; the hooks keep agents out of gate-review/."
   } >&2
 }
@@ -874,9 +1046,15 @@ _prune_expired() {
 # age instead: an approval expires APPROVAL_TTL (30 minutes) after it was
 # written, the same window merge-lock gives a lock.
 _cmd_check() {
-  local file="" repo="" dir="" flagged=0 want route outcome rule reason record
+  local file="" repo="" dir="" kind="" flagged=0 want route outcome rule reason record line
   while (($# > 0)); do
     case "$1" in
+      --kind)
+        (($# >= 2)) || _die "check: --kind needs a value"
+        kind="$2"
+        _valid_kind "${kind}" || _die "check: unknown --kind '${kind}'; one of: ${LENGTH_KINDS}"
+        shift 2
+        ;;
       --repo)
         (($# >= 2)) || _die "check: --repo needs a value"
         repo="$2"
@@ -920,6 +1098,21 @@ _cmd_check() {
   fi
   # exempt skips both the check and the visual review.
   [[ "${outcome}" == "exempt" ]] && return 0
+  # Measured again as the kind the caller derived from the real command, not the kind it was staged as.
+  if [[ -n "${kind}" ]]; then
+    _length_check "${kind}" "${file}" || case $? in
+      1)
+        while IFS= read -r line; do
+          [[ "${line}" == *' over by '* ]] && echo "gate-review: over length: ${line}" >&2
+        done <<<"${LENGTH_OUT}"
+        return 1
+        ;;
+      *)
+        echo "gate-review: length checker error, not a verdict on the text: ${LENGTH_OUT}" >&2
+        return 1
+        ;;
+    esac
+  fi
   want="$(_hash "${file}")"
   # Every key, not only the caller's: the hook calls check from the Bash
   # tool's cwd, which for `git -C <repo> commit -F ...` is some other repo.
@@ -1016,6 +1209,8 @@ case "${1:-}" in
   # The command that writes a check record for <file>; the Bash-tool hook
   # prints it when check blocks a Pangram-gated text for want of a record.
   hint) shift; _check_hint "${1:?usage: gate-review.sh hint <file>}" ;;
+  measure) shift; _cmd_measure "$@" ;;
+  personify-path) _personify_path ;;
   suspended) _cmd_suspended ;;
-  *) _die "usage: gate-review.sh {stage <name> <file>|open|hash <file>|check <file> [--repo owner/name] [--dir path]|hint <file>|suspended}" ;;
+  *) _die "usage: gate-review.sh {stage --kind <kind> <name> <file>|open|hash <file>|check [--kind <kind>] <file> [--repo owner/name] [--dir path]|measure --kind <kind> [--title T] [--repo owner/name] [--dir path] <body|hint <file>|personify-path|suspended}" ;;
 esac

@@ -122,6 +122,6 @@ printf '%s BLOCKED GATE-DIR WRITE (%s)\n' \
   echo '  git commit -F ~/.claude/gate-review/approved/<repo>-<branch>/<name>'
   echo ''
   echo 'To get something approved, stage it and ask him to review:'
-  echo '  gate-review.sh stage <label> <file> && gate-review.sh open'
+  echo '  gate-review.sh stage --kind <kind> <label> <file> && gate-review.sh open'
 } >&2
 exit 2
