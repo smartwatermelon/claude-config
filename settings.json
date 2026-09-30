@@ -40,7 +40,7 @@
     "git-pr-workflows@claude-code-workflows": false,
     "i-have-adhd@i-have-adhd": true,
     "incident-response@claude-code-workflows": false,
-    "personify@synced": false,
+    "personify@synced": true,
     "react-native-3d@smartwatermelon-marketplace": false,
     "security-compliance@claude-code-workflows": false,
     "slack@claude-plugins-official": false,
