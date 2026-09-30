@@ -27,7 +27,7 @@
 #   no message flag at all                         -> blocked; editor mode has
 #       no TTY here anyway, so it could never succeed
 #
-# PR and issue TITLES stay ungated -- one line by nature. `gh pr edit` is
+# PR and issue TITLES need no visual approval; they get a length check only. `gh pr edit` is
 # gated only when it carries a body flag, so label and title edits pass.
 # `gh pr review` follows the same rule: `--approve` alone passes, a review
 # body is gated.
@@ -207,9 +207,10 @@ _segments() {
 # only the segments that have a separator inside quotes. Those are verified
 # whole, in addition to the quote-blind pieces, so the fix adds checks and
 # removes none. A command with no quoted separator prints nothing here.
+# Args: 1 prints every segment (the title check); a second arg is split instead of the whole command.
 _quoted_segments() {
-  printf '%s\n' "${_scan}" | awk '
-    function emit() { if (flag) print seg; seg = ""; flag = 0 }
+  printf '%s\n' "${2-${_scan}}" | awk -v all="${1:-0}" '
+    function emit() { if (flag || all) print seg; seg = ""; flag = 0 }
     BEGIN { q = 0; hd = 0; np = 0; seg = ""; flag = 0 }
     {
       line = $0
@@ -283,7 +284,7 @@ _deny() {
     echo 'editor before it is written. To do that:'
     echo ''
     echo '  1. Write the text to a file.'
-    echo "  2. ${GATE} stage <label> <file>"
+    echo "  2. ${GATE} stage --kind <kind> <label> <file>"
     echo "  3. ${GATE} open"
     echo '     Run both from the same directory: staged items are kept per'
     echo '     repo and branch of the current directory, and open shows only'
@@ -328,7 +329,7 @@ _extract_path() {
 # ask gate-review. Every exit from here is a decision; falling through the end
 # without one would be a silent pass.
 _verify_segment() {
-  local seg="$1" surface="$2" inline_flags="$3" file_flags="$4" kind="$5" path
+  local seg="$1" surface="$2" inline_flags="$3" file_flags="$4" kind="$5" cap_kind="$6" path
 
   # An inline string cannot be hashed from the command line at all.
   if printf '%s\n' "${seg}" | grep -qE "[[:space:]](${inline_flags})([[:space:]]|=)"; then
@@ -342,7 +343,7 @@ _verify_segment() {
   fi
 
   _destination_for_segment "${seg}" "${kind}" "${surface}"
-  _verify_path "${path}" "${surface}"
+  _verify_path "${path}" "${surface}" "${cap_kind}"
 }
 
 # Work out where this segment's text will be published, from the command
@@ -548,7 +549,7 @@ _destination_for_segment() {
 # The shared tail of every file form: the path must be absolute, exist, and
 # hash to something approved.
 _verify_path() {
-  local path="$1" surface="$2"
+  local path="$1" surface="$2" cap_kind="$3"
   case "${path}" in
     /*) ;;
     *) _deny "path '${path}' is not absolute; git and this hook would resolve it differently" "${surface}" ;;
@@ -562,11 +563,11 @@ _verify_path() {
   [[ -z "${DEST_REPO:-}" ]] || dest+=(--repo "${DEST_REPO}")
   [[ -z "${DEST_DIR:-}" ]] || dest+=(--dir "${DEST_DIR}")
 
-  _check_one "${path}" "${surface}" "${dest[@]}"
+  _check_one "${path}" "${surface}" --kind "${cap_kind}" "${dest[@]}"
   # A github.com URL with no -R may be a flag value rather than the PR/issue
   # argument, so the checkout's own route must pass as well (_gh_destination).
   if [[ "${DEST_ALSO_CWD:-0}" -eq 1 && -n "${DEST_DIR:-}" ]]; then
-    _check_one "${path}" "${surface}" --dir "${DEST_DIR}"
+    _check_one "${path}" "${surface}" --kind "${cap_kind}" --dir "${DEST_DIR}"
   fi
 }
 
@@ -591,6 +592,8 @@ _check_one() {
   [[ -z "${err}" ]] || printf '%s\n' "${err}" | grep -vxF -- "${reason:-}" >&2 || true
   case "${reason}" in
     *'no Pangram check ran'*) _deny_unchecked "${reason}" "${path}" "${surface}" ;;
+    *'gate-review: over length:'*) _deny_length "${reason}" "${surface}" ;;
+    *'length checker error'*) _deny_checker "${reason}" "${surface}" ;;
     '') _deny "the bytes in ${path} do not match anything approved" "${surface}" ;;
     *) _deny "${reason}" "${surface}" ;;
   esac
@@ -612,6 +615,44 @@ _deny_unchecked() {
     echo 'PASS, FAIL and SKIPPED all leave a record; an error does not. Then'
     echo 're-run the same command. If these bytes were never approved, the'
     echo 'next attempt will say so.'
+  } >&2
+  exit 2
+}
+
+_deny_length() {
+  {
+    echo '🛑 BLOCKED: this text is over its length cap.'
+    echo ''
+    echo "  surface: $2"
+    echo "  reason:  $1"
+    echo ''
+    echo 'The cap is for the kind this command publishes, whatever kind the text'
+    echo 'was staged as. Shorten it, then stage, approve and publish the new text.'
+  } >&2
+  exit 2
+}
+
+_deny_unmeasured() {
+  {
+    echo '🛑 BLOCKED: the hook cannot measure this title against its length cap.'
+    echo ''
+    echo "  surface: $2"
+    echo "  reason:  $1"
+    echo ''
+    echo 'Give one --title as plain quoted text, then re-run the command.'
+  } >&2
+  exit 2
+}
+
+_deny_checker() {
+  {
+    echo '🛑 BLOCKED: the length checker could not run, so nothing was measured.'
+    echo ''
+    echo "  surface: $2"
+    echo "  reason:  $1"
+    echo ''
+    echo 'This is not a verdict on the text. Fix the checker (personify must be'
+    echo 'installed, with scripts/length_check.py), then re-run the same command.'
   } >&2
   exit 2
 }
@@ -640,8 +681,9 @@ _gql_has_body() {
 # are what gets posted. `-f/--raw-field` never expands `@`, so `-f body=@/x`
 # posts the literal string and is inline text like any other value.
 _verify_api_segment() {
-  local seg="$1" surface="API body" m flag val matches
+  local seg="$1" surface="API body" m flag val matches cap_kind
   _destination_for_segment "${seg}" api "${surface}"
+  cap_kind="$(_api_cap_kind "${seg}")"
   if _gql_has_body "${seg}"; then
     _deny "GraphQL mutation carries its body inline; use gh pr/issue comment --body-file" "${surface}"
   fi
@@ -658,8 +700,174 @@ _verify_api_segment() {
     esac
     [[ "${val}" == @* ]] ||
       _deny "text given inline; only -F body=@<absolute path> can be verified" "${surface}"
-    _verify_path "${val#@}" "${surface}"
+    _verify_path "${val#@}" "${surface}" "${cap_kind}"
   done <<<"${matches}"
+}
+
+# Endpoint words only, as in _gh_destination, so a body file path cannot pick the looser cap.
+_api_cap_kind() {
+  local eps ep kind=""
+  eps="$(printf '%s\n' "$1" |
+    grep -oE -- "(^|[[:space:]])[\"']?(https?://[^/[:space:]\"']+)?/?repos/[^[:space:]\"']*" || true)"
+  while IFS= read -r ep; do
+    [[ -n "${ep}" ]] || continue
+    if [[ "${ep}" =~ /pulls/[0-9]+/comments ]]; then
+      kind="${kind:-line-comment}"
+    else
+      kind="pr-comment"
+    fi
+  done <<<"${eps}"
+  printf '%s\n' "${kind:-pr-comment}"
+}
+
+# The cap kind for a gh pr/issue segment, from the verb gh_re matched.
+_gh_cap_kind() {
+  local verb
+  verb="$(printf '%s\n' "$1" | grep -oE -- "${gh_re}" | head -1 |
+    sed -E 's/.*(pr|issue)[[:space:]]+(create|comment|edit|review)([[:space:]].*)?$/\1 \2/')"
+  case "${verb}" in
+    'pr create' | 'pr edit') printf 'pr\n' ;;
+    'issue create' | 'issue edit') printf 'issue\n' ;;
+    *) printf 'pr-comment\n' ;;
+  esac
+}
+
+# One line per shell word of a segment: OK or BAD, the raw word, and the word as bash would pass it.
+_words() {
+  printf '%s\n' "$1" | awk -v bt="${bt}" '
+    function out() {
+      if (inword) printf "%s\037%s\037%s\n", (bad ? "BAD" : "OK"), raw, dec
+      inword = 0; bad = 0; raw = ""; dec = ""
+    }
+    {
+      n = length($0); q = 0; i = 1; inword = 0; bad = 0; raw = ""; dec = ""
+      while (i <= n) {
+        c = substr($0, i, 1); nx = substr($0, i + 1, 1)
+        if (q == 1) { raw = raw c; if (c == "\047") q = 0; else dec = dec c; i++; continue }
+        if (q == 2) {
+          raw = raw c
+          if (c == "\\") {
+            raw = raw nx
+            dec = dec ((nx == "$" || nx == bt || nx == "\"" || nx == "\\") ? nx : c nx)
+            i += 2; continue
+          }
+          if (c == "\"") { q = 0; i++; continue }
+          if (c == "$" || c == bt) bad = 1
+          dec = dec c; i++; continue
+        }
+        if (c == " " || c == "\t") { out(); i++; continue }
+        if (c == "~" && raw == "") bad = 1
+        inword = 1; raw = raw c
+        if (c == "\\") { if (nx == "") bad = 1; raw = raw nx; dec = dec nx; i += 2; continue }
+        if (c == "\047") { q = 1; i++; continue }
+        if (c == "\"") { q = 2; i++; continue }
+        if (c == "$" || c == bt || c == "*" || c == "?" || c == "[" || c == "{") bad = 1
+        dec = dec c; i++
+      }
+      if (q) bad = 1
+      out()
+    }'
+}
+
+# Measure the --title of one gh pr/issue create|edit segment. A title the words cannot pin down is denied.
+_check_titles() {
+  local seg="$1" kind="$2" surface="PR/issue title" tag raw dec want=0 count=0
+  local value="" value_bad=0 problem="" words
+  words="$(_words "${seg}")"
+  while IFS=$'\037' read -r tag raw dec; do
+    if ((want)); then
+      want=0
+      value="${dec}"
+      [[ "${tag}" == "OK" ]] || value_bad=1
+      continue
+    fi
+    [[ "${tag}" == "OK" ]] || dec="${raw}"
+    # A word holding a whole command (bash -c "gh pr edit --title ...") is checked as one.
+    if [[ "${tag}" == "OK" && "${dec}" == *[[:space:]]* ]] && printf '%s\n' "${dec}" | grep -qE "${gh_re}"; then
+      _check_titles_in "${dec}"
+    fi
+    case "${dec}" in
+      -t | --title)
+        count=$((count + 1))
+        want=1
+        ;;
+      -t=* | --title=*)
+        count=$((count + 1))
+        value="${dec#*=}"
+        [[ "${tag}" == "OK" ]] || value_bad=1
+        ;;
+      --*) ;;
+      -*)
+        [[ "${dec}" =~ ^-[A-Za-z]*t ]] && problem="attached or combined -t ('${raw}'); write -t <title> or --title <title>"
+        ;;
+      *) ;;
+    esac
+  done <<<"${words}"
+  ((count > 0)) || [[ -n "${problem}" ]] || return 0
+  _suspended && exit 0
+  [[ -z "${problem}" ]] || _deny_unmeasured "${problem}" "${surface}"
+  ((count == 1)) || _deny_unmeasured "more than one title flag; gh uses the last, and the hook measures one; give one --title" "${surface}"
+  ((value_bad == 0)) || _deny_unmeasured "the title holds \$, a backtick, a glob, or an unclosed quote, so it cannot be measured; give it as plain quoted text" "${surface}"
+  [[ -x "${GATE}" ]] || _deny_checker "gate-review.sh missing at ${GATE}" "${surface}"
+  # Titles follow the rest of the gate: an `exempt` destination is not
+  # measured. Routing only relaxes, so a destination the hook cannot pin down
+  # here (any cd in the command, or one _destination_for_segment would deny)
+  # is not routed, and the title is measured.
+  local where="" drepo="" ddir="" dalso=0
+  if ((CD_WORDS == 0)); then
+    where="$(
+      QUOTED_PASS=0
+      _destination_for_segment "${seg}" gh "${surface}" >/dev/null 2>&1 &&
+        printf '%s\037%s\037%s\n' "${DEST_REPO}" "${DEST_DIR}" "${DEST_ALSO_CWD}"
+    )" || where=""
+  fi
+  if [[ -z "${where}" ]]; then
+    _measure_title "${kind}" "${value}" "${surface}"
+    return 0
+  fi
+  IFS=$'\037' read -r drepo ddir dalso <<<"${where}"
+  local -a title_route=()
+  [[ -z "${drepo}" ]] || title_route+=(--repo "${drepo}")
+  [[ -z "${ddir}" ]] || title_route+=(--dir "${ddir}")
+  _measure_title "${kind}" "${value}" "${surface}" "${title_route[@]}"
+  # As in _verify_path: a github.com URL with no -R may not be the argument,
+  # so the checkout's own route must pass too.
+  if [[ "${dalso}" == 1 && -n "${ddir}" ]]; then
+    _measure_title "${kind}" "${value}" "${surface}" --dir "${ddir}"
+  fi
+}
+
+# One `gate-review.sh measure` call for a title; every outcome but 0 denies.
+# Exit 1 with no "over by" line is a usage error, not an overrun, so it is
+# labeled a checker error like any other failure.
+_measure_title() {
+  local kind="$1" value="$2" surface="$3" err rc=0 line reason="" over
+  shift 3
+  err="$("${GATE}" measure --kind "${kind}" --title="${value}" "$@" </dev/null 2>&1 >/dev/null)" || rc=$?
+  ((rc != 0)) || return 0
+  while IFS= read -r line; do
+    case "${line}" in
+      gate-review:* | gate-route:*) reason="${line}" ;;
+      *) ;;
+    esac
+  done <<<"${err}"
+  over="$(printf '%s\n' "${err}" | grep ' over by ' || true)"
+  if ((rc == 1)) && [[ -n "${over}" ]]; then
+    _deny_length "over length: ${over//$'\n'/; }" "${surface}"
+  fi
+  _deny_checker "${reason:-length checker error: gate-review.sh measure exited ${rc} with no message}" "${surface}"
+}
+
+_check_titles_in() {
+  local seg tkind segs
+  segs="$(_quoted_segments 1 "$1")"
+  while IFS= read -r seg; do
+    [[ -n "${seg}" ]] || continue
+    printf '%s\n' "${seg}" | grep -qE "${gh_re}" || continue
+    tkind="$(_gh_cap_kind "${seg}")"
+    [[ "${tkind}" == "pr" || "${tkind}" == "issue" ]] || continue
+    _check_titles "${seg}" "${tkind}"
+  done <<<"${segs}"
 }
 
 # A time-boxed suspension (gate-review.sh suspended; Andrew writes the file by
@@ -757,7 +965,7 @@ _wrapped_verb_re="(^|[^[:alnum:]_.-])(git[[:space:]](.*[[:space:]])?commit([[:sp
 _wrapper_re="(^|[^[:alnum:]_.-])(xargs([[:space:]]|$)|env[[:space:]]+([^[:space:]]+[[:space:]]+)*(-C|--chdir)([[:space:]]|=|/))"
 
 _gate_segment() {
-  local seg="$1" pre
+  local seg="$1" pre cap_kind
   if printf '%s\n' "${seg}" | grep -qE "${_wrapped_verb_re}"; then
     # Only a wrapper before the verb counts: `git commit -F f | xargs echo` is
     # not wrapped.
@@ -769,13 +977,13 @@ _gate_segment() {
   fi
   if printf '%s\n' "${seg}" | grep -qE "${commit_re}"; then
     _suspended && exit 0
-    _verify_segment "${seg}" "commit message" '-m|--message' '-F|--file' commit
+    _verify_segment "${seg}" "commit message" '-m|--message' '-F|--file' commit commit
   elif printf '%s\n' "${seg}" | grep -qE "${gh_re}"; then
-    # Titles and labels carry no body text. Gate only when a body flag is
-    # present, per the locked decision that PR titles stay ungated.
+    # Titles get a length check (_check_titles) and still no visual approval; only a body flag gates here.
     if printf '%s\n' "${seg}" | grep -qE '[[:space:]](-b|--body|-F|--body-file)([[:space:]]|=)'; then
       _suspended && exit 0
-      _verify_segment "${seg}" "PR/issue body" '-b|--body' '-F|--body-file' gh
+      cap_kind="$(_gh_cap_kind "${seg}")"
+      _verify_segment "${seg}" "PR/issue body" '-b|--body' '-F|--body-file' gh "${cap_kind}"
     fi
   elif printf '%s\n' "${seg}" | grep -qE "${api_re}"; then
     if _api_is_gated "${seg}"; then
@@ -801,5 +1009,8 @@ while IFS= read -r seg; do
   [[ -n "${seg}" ]] || continue
   _gate_segment "${seg}"
 done <<<"${quoted}"
+
+# Titles, over whole quote-aware segments so a quoted separator or newline stays inside its title.
+_check_titles_in "${_scan}"
 
 exit 0
