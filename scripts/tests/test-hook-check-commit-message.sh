@@ -5,6 +5,13 @@ set -euo pipefail
 unset CDPATH
 
 HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hook-check-commit-message.py"
+
+# The hook appends every blocked message to ${HOME}/.claude/blocked-commands.log.
+# A sandbox HOME keeps this suite's deliberate bad messages out of the real log.
+SANDBOX_HOME="$(mktemp -d)"
+trap 'rm -rf "${SANDBOX_HOME}"' EXIT
+export HOME="${SANDBOX_HOME}"
+mkdir -p "${HOME}/.claude"
 pass=0
 fail=0
 
@@ -107,7 +114,7 @@ check "Fail-open: backtick substitution" 0 "${inp}"
 # The approval gate routes every commit through `-F <approved file>`, so a
 # checker that only reads -m no longer sees any commit made the normal way.
 MSGDIR="$(mktemp -d)"
-trap 'rm -rf "${MSGDIR}"' EXIT
+trap 'rm -rf "${MSGDIR}" "${SANDBOX_HOME}"' EXIT
 printf 'not a conventional summary\n\nbody text\n' >"${MSGDIR}/bad.txt"
 printf 'fix(gate): a conventional summary\n\nbody text\n' >"${MSGDIR}/good.txt"
 printf '\n\nfix: summary after blank lines\n' >"${MSGDIR}/leading-blank.txt"

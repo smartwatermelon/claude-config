@@ -40,6 +40,11 @@ assert_false() {
   fi
 }
 
+# The hooks under test, resolved relative to this file. ~/.claude/hooks holds
+# symlinks into the main checkout, so reading from there tested main's copy
+# from any worktree, and failed outright where nothing is installed (CI).
+HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hooks"
+
 # Source just the function definitions we need
 # Extract and evaluate the function definitions without executing the main script.
 #
@@ -50,10 +55,10 @@ assert_false() {
 # production hook, so the source failed with "No such file or directory".
 # We source lib-review-issues.sh explicitly below with the correct absolute path
 # so `is_security_critical` is available for the test block that uses it.
-eval "$(sed -n '/^# --- File Classification Functions/,/^# --- Diff Summarization Functions/p' ~/.claude/hooks/pre-merge-review.sh | grep -v '^# ---' || true)"
-eval "$(sed -n '/^# --- Diff Summarization Functions/,/^# --- Non-Blocking Issue Functions/p' ~/.claude/hooks/pre-merge-review.sh | grep -v '^# ---' || true)"
+eval "$(sed -n '/^# --- File Classification Functions/,/^# --- Diff Summarization Functions/p' "${HOOKS_DIR}"/pre-merge-review.sh | grep -v '^# ---' || true)"
+eval "$(sed -n '/^# --- Diff Summarization Functions/,/^# --- Non-Blocking Issue Functions/p' "${HOOKS_DIR}"/pre-merge-review.sh | grep -v '^# ---' || true)"
 # shellcheck source=/dev/null
-source ~/.claude/hooks/lib-review-issues.sh
+source "${HOOKS_DIR}"/lib-review-issues.sh
 
 echo "Running pre-merge-review.sh function tests..."
 echo ""
@@ -69,7 +74,7 @@ echo "Verifying safe arithmetic patterns (set -e compatible):"
 # line-based), and with 2+ levels of nesting the match stops at the first `))`.
 # Captured into a variable rather than piped into `grep -q`: under pipefail,
 # `grep -q` exiting early can SIGPIPE the producer and turn a hit into a miss.
-arith_exprs="$(grep -oE '\(\(([^)]|\)[^)])*\)\)' ~/.claude/hooks/pre-merge-review.sh || true)"
+arith_exprs="$(grep -oE '\(\(([^)]|\)[^)])*\)\)' "${HOOKS_DIR}"/pre-merge-review.sh || true)"
 if grep -qE '\+\+|--|\+=' <<<"${arith_exprs}"; then
   echo -e "${RED}✗${NC} Found unsafe arithmetic operators (++, --, +=)"
   TESTS_FAILED=$((TESTS_FAILED + 1))
