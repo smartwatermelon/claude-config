@@ -14,9 +14,21 @@
 #
 # Run: bats ~/.claude/tests/test_gh_binary_wrapper.bats
 
-GH_WRAPPER="${HOME}/.local/bin/gh"
+# ~/.local/bin/gh is a symlink to dotfiles' bash/gh-wrapper.sh. GH_WRAPPER_LIB
+# overrides it, as in scripts/tests/, so a machine with no dotfiles install (a
+# CI runner) can point at a dotfiles checkout instead.
+GH_WRAPPER="${GH_WRAPPER_LIB:-${HOME}/.local/bin/gh}"
 
 setup() {
+  # Fail loudly when the wrapper is missing. Without this, the tests that
+  # assert the review did NOT run pass vacuously: `run` gets exit 127, and a
+  # command that was never found never calls the review either.
+  if [[ ! -x "${GH_WRAPPER}" ]]; then
+    echo "FATAL: gh wrapper not found or not executable: ${GH_WRAPPER}" >&2
+    echo "Set GH_WRAPPER_LIB to a dotfiles checkout's bash/gh-wrapper.sh." >&2
+    return 1
+  fi
+
   # GH_TOKEN must be unset for the whole test file. The wrapper refuses to run
   # whenever GH_TOKEN is set and it cannot resolve that token to a login
   # (the GH_TOKEN identity gate); resolution calls a real `gh api user`, which the

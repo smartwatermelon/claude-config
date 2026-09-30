@@ -14,6 +14,19 @@
 
 HOOK="${BATS_TEST_DIRNAME}/../scripts/hook-block-api-merge.sh"
 
+# Every blocked command appends to ${HOME}/.claude/blocked-commands.log. A
+# sandbox HOME keeps these tests out of the real log, and gives a machine with
+# no ~/.claude (a CI runner) the directory the hook writes into.
+setup() {
+  SANDBOX_HOME="$(mktemp -d)"
+  export HOME="${SANDBOX_HOME}"
+  mkdir -p "${HOME}/.claude"
+}
+
+teardown() {
+  rm -rf "${SANDBOX_HOME}"
+}
+
 # Build a Claude Code PreToolUse JSON payload for a Bash tool call.
 # Uses jq to properly escape special characters (quotes, backslashes, etc.)
 # in the command string so the JSON is always valid.

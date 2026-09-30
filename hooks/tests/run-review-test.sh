@@ -134,11 +134,26 @@ assert_eq() {
 TMPDIR_TEST="$(mktemp -d)"
 REPO_DIR="${TMPDIR_TEST}/testrepo"
 
+# Sandbox HOME. REVIEW_LOG keeps the per-repo log out of production, but
+# run-review.sh still writes its global pointer to
+# ${HOME}/.claude/last-review-result.log, so every run of this suite overwrote
+# the real one. It also decides whether adversarial-reviewer runs by finding
+# the agent under ${HOME}/.claude/plugins/marketplaces, so the result depended
+# on what the machine had installed; a CI runner has nothing there. The stub
+# is only ever found, never read: the mock claude CLI answers for every agent.
+export HOME="${TMPDIR_TEST}/home"
+mkdir -p "${HOME}/.claude/plugins/marketplaces/stub/agents"
+: >"${HOME}/.claude/plugins/marketplaces/stub/agents/adversarial-reviewer.md"
+
 setup_repo() {
   rm -rf "${REPO_DIR}"
   mkdir -p "${REPO_DIR}"
   cd "${REPO_DIR}"
-  git init -q
+  # Name the branch: tests below use main~1, and with the sandbox HOME no
+  # user config supplies init.defaultBranch. The one-token spelling matters:
+  # dotfiles' exported git() function reads `-b main` as an init directory
+  # named "main", fails to cd there, and returns 1 under set -e.
+  git init -q --initial-branch=main
   git config user.email "test@test.com"
   git config user.name "Test"
   # Create and commit a base file

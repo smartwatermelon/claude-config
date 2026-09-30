@@ -15,7 +15,9 @@
 # gh() lives in gh-wrapper.sh; functions.sh only sources it (and keeps a
 # fail-closed stub for when it is missing). Resolved here, at file load, from
 # the real HOME -- the tests swap HOME for a sandbox before loading.
-GH_WRAPPER_SH="${HOME}/.config/bash/gh-wrapper.sh"
+# GH_WRAPPER_LIB overrides it, as in scripts/tests/, so a machine with no
+# dotfiles install (a CI runner) can point at a dotfiles checkout instead.
+GH_WRAPPER_SH="${GH_WRAPPER_LIB:-${HOME}/.config/bash/gh-wrapper.sh}"
 
 setup() {
   # GH_TOKEN must be unset for the whole test file, not just clipped from one

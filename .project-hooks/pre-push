@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Project-local pre-push extension (see dotfiles git/hooks/pre-push,
+# run_project_extensions). Runs the full test suite so a red test is caught
+# before it reaches main, which is how twistedmelonman/claude-config#638 was
+# found: nothing ran these tests at all.
+#
+# --fail-fast because the full run takes several minutes and one failure
+# already blocks the push. CI runs the same runner without it.
+set -uo pipefail
+unset CDPATH
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+echo "Running test suite (scripts/run-tests.sh --fail-fast)..."
+exec "${BASH}" "${REPO_ROOT}/scripts/run-tests.sh" --fail-fast
