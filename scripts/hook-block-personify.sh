@@ -104,8 +104,18 @@ _optval="(\"[^\"]*\"[[:space:]]+|'[^']*'[[:space:]]+|[^-][^|;&${bt}[:space:]]*[[
 # approximated. One known miss: a shift inside arithmetic (`$((1<<2))`) reads
 # as a heredoc operator, and no line ever closes it, so continuations after
 # that line are not joined.
+#
+# Every awk scanner in this file runs under LC_ALL=C. macOS /usr/bin/awk
+# (version 20200816) counts and cuts strings by byte, but in a UTF-8 locale its
+# regex match decodes characters. A scanner that walks a line one byte at a
+# time hands the match half of a multibyte character (a quoted ✗ or emoji),
+# awk dies with "towc: multibyte conversion failure", set -e exits 2, and the
+# command is blocked. Byte mode loses nothing: every character the scanners
+# look for is ASCII, and UTF-8 never uses an ASCII byte inside a multibyte
+# character, so the bytes pass through unchanged.
+# test-hook-personify-multibyte.sh covers this.
 _join_continuations() {
-  awk '
+  LC_ALL=C awk '
     function flush() { print buf; buf = "" }
     BEGIN { q = 0; hd = 0; np = 0; buf = ""; joined = 0 }
     {
@@ -209,7 +219,7 @@ _segments() {
 # removes none. A command with no quoted separator prints nothing here.
 # Args: 1 prints every segment (the title check); a second arg is split instead of the whole command.
 _quoted_segments() {
-  printf '%s\n' "${2-${_scan}}" | awk -v all="${1:-0}" '
+  printf '%s\n' "${2-${_scan}}" | LC_ALL=C awk -v all="${1:-0}" '
     function emit() { if (flag || all) print seg; seg = ""; flag = 0 }
     BEGIN { q = 0; hd = 0; np = 0; seg = ""; flag = 0 }
     {
@@ -734,7 +744,7 @@ _gh_cap_kind() {
 
 # One line per shell word of a segment: OK or BAD, the raw word, and the word as bash would pass it.
 _words() {
-  printf '%s\n' "$1" | awk -v bt="${bt}" '
+  printf '%s\n' "$1" | LC_ALL=C awk -v bt="${bt}" '
     function out() {
       if (inword) printf "%s\037%s\037%s\n", (bad ? "BAD" : "OK"), raw, dec
       inword = 0; bad = 0; raw = ""; dec = ""
