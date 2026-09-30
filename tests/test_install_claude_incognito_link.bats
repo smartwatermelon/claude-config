@@ -17,6 +17,10 @@
 # Run: bats ~/Developer/claude-config/tests/test_install_claude_incognito_link.bats
 
 setup() {
+  # install.sh exits at its Darwin check on any other OS, so off macOS every
+  # case would fail on the guard rather than on what it tests. The pre-push
+  # hook still runs these on macOS.
+  [[ "$(uname -s)" == "Darwin" ]] || skip "install.sh is macOS-only"
   TMPDIR_TEST="$(mktemp -d)"
   FAKE_REPO="${TMPDIR_TEST}/repo"
   FAKE_HOME="${TMPDIR_TEST}/home"
