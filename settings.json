@@ -40,6 +40,7 @@
     "git-pr-workflows@claude-code-workflows": false,
     "i-have-adhd@i-have-adhd": true,
     "incident-response@claude-code-workflows": false,
+    "personify@synced": false,
     "react-native-3d@smartwatermelon-marketplace": false,
     "security-compliance@claude-code-workflows": false,
     "slack@claude-plugins-official": false,
@@ -95,35 +96,7 @@
   "feedbackDrafts": "off",
   "gitAttribution": true,
   "hooks": {
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "command": "~/.config/iterm2/cc-status",
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "PermissionRequest": [
-      {
-        "hooks": [
-          {
-            "command": "~/.config/iterm2/cc-status",
-            "type": "command"
-          }
-        ]
-      }
-    ],
     "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "command": "~/.config/iterm2/cc-status",
-            "type": "command"
-          }
-        ]
-      },
       {
         "hooks": [
           {
@@ -170,24 +143,6 @@
           }
         ],
         "matcher": "EnterWorktree"
-      },
-      {
-        "hooks": [
-          {
-            "command": "~/.config/iterm2/cc-status",
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "command": "~/.config/iterm2/cc-status",
-            "type": "command"
-          }
-        ]
       }
     ],
     "SessionStart": [
@@ -199,14 +154,6 @@
           }
         ],
         "matcher": ""
-      },
-      {
-        "hooks": [
-          {
-            "command": "~/.config/iterm2/cc-status",
-            "type": "command"
-          }
-        ]
       }
     ],
     "Stop": [
@@ -218,24 +165,6 @@
           }
         ],
         "matcher": ""
-      },
-      {
-        "hooks": [
-          {
-            "command": "~/.config/iterm2/cc-status",
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "StopFailure": [
-      {
-        "hooks": [
-          {
-            "command": "~/.config/iterm2/cc-status",
-            "type": "command"
-          }
-        ]
       }
     ],
     "SubagentStop": [
@@ -247,24 +176,6 @@
           }
         ],
         "matcher": ""
-      },
-      {
-        "hooks": [
-          {
-            "command": "~/.config/iterm2/cc-status",
-            "type": "command"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "command": "~/.config/iterm2/cc-status",
-            "type": "command"
-          }
-        ]
       }
     ]
   },
