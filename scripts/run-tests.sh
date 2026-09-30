@@ -37,6 +37,18 @@ done
 
 REPO_ROOT="${RUN_TESTS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
+# git exports GIT_DIR (and friends) into hooks. Inherited by a suite, it points
+# every `git init` and `git commit` meant for a temp repo at THIS repo instead:
+# the first pre-push run set core.bare=true in the shared .git/config and
+# committed a fixture onto the branch being pushed.
+if ! git_vars="$(git rev-parse --local-env-vars)"; then
+  echo "run-tests.sh: cannot list git's repo-local variables to clear them" >&2
+  exit 2
+fi
+while IFS= read -r git_var; do
+  unset "${git_var}"
+done <<<"${git_vars}"
+
 # macOS ships bash 3.2, and the shell suites need 4.4+. "${BASH}", not a bare
 # `bash`: a git hook's PATH can resolve `bash` to 3.2 even when this script
 # itself is running under 5. Same approach as dotfiles' .project-hooks/pre-push.

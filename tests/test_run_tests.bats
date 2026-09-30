@@ -118,6 +118,15 @@ fail_sh() { printf 'echo marker-%s; exit 1\n' "$1" >"${FAKE}/scripts/tests/test-
   [ "${status}" -eq 0 ]
 }
 
+@test "repo-local git variables from a hook environment do not reach suites" {
+  # git exports these into hooks; a suite that inherits GIT_DIR runs its temp
+  # repo's git commands against the pushing repo instead.
+  printf '[ -z "${GIT_DIR:-}" ] && [ -z "${GIT_WORK_TREE:-}" ] && [ -z "${GIT_INDEX_FILE:-}" ]\n' \
+    >"${FAKE}/scripts/tests/test-b.sh"
+  run env GIT_DIR=/nonexistent/.git GIT_WORK_TREE=/nonexistent GIT_INDEX_FILE=/nonexistent/index "${RUNNER}"
+  [ "${status}" -eq 0 ]
+}
+
 @test "no suites found is an error, not a pass" {
   run "${RUNNER}"
   [ "${status}" -eq 2 ]
