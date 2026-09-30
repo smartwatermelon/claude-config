@@ -144,6 +144,17 @@ REPO_DIR="${TMPDIR_TEST}/testrepo"
 export HOME="${TMPDIR_TEST}/home"
 mkdir -p "${HOME}/.claude/plugins/marketplaces/stub/agents"
 : >"${HOME}/.claude/plugins/marketplaces/stub/agents/adversarial-reviewer.md"
+# Seed a fresh `haiku` alias probe result, so no test below spends a mock
+# CLI call on the probe. Tests of the probe itself rewrite or remove this file.
+HAIKU_CACHE="${HOME}/.claude/cache/review-haiku-alias"
+# seed_haiku_cache <fresh|stale> <model ID>
+seed_haiku_cache() {
+  local ts=0
+  [[ "$1" == "fresh" ]] && ts=$(date +%s)
+  mkdir -p "${HAIKU_CACHE%/*}"
+  printf '%s %s\n' "${ts}" "$2" >"${HAIKU_CACHE}"
+}
+seed_haiku_cache fresh "claude-haiku-4-5-20251001"
 
 setup_repo() {
   rm -rf "${REPO_DIR}"
@@ -1454,10 +1465,10 @@ assert_contains \
 # adversarial-reviewer previously rode the same REVIEW_MODEL as code-reviewer
 # via a shared MODEL_ARGS global (Haiku on commit-mode, the highest-frequency
 # path). run-review.sh now resolves a separate ADVERSARIAL_MODEL_ARGS,
-# defaulting to claude-sonnet-4-6 regardless of mode, overridable via
+# defaulting to claude-sonnet-5-5 regardless of mode, overridable via
 # `git config review.adversarialModel`. invoke_agent() takes model args as a
 # per-call parameter instead of reading a shared global, so this test asserts
-# (a) code-reviewer still gets the mode-based default (Haiku, unaffected by
+# (a) code-reviewer still gets the mode-based default (unaffected by
 # the adversarialModel override) and (b) adversarial-reviewer gets the
 # configured override, in the same commit-mode run.
 # =========================================================
@@ -1503,8 +1514,110 @@ assert_contains \
 
 assert_contains \
   "code-reviewer still uses its own mode-based default model, unaffected by review.adversarialModel (issue #235)" \
-  "--agent comprehensive-review:comprehensive-review-code-reviewer -p --model claude-haiku-4-5-20251001" \
+  "--agent comprehensive-review:comprehensive-review-code-reviewer -p --model claude-sonnet-5-5" \
   "${invocation_args23}"
+
+# =========================================================
+# TEST 23b: commit-mode code-reviewer model follows the `haiku` alias probe
+#
+# Commit mode uses Haiku 5.5 or newer when the CLI's `haiku` alias resolves
+# to one, and claude-sonnet-5-5 otherwise. The probe result is cached for a
+# day. The mock answers the probe (a call with `--model haiku` and no
+# --agent) with a JSON envelope whose modelUsage names PROBE23B_MODEL.
+# =========================================================
+echo ""
+echo "=== Test 23b: commit-mode model follows the haiku alias probe ==="
+
+MOCK23B_DIR="${TMPDIR_TEST}/mock23b"
+mkdir -p "${MOCK23B_DIR}"
+MOCK23B_ARGS_FILE="${MOCK23B_DIR}/invocation-args.txt"
+cat >"${MOCK23B_DIR}/claude" <<MOCK
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  echo "mock-claude 0.0.0-test"
+  exit 0
+fi
+if [[ " \$* " == *" --model haiku "* && " \$* " != *" --agent "* ]]; then
+  echo "PROBE" >>"${MOCK23B_ARGS_FILE}"
+  if [[ -n "\${PROBE23B_MODEL:-}" ]]; then
+    printf '{"is_error":false,"modelUsage":{"%s":{}}}\n' "\${PROBE23B_MODEL}"
+  else
+    echo "not json"
+  fi
+  exit 0
+fi
+printf '%s\n' "\$*" >>"${MOCK23B_ARGS_FILE}"
+echo "VERDICT: PASS"
+exit 0
+MOCK
+chmod +x "${MOCK23B_DIR}/claude"
+
+# run23b <probe reply model, "" for a non-JSON reply>: one commit-mode review.
+run23b() {
+  rm -f "${MOCK23B_ARGS_FILE}"
+  setup_repo
+  stage_small_change
+  cd "${REPO_DIR}"
+  PROBE23B_MODEL="$1" REVIEW_LOG="${TMPDIR_TEST}/test23b-review.log" \
+    CLAUDE_CLI="${MOCK23B_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+  cd - >/dev/null
+  args23b="$(cat "${MOCK23B_ARGS_FILE}" 2>/dev/null || echo "")"
+}
+CR23B="--agent comprehensive-review:comprehensive-review-code-reviewer -p --model"
+
+seed_haiku_cache fresh "claude-haiku-5-5"
+run23b "claude-haiku-4-5-20251001"
+assert_contains "fresh cache naming Haiku 5.5: code-reviewer uses it" \
+  "${CR23B} claude-haiku-5-5 " "${args23b}"
+assert_not_contains "fresh cache: no probe call" "PROBE" "${args23b}"
+
+seed_haiku_cache stale "claude-haiku-4-5-20251001"
+run23b "claude-haiku-5-5"
+assert_contains "stale cache, probe says Haiku 5.5: code-reviewer uses it" \
+  "${CR23B} claude-haiku-5-5 " "${args23b}"
+probes23b=$(grep -c '^PROBE$' <<<"${args23b}" || true)
+assert_eq "stale cache: probed exactly once" "1" "${probes23b}"
+cached23b=$(cut -d' ' -f2 "${HAIKU_CACHE}" || true)
+assert_eq "probe result is written to the cache" "claude-haiku-5-5" "${cached23b}"
+
+seed_haiku_cache stale "claude-haiku-5-5"
+run23b "claude-haiku-4-5-20251001"
+assert_contains "probe says Haiku 4.5: code-reviewer falls back to Sonnet 5.5" \
+  "${CR23B} claude-sonnet-5-5 " "${args23b}"
+assert_not_contains "Haiku 4.5 is never used" "claude-haiku-4-5" "${args23b}"
+
+rm -f "${HAIKU_CACHE}"
+run23b ""
+assert_contains "no cache, probe reply is not JSON: falls back to Sonnet 5.5" \
+  "${CR23B} claude-sonnet-5-5 " "${args23b}"
+cache23b=no
+[[ -f "${HAIKU_CACHE}" ]] && cache23b=yes
+assert_eq "a failed probe is cached too" "yes" "${cache23b}"
+
+seed_haiku_cache fresh "claude-haiku-5-20261015"
+run23b ""
+assert_contains "a date suffix is not read as a minor version (Haiku 5.0): Sonnet 5.5" \
+  "${CR23B} claude-sonnet-5-5 " "${args23b}"
+
+seed_haiku_cache fresh "claude-haiku-6"
+run23b ""
+assert_contains "Haiku 6 counts as newer than 5.5" "${CR23B} claude-haiku-6 " "${args23b}"
+
+seed_haiku_cache stale "claude-haiku-4-5-20251001"
+rm -f "${MOCK23B_ARGS_FILE}"
+setup_repo
+stage_small_change
+cd "${REPO_DIR}"
+git config review.model "pinned-model-id"
+PROBE23B_MODEL="claude-haiku-5-5" REVIEW_LOG="${TMPDIR_TEST}/test23b-review.log" \
+  CLAUDE_CLI="${MOCK23B_DIR}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>/dev/null || true
+git config --unset review.model 2>/dev/null || true
+cd - >/dev/null
+args23b="$(cat "${MOCK23B_ARGS_FILE}" 2>/dev/null || echo "")"
+assert_contains "git config review.model wins over the probe" "${CR23B} pinned-model-id " "${args23b}"
+assert_not_contains "git config review.model: no probe call" "PROBE" "${args23b}"
+
+seed_haiku_cache fresh "claude-haiku-4-5-20251001"
 
 # =========================================================
 # TEST 24: extract_file_header_context surfaces stated scope
