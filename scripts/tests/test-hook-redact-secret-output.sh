@@ -15,6 +15,14 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOOK="${SCRIPT_DIR}/hook-redact-secret-output.py"
 
+# The hook appends every redaction to ${HOME}/.claude/blocked-commands.log. A
+# sandbox HOME keeps this suite out of the real log, and gives a machine with
+# no ~/.claude (a CI runner) the directory the hook writes into.
+SANDBOX_HOME="$(mktemp -d)"
+trap 'rm -rf "${SANDBOX_HOME}"' EXIT
+export HOME="${SANDBOX_HOME}"
+mkdir -p "${HOME}/.claude"
+
 pass=0
 fail=0
 

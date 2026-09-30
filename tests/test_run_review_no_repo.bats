@@ -21,6 +21,17 @@ setup() {
   NOTAREPO="$(mktemp -d)"
   export NOTAREPO
 
+  # run-review.sh checks for the claude CLI before it checks for a repo. With
+  # no CLI at ${HOME}/.local/bin/claude (a CI runner) it exits early for that
+  # reason instead, and the non-zero-exit and no-artifact tests pass without
+  # reaching the code they are about. A stub gets past the CLI check; it must
+  # never run, since the script should refuse before calling it.
+  MOCK_DIR="$(mktemp -d)"
+  export MOCK_DIR
+  printf '#!/usr/bin/env bash\nexit 0\n' >"${MOCK_DIR}/claude"
+  chmod +x "${MOCK_DIR}/claude"
+  export CLAUDE_CLI="${MOCK_DIR}/claude"
+
   # mktemp -d can land under a path that is itself inside a repo; walk up and
   # confirm, so a false pass is impossible if TMPDIR ever moves.
   if git -C "${NOTAREPO}" rev-parse --git-dir >/dev/null 2>&1; then
@@ -29,7 +40,7 @@ setup() {
 }
 
 teardown() {
-  rm -rf "${NOTAREPO}"
+  rm -rf "${NOTAREPO}" "${MOCK_DIR}"
 }
 
 # Helper: feed a well-formed diff on stdin from outside any repo. The diff is

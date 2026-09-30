@@ -44,6 +44,12 @@ jq -n '{type:"result",subtype:"success",is_error:false,
 EOF
   chmod +x "${MOCK_DIR}/claude"
   export CLAUDE_CLI="${MOCK_DIR}/claude"
+
+  # run-review.sh writes a global pointer to ${HOME}/.claude/last-review-result.log.
+  # Without a sandbox HOME every run overwrote the real pointer, the file the
+  # post-commit check reads to confirm a review ran.
+  export HOME="${MOCK_DIR}/home"
+  mkdir -p "${HOME}/.claude"
 }
 
 teardown() {
