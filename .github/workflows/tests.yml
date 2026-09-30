@@ -1,0 +1,42 @@
+name: Tests
+
+# Runs the same suite as .project-hooks/pre-push. The hook only catches what a
+# local push runs; this catches a push made without it, and red on main after a
+# merge (twistedmelonman/claude-config#638).
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # Several suites exercise dotfiles' gh-wrapper.sh through GH_WRAPPER_LIB.
+      # Tracks dotfiles main rather than a pinned SHA on purpose: the installed
+      # system runs against main, so a dotfiles change that breaks these
+      # suites is a real failure, not noise. Cloned outside the workspace so no
+      # repo-wide scan in a suite picks it up.
+      - name: Clone dotfiles
+        run: git clone --depth 1 https://github.com/twistedmelonman/dotfiles.git "${RUNNER_TEMP}/dotfiles"
+
+      - name: Install bats
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bats
+          bats --version
+
+      - name: Run tests
+        env:
+          GH_WRAPPER_LIB: ${{ runner.temp }}/dotfiles/bash/gh-wrapper.sh
+        run: scripts/run-tests.sh
