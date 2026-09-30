@@ -37,6 +37,15 @@ export XDG_CONFIG_HOME="${TMP}/xdg"
 mkdir -p "${XDG_CONFIG_HOME}/personify/checks"
 export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-/Users/andrewrich/Developer/dotfiles/bash/gh-wrapper.sh}"
 export GATE_REVIEW_DIR="${TMP}/gate"
+# A stub length_check.py that passes everything: CI has no personify checkout, and test-*-length.sh use the real one.
+_stub_personify() { # <config dir> <install dir>
+  mkdir -p "$1/plugins" "$2/scripts"
+  : >"$2/scripts/pangram_check.py"
+  printf 'import sys\nsys.exit(0)\n' >"$2/scripts/length_check.py"
+  jq -n --arg p "$2" '{plugins:{"personify@personify":[{installPath:$p}]}}' >"$1/plugins/installed_plugins.json"
+}
+export CLAUDE_CONFIG_DIR="${HOME}/.claude"
+_stub_personify "${CLAUDE_CONFIG_DIR}" "${TMP}/personify"
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
 export GATE_RULES_FILE="${GATE_RULES_FILE:-$(cd "${SCRIPTS}/.." && pwd)/gate-rules.conf}"
 [[ -f "${GATE_RULES_FILE}" ]] || {
@@ -99,7 +108,7 @@ _approve() {
   local repo="$1" name="$2"
   (
     cd "${repo}" || exit 1
-    _cmd_stage "${name}" "${TMP}/${name}.txt" >/dev/null || exit 1
+    _cmd_stage --kind commit "${name}" "${TMP}/${name}.txt" >/dev/null || exit 1
     _use_key
     _verdict_line "${name}" "${PENDING}/${name}" >"${TMP}/${name}.line"
     {
@@ -164,7 +173,7 @@ fi
 
 # --- employer: rule 2, pangram ---------------------------------------------
 printf 'fix(x): employer change\n' >"${TMP}/emp.txt"
-if (cd "${EMPLOYER}" && _cmd_stage emp "${TMP}/emp.txt") >/dev/null 2>&1; then
+if (cd "${EMPLOYER}" && _cmd_stage --kind commit emp "${TMP}/emp.txt") >/dev/null 2>&1; then
   _no "employer: stage refuses without a record"
 else
   _ok "employer: stage refuses without a record"

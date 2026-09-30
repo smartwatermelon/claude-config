@@ -22,6 +22,15 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 
 export GATE_REVIEW_DIR="${TMP}/gate"
+# A stub length_check.py that passes everything: CI has no personify checkout, and test-*-length.sh use the real one.
+_stub_personify() { # <config dir> <install dir>
+  mkdir -p "$1/plugins" "$2/scripts"
+  : >"$2/scripts/pangram_check.py"
+  printf 'import sys\nsys.exit(0)\n' >"$2/scripts/length_check.py"
+  jq -n --arg p "$2" '{plugins:{"personify@personify":[{installPath:$p}]}}' >"$1/plugins/installed_plugins.json"
+}
+export CLAUDE_CONFIG_DIR="${TMP}/stub-claude"
+_stub_personify "${CLAUDE_CONFIG_DIR}" "${TMP}/personify"
 # stage routes by destination. These cases predate routing and assume every
 # stage needs a check record, so pin the rules to that; the routing itself is
 # covered by test-gate-review-route.sh.
@@ -290,7 +299,7 @@ _seed_record() {
 UNCHECKED="${TMP}/unchecked.txt"
 printf 'fix(x): nobody ran the check on this\n' >"${UNCHECKED}"
 rm -f "${PENDING:?}"/*
-if (_cmd_stage unchecked "${UNCHECKED}") >/dev/null 2>&1; then
+if (_cmd_stage --kind commit unchecked "${UNCHECKED}") >/dev/null 2>&1; then
   _no "stage refuses a file with no check record"
 else
   _ok "stage refuses a file with no check record"
@@ -308,9 +317,10 @@ PLUGINS="${TMP}/claude/plugins"
 mkdir -p "${PLUGINS}/cache/personify/2.0.1/scripts" "${PLUGINS}/cache/personify/2.0.3/scripts"
 touch "${PLUGINS}/cache/personify/2.0.1/scripts/pangram_check.py" \
   "${PLUGINS}/cache/personify/2.0.3/scripts/pangram_check.py"
+cp "${TMP}/personify/scripts/length_check.py" "${PLUGINS}/cache/personify/2.0.3/scripts/"
 printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
   "${PLUGINS}/cache/personify/2.0.3" >"${PLUGINS}/installed_plugins.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
 if [[ "${got}" == *"python3 ${PLUGINS}/cache/personify/2.0.3/scripts/pangram_check.py < ${UNCHECKED}"* ]]; then
   _ok "refusal names the installed pangram_check.py"
 else
@@ -324,7 +334,7 @@ fi
 
 # No personify entry: say so, rather than print a command that cannot run.
 printf '{"plugins":{}}\n' >"${PLUGINS}/installed_plugins.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
 if [[ "${got}" == *"personify is not installed"* && "${got}" != *"python3 "* ]]; then
   _ok "refusal says personify is not installed when it is not"
 else
@@ -334,7 +344,7 @@ fi
 # An entry whose directory is gone counts as not installed too.
 printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
   "${PLUGINS}/cache/personify/9.9.9" >"${PLUGINS}/installed_plugins.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
 if [[ "${got}" == *"personify is not installed"* ]]; then
   _ok "refusal says not installed when installPath is missing"
 else
@@ -349,9 +359,11 @@ SYNCED="${PLUGINS}/synced/bucket-a"
 mkdir -p "${SYNCED}/personify/scripts" "${SYNCED}/personify~g2/scripts"
 touch "${SYNCED}/personify/scripts/pangram_check.py" \
   "${SYNCED}/personify~g2/scripts/pangram_check.py"
+cp "${TMP}/personify/scripts/length_check.py" "${SYNCED}/personify/scripts/"
+cp "${TMP}/personify/scripts/length_check.py" "${SYNCED}/personify~g2/scripts/"
 printf '{"plugins":{}}\n' >"${PLUGINS}/installed_plugins.json"
 printf '{"plugins":[{"name":"personify"}]}\n' >"${SYNCED}/manifest.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
 if [[ "${got}" == *"python3 ${SYNCED}/personify/scripts/pangram_check.py < ${UNCHECKED}"* ]]; then
   _ok "refusal names the synced pangram_check.py when nothing is installed locally"
 else
@@ -359,7 +371,7 @@ else
 fi
 
 printf '{"plugins":[{"name":"personify","generation":2}]}\n' >"${SYNCED}/manifest.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
 if [[ "${got}" == *"python3 ${SYNCED}/personify~g2/scripts/pangram_check.py < ${UNCHECKED}"* ]]; then
   _ok "refusal names the synced generation the manifest lists"
 else
@@ -371,7 +383,7 @@ fi
 # precedence"). The hint must name the copy that actually loads.
 printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
   "${PLUGINS}/cache/personify/2.0.3" >"${PLUGINS}/installed_plugins.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
 if [[ "${got}" == *"python3 ${PLUGINS}/cache/personify/2.0.3/scripts/pangram_check.py"* &&
   "${got}" != *"synced"* ]]; then
   _ok "refusal prefers the local install over the synced copy"
@@ -382,7 +394,7 @@ fi
 # A manifest entry whose directory is gone is not a fallback.
 printf '{"plugins":{}}\n' >"${PLUGINS}/installed_plugins.json"
 printf '{"plugins":[{"name":"personify","generation":7}]}\n' >"${SYNCED}/manifest.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
 if [[ "${got}" == *"personify is not installed"* && "${got}" != *"python3 "* ]]; then
   _ok "refusal says not installed when the synced directory is missing"
 else
@@ -398,7 +410,7 @@ _seed_record "${CHECKED}" '{"status":"FAIL","verdict":"AI","fraction_ai":0.97,"w
 # `batch`.
 STAGE_HERE="${TMP}/stage-here"
 mkdir -p "${STAGE_HERE}"
-if (cd "${STAGE_HERE}" && _cmd_stage checked "${CHECKED}") >/dev/null 2>&1 &&
+if (cd "${STAGE_HERE}" && _cmd_stage --kind commit checked "${CHECKED}") >/dev/null 2>&1 &&
   cmp -s "${CHECKED}" "${PENDING_ROOT}/batch/checked"; then
   _ok "stage accepts a FAIL record keyed by the raw bytes"
 else
@@ -551,7 +563,7 @@ mkdir -p "${APPROVED_ROOT}/other-main"
 printf 'stale\n' >"${APPROVED_ROOT}/other-main/stale"
 _age_minutes "${APPROVED_ROOT}/other-main/stale" 31
 printf 'fresh\n' >"${APPROVED_ROOT}/other-main/fresh"
-if (cd "${STAGE_HERE}" && bash "${GATE}" stage ttl-item "${TTL_BODY}") >/dev/null 2>&1; then
+if (cd "${STAGE_HERE}" && bash "${GATE}" stage --kind commit ttl-item "${TTL_BODY}") >/dev/null 2>&1; then
   _ok "stage succeeds with expired approvals present"
 else
   _no "stage succeeds with expired approvals present"
@@ -1078,7 +1090,7 @@ _stage_in() {
   f="${TMP}/stage-${name}-${dir##*/}.txt"
   printf '%s\n' "${text}" >"${f}"
   _seed_record "${f}" '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":6}'
-  (cd "${dir}" && bash "${GATE}" stage "${name}" "${f}") >/dev/null 2>&1
+  (cd "${dir}" && bash "${GATE}" stage --kind commit "${name}" "${f}") >/dev/null 2>&1
 }
 
 # Open from $1 with nothing staged by the helper; stderr and stdout to OUT606.

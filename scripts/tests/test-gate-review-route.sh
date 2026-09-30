@@ -28,6 +28,15 @@ export GATE_RULES_FILE="${TMP}/rules.conf"
 printf 'repo=acme/pang pangram\n* visual\n' >"${GATE_RULES_FILE}"
 export GATE_REVIEW_DIR="${TMP}/gate"
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
+# A stub length_check.py that passes everything: CI has no personify checkout, and test-*-length.sh use the real one.
+_stub_personify() { # <config dir> <install dir>
+  mkdir -p "$1/plugins" "$2/scripts"
+  : >"$2/scripts/pangram_check.py"
+  printf 'import sys\nsys.exit(0)\n' >"$2/scripts/length_check.py"
+  jq -n --arg p "$2" '{plugins:{"personify@personify":[{installPath:$p}]}}' >"$1/plugins/installed_plugins.json"
+}
+export CLAUDE_CONFIG_DIR="${HOME}/.claude"
+_stub_personify "${CLAUDE_CONFIG_DIR}" "${TMP}/personify"
 
 pass=0
 fail=0
@@ -72,7 +81,7 @@ TXT="${TMP}/text.txt"
 printf 'fix(x): a visual-only text\n' >"${TXT}"
 
 # visual: stages with no record
-if (cd "${VIS}" && _cmd_stage vtext "${TXT}") >/dev/null 2>&1; then
+if (cd "${VIS}" && _cmd_stage --kind commit vtext "${TXT}") >/dev/null 2>&1; then
   _ok "visual destination stages with no record"
 else
   _no "visual destination stages with no record"
@@ -93,7 +102,7 @@ else
 fi
 
 # pangram: still refuses with today's message
-got="$( (cd "${PANG}" && _cmd_stage ptext "${TXT}") 2>&1 >/dev/null)"
+got="$( (cd "${PANG}" && _cmd_stage --kind commit ptext "${TXT}") 2>&1 >/dev/null)"
 rc=$?
 if ((rc != 0)) && [[ "${got}" == *"no Pangram check record for ${TXT}"* ]]; then
   _ok "pangram destination without a record refuses"
@@ -113,7 +122,7 @@ printf '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":120}\n
   >"${XDG_CONFIG_HOME}/personify/checks/${sha}.json"
 mkdir -p "${PENDING_ROOT}/${PKEY}/.route"
 printf 'visual\t3\tstale\n' >"${PENDING_ROOT}/${PKEY}/.route/ptext"
-(cd "${PANG}" && _cmd_stage ptext "${TXT}") >/dev/null 2>&1
+(cd "${PANG}" && _cmd_stage --kind commit ptext "${TXT}") >/dev/null 2>&1
 first="$(cut -f1 "${PENDING_ROOT}/${PKEY}/.route/ptext" || true)"
 if [[ "${first}" == "pangram" ]]; then
   _ok "restage overwrites a stale sidecar"
@@ -124,7 +133,7 @@ rm -f "${XDG_CONFIG_HOME}/personify/checks/${sha}.json"
 
 # router error: stage exits 1 with the router's message
 mv "${GATE_RULES_FILE}" "${GATE_RULES_FILE}.bak"
-got="$( (cd "${VIS}" && _cmd_stage rerr "${TXT}") 2>&1 >/dev/null)"
+got="$( (cd "${VIS}" && _cmd_stage --kind commit rerr "${TXT}") 2>&1 >/dev/null)"
 rc=$?
 if ((rc == 1)) && [[ "${got}" == *"rules file not found"* ]] && [[ ! -e "${VPEND}/rerr" ]]; then
   _ok "router error makes stage exit 1 with its message"
@@ -192,7 +201,7 @@ fi
 
 # a dropped (emptied) item leaves the pending item, so its sidecar stays too;
 # a restage after an approval writes a fresh sidecar
-(cd "${VIS}" && _cmd_stage vtext "${TXT}") >/dev/null 2>&1
+(cd "${VIS}" && _cmd_stage --kind commit vtext "${TXT}") >/dev/null 2>&1
 if [[ -f "${VPEND}/.route/vtext" ]]; then
   _ok "restage after approval writes a fresh sidecar"
 else

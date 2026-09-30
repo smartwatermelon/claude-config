@@ -39,6 +39,15 @@ repo=andrewmrich/beacon-workspace visual
 author=andrewmrich pangram
 * visual
 RULES
+# A stub length_check.py that passes everything: CI has no personify checkout, and test-*-length.sh use the real one.
+_stub_personify() { # <config dir> <install dir>
+  mkdir -p "$1/plugins" "$2/scripts"
+  : >"$2/scripts/pangram_check.py"
+  printf 'import sys\nsys.exit(0)\n' >"$2/scripts/length_check.py"
+  jq -n --arg p "$2" '{plugins:{"personify@personify":[{installPath:$p}]}}' >"$1/plugins/installed_plugins.json"
+}
+_stub_personify "${CLAUDE_CONFIG_DIR}" "${TMP}/personify"
+STUB_PLUGINS="$(cat "${CLAUDE_CONFIG_DIR}/plugins/installed_plugins.json")"
 
 pass=0
 fail=0
@@ -311,17 +320,18 @@ fi
 PLUG="${TMP}/plug"
 mkdir -p "${PLUG}/scripts" "${HOME}/.claude/plugins"
 : >"${PLUG}/scripts/pangram_check.py"
+cp "${TMP}/personify/scripts/length_check.py" "${PLUG}/scripts/"
 jq -n --arg p "${PLUG}" '{plugins:{"personify@personify":[{installPath:$p}]}}' \
   >"${HOME}/.claude/plugins/installed_plugins.json"
 _case "no record: deny prints the installed check command" 2 \
   "python3 ${PLUG}/scripts/pangram_check.py < ${TXT}" "${BEACON}" "git commit -F ${TXT}"
-rm -f "${HOME}/.claude/plugins/installed_plugins.json"
+printf '%s\n' "${STUB_PLUGINS}" >"${HOME}/.claude/plugins/installed_plugins.json"
 printf 'never approved\n' >"${TMP}/unapproved.txt"
 UREC="${XDG_CONFIG_HOME}/personify/checks/$(sha256sum "${TMP}/unapproved.txt" | cut -d' ' -f1).json"
 printf '{"status":"FAIL","verdict":"AI"}\n' >"${UREC}"
 _run "${BEACON}" "git commit -F ${TMP}/unapproved.txt"
 if ((rc == 2)) && [[ "${err}" == *"verdict AI recorded; no visual approval matches"* &&
-  "${err}" == *"stage <label>"* ]]; then
+  "${err}" == *"stage --kind <kind> <label>"* ]]; then
   _ok "record but no approval: deny names the verdict and keeps the stage/open steps"
 else
   _no "record but no approval: deny names the verdict and keeps the stage/open steps (rc=${rc}): ${err}"

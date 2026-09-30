@@ -38,6 +38,15 @@ mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
 # (routing has its own suite: test-hook-personify-route.sh).
 export GATE_RULES_FILE="${TMP}/gate-rules.conf"
 printf '* visual\n' >"${GATE_RULES_FILE}"
+# A stub length_check.py that passes everything: CI has no personify checkout, and test-*-length.sh use the real one.
+_stub_personify() { # <config dir> <install dir>
+  mkdir -p "$1/plugins" "$2/scripts"
+  : >"$2/scripts/pangram_check.py"
+  printf 'import sys\nsys.exit(0)\n' >"$2/scripts/length_check.py"
+  jq -n --arg p "$2" '{plugins:{"personify@personify":[{installPath:$p}]}}' >"$1/plugins/installed_plugins.json"
+}
+export CLAUDE_CONFIG_DIR="${TMP}/claude"
+_stub_personify "${CLAUDE_CONFIG_DIR}" "${TMP}/personify"
 
 APPROVED_TEXT="${TMP}/approved-body.txt"
 UNAPPROVED_TEXT="${TMP}/unapproved-body.txt"
@@ -140,7 +149,7 @@ _case "${PERSONIFY}" "log" "$(_b64 'git log --oneline -1')" 0
 _case "${PERSONIFY}" "gh pr view" "$(_b64 'gh pr view 12')" 0
 _case "${PERSONIFY}" "gh pr edit --add-label (no body flag)" \
   "$(_b64 'gh pr edit 12 --add-label ready')" 0
-_case "${PERSONIFY}" "gh pr edit --title only (titles stay ungated)" \
+_case "${PERSONIFY}" "gh pr edit --title only (a title needs no approval)" \
   "$(_b64 'gh pr edit 12 --title "a new title"')" 0
 _case "${PERSONIFY}" "gh pr edit --body-file, NOT approved" \
   "$(_b64 "gh pr edit 12 --body-file ${UNAPPROVED_TEXT}")" 2
