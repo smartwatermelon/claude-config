@@ -39,10 +39,10 @@ unset CDPATH
 #   review.artifactPatterns - Whitespace-separated globs that REPLACE the
 #                             artifact list (default: '*.log *.tsv *.csv
 #                             docs/scan/* docs/*/scan/*'). `*` matches `/`.
-#   review.model           - Claude model ID for code-reviewer (default: haiku for commits, sonnet for full-diff/codebase)
-#   review.adversarialModel - Claude model ID for adversarial-reviewer (default: claude-sonnet-4-6, always, regardless of mode)
+#   review.model           - Claude model ID for code-reviewer (default: Haiku 5.5+ if the CLI has it, else Sonnet 5.5, for commits; Sonnet 5.5 for full-diff/codebase)
+#   review.adversarialModel - Claude model ID for adversarial-reviewer (default: claude-sonnet-5-5, always, regardless of mode)
 #   review.arbiterModel    - Claude model ID for the reconciliation arbiter
-#                             (default: claude-sonnet-4-6, only invoked when
+#                             (default: claude-sonnet-5-5, only invoked when
 #                             code-reviewer BLOCKING FAIL disagrees with an
 #                             adversarial-reviewer PASS)
 #
@@ -141,7 +141,55 @@ fi
 
 # --- Model selection ---
 # Priority: git config review.model > mode-based default > CLI default
-# Haiku for commit-level (small diffs, fast feedback); Sonnet for branch/codebase analysis.
+# Commit mode wants a fast Haiku, but only Haiku 5.5 or newer: Haiku 4.5 made
+# repeated false BLOCKING findings (2026-09-30), so until 5.5 ships commit mode
+# falls back to Sonnet 5.5. Haiku 5.5's model ID is not published, so rather
+# than guess it, ask the CLI what its `haiku` alias resolves to. One probe
+# costs about 6s and $0.11, so the answer is cached for a day, failures too.
+REVIEW_FALLBACK_MODEL="claude-sonnet-5-5"
+HAIKU_PROBE_CACHE="${HOME}/.claude/cache/review-haiku-alias"
+HAIKU_PROBE_TTL_SECONDS=86400
+
+# Print the model ID the CLI's `haiku` alias resolves to, or nothing.
+resolve_haiku_alias() {
+  local now ts="" id=""
+  now=$(date +%s)
+  if [[ -f "${HAIKU_PROBE_CACHE}" ]]; then
+    read -r ts id <"${HAIKU_PROBE_CACHE}" || true
+    if [[ "${ts}" =~ ^[0-9]+$ ]] && ((now - ts < HAIKU_PROBE_TTL_SECONDS)); then
+      printf '%s' "${id}"
+      return 0
+    fi
+  fi
+  id=$(echo "reply ok" \
+    | timeout 60 env -u CLAUDECODE "${CLAUDE_CLI}" -p --model haiku --output-format json \
+      --tools "" --no-session-persistence 2>/dev/null \
+    | jq -r '.modelUsage // {} | keys[] | select(startswith("claude-haiku-"))' 2>/dev/null \
+    | head -1) || id=""
+  if mkdir -p "${HAIKU_PROBE_CACHE%/*}" 2>/dev/null; then
+    printf '%s %s\n' "${now}" "${id}" >"${HAIKU_PROBE_CACHE}" 2>/dev/null || true
+  fi
+  printf '%s' "${id}"
+}
+
+# True when $1 is Haiku 5.5 or newer. The minor version is one or two digits,
+# so a date suffix (claude-haiku-5-20261015) is not read as a minor version.
+haiku_is_5_5_or_newer() {
+  [[ "$1" =~ ^claude-haiku-([0-9]+)(-([0-9]{1,2}))?(-[0-9]{8})?$ ]] || return 1
+  local major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[3]:-0}"
+  ((major > 5 || (major == 5 && minor >= 5)))
+}
+
+commit_review_model() {
+  local haiku
+  haiku=$(resolve_haiku_alias)
+  if haiku_is_5_5_or_newer "${haiku}"; then
+    printf '%s' "${haiku}"
+  else
+    printf '%s' "${REVIEW_FALLBACK_MODEL}"
+  fi
+}
+
 # This REVIEW_MODEL / CODE_REVIEWER_MODEL_ARGS pair governs code-reviewer (and,
 # in full-diff/codebase mode, the single reviewer invocation issued there —
 # see ADVERSARIAL_MODEL_ARGS below for why those specific call sites use the
@@ -149,9 +197,9 @@ fi
 REVIEW_MODEL=$(git config --get review.model 2>/dev/null || echo "")
 if [[ -z "${REVIEW_MODEL}" ]]; then
   case "${REVIEW_MODE}" in
-    commit) REVIEW_MODEL="claude-haiku-4-5-20251001" ;;
-    full-diff) REVIEW_MODEL="claude-sonnet-4-6" ;;
-    codebase) REVIEW_MODEL="claude-sonnet-4-6" ;;
+    commit) REVIEW_MODEL="$(commit_review_model)" ;;
+    full-diff) REVIEW_MODEL="claude-sonnet-5-5" ;;
+    codebase) REVIEW_MODEL="claude-sonnet-5-5" ;;
     *) REVIEW_MODEL="" ;;
   esac
 fi
@@ -166,7 +214,7 @@ fi
 # bigger model even on the highest-frequency path (commit mode) — see issue
 # #235. Override via `git config review.adversarialModel <model-id>`.
 ADVERSARIAL_MODEL=$(git config --get review.adversarialModel 2>/dev/null || echo "")
-[[ -n "${ADVERSARIAL_MODEL}" ]] || ADVERSARIAL_MODEL="claude-sonnet-4-6"
+[[ -n "${ADVERSARIAL_MODEL}" ]] || ADVERSARIAL_MODEL="claude-sonnet-5-5"
 ADVERSARIAL_MODEL_ARGS=(--model "${ADVERSARIAL_MODEL}")
 
 # Arbiter model: used only when code-reviewer and adversarial-reviewer
@@ -174,7 +222,7 @@ ADVERSARIAL_MODEL_ARGS=(--model "${ADVERSARIAL_MODEL}")
 # model as adversarial-reviewer since both need the bigger-model reasoning
 # the disagreement itself signals is warranted.
 ARBITER_MODEL=$(git config --get review.arbiterModel 2>/dev/null || echo "")
-[[ -n "${ARBITER_MODEL}" ]] || ARBITER_MODEL="claude-sonnet-4-6"
+[[ -n "${ARBITER_MODEL}" ]] || ARBITER_MODEL="claude-sonnet-5-5"
 ARBITER_MODEL_ARGS=(--model "${ARBITER_MODEL}")
 
 # --- Reviewer agent selection ---
