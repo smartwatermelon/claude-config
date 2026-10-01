@@ -1,13 +1,10 @@
 name: Tests
 
-# Runs the same suite as .project-hooks/pre-push. The hook only catches what a
-# local push runs; this catches a push made without it, and red on main after a
-# merge (twistedmelonman/claude-config#638).
+# The only full-suite run, and a required check (claude-config#638). No push
+# trigger: strict protection means the PR run already tested what merges.
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-  push:
-    branches: [main]
 
 permissions:
   contents: read

@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # Runs every test suite in this repo: tests/*.bats, scripts/tests/test-*.sh,
-# hooks/tests/*.sh, and the root test-pre-merge-review.sh. One runner for both
-# callers, so the pre-push hook and CI can never disagree about what "the
-# suite" means.
+# hooks/tests/*.sh, and the root test-pre-merge-review.sh. CI calls it as a
+# required check; run it by hand for a local full run.
 #
 # Before this existed nothing ran these tests: CI ran linters only and there
 # was no .project-hooks/pre-push, so two bats cases sat red on main for four
 # days (twistedmelonman/claude-config#638).
 #
 # Usage: scripts/run-tests.sh [--fail-fast]
-#   --fail-fast  stop at the first failing suite (the pre-push hook uses this;
-#                CI runs everything so one push reports every failure)
+#   --fail-fast  stop at the first failing suite (for local runs; CI runs
+#                everything so one push reports every failure)
 #
 # RUN_TESTS_ROOT overrides the repo root. It exists for this runner's own
 # tests, which point it at a scratch tree of fake suites.
@@ -51,7 +50,7 @@ done <<<"${git_vars}"
 
 # macOS ships bash 3.2, and the shell suites need 4.4+. "${BASH}", not a bare
 # `bash`: a git hook's PATH can resolve `bash` to 3.2 even when this script
-# itself is running under 5. Same approach as dotfiles' .project-hooks/pre-push.
+# itself is running under 5.
 runner_bash="${BASH}"
 if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4))); then
   runner_bash=""
