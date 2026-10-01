@@ -492,7 +492,7 @@ fi
 
 # Usage: _link_command <repo-relative script> <link path>
 _link_command() {
-  local rel="$1" link="$2" name tracked=false
+  local rel="$1" link="$2" name _tf tracked=false
   name="$(basename "${link}")"
 
   # Gate on TRACKED, not merely present: section 5 deploys tracked files only,
