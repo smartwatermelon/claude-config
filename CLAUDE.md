@@ -127,7 +127,7 @@ every test that exercises anything built on it; widen the scope rather than
 guess narrow. If the mapping isn't obvious, run the full suite instead of
 guessing.
 
-The full suite is reserved for pre-push, not every commit — see Protocol 4.
+The full suite is reserved for CI, not every commit — see Protocol 4.
 
 ---
 
@@ -155,7 +155,7 @@ After committing, verify the hook ran: `head -6 "$(git -C /abs/path/to/repo rev-
 
 1. Confirm both commit-time reviewers are clean.
 2. Expect the pre-push hook to run one `--mode=full-diff` review of `base...HEAD`. It must pass for the push to succeed, and it files no GitHub issues. A whole-codebase scan (`--mode=codebase --no-file`) is optional and on demand, not part of the push. Details: `~/.claude/docs/CHECKLISTS.md` ("On-Demand Codebase Review").
-3. Make sure the FULL test suite runs, not just Protocol 3's scoped subset. If the repo's own pre-push hook already runs it (e.g. dotfiles' `.project-hooks/pre-push`), nothing extra is needed. If the repo has no such hook, run the suite yourself and fix what it finds.
+3. Make sure the FULL test suite runs, not just Protocol 3's scoped subset. Where CI runs it as a required check (claude-config `tests`, dotfiles `bash-tests`), do NOT run it locally: the push returns at once, and the required check gates the merge. In a repo with no CI test job, run the suite yourself and fix what it finds.
 
 Full checklists: `~/.claude/docs/CHECKLISTS.md`
 

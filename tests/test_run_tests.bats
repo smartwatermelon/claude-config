@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
-# Tests for scripts/run-tests.sh, the runner that .project-hooks/pre-push and
-# CI both call. RUN_TESTS_ROOT points it at a scratch tree of fake suites, so
-# these tests never run (or recurse into) the real suite.
+# Tests for scripts/run-tests.sh, the runner CI calls. RUN_TESTS_ROOT points
+# it at a scratch tree of fake suites, so these tests never run (or recurse
+# into) the real suite.
 #
 # Run: bats ~/Developer/claude-config/tests/test_run_tests.bats
 
@@ -9,7 +9,6 @@ bats_require_minimum_version 1.5.0
 
 setup() {
   RUNNER="${BATS_TEST_DIRNAME}/../scripts/run-tests.sh"
-  PRE_PUSH="${BATS_TEST_DIRNAME}/../.project-hooks/pre-push"
   FAKE="$(mktemp -d)"
   mkdir -p "${FAKE}/tests" "${FAKE}/scripts/tests" "${FAKE}/hooks/tests"
   export RUN_TESTS_ROOT="${FAKE}"
@@ -137,8 +136,4 @@ fail_sh() { printf 'echo marker-%s; exit 1\n' "$1" >"${FAKE}/scripts/tests/test-
   pass_sh b
   run "${RUNNER}" --bogus
   [ "${status}" -eq 2 ]
-}
-
-@test "the pre-push extension is executable, or run_project_extensions skips it" {
-  [ -x "${PRE_PUSH}" ]
 }
