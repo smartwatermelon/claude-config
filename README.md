@@ -165,8 +165,9 @@ See `CLAUDE.md` for protocol documentation.
 
 ## Commands
 
-`install.sh` links these into `~/.local/bin`, pointing at the deployed copy in `~/.claude`:
+`install.sh` links these into `~/.local/bin` or `~/Applications`, pointing at the deployed copy in `~/.claude`:
 
+- **merge-lock.command** (`hooks/merge-lock.command`, in `~/Applications`) — double-click launcher that opens `merge-lock tui` in a new Terminal window
 - **claude-incognito** (`scripts/claude-incognito.sh`) — one-shot `claude -p` run that leaves no transcript, `/resume` entry, or `history.jsonl` line (print mode only). Defaults to `--permission-mode bypassPermissions` and denies only the claude.ai Slack connector so the Slack plugin and Claude Docs both load; see the script header
 
 ## Reference
