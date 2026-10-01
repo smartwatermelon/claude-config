@@ -758,7 +758,9 @@ tui_select() {
 
   if command -v fzf >/dev/null 2>&1; then
     printf '%s\n' "${candidate_block}" |
-      fzf --multi --with-nth=1.. --prompt='authorize> ' |
+      fzf --multi --with-nth=1.. --prompt='authorize> ' \
+        --header='TAB mark · ENTER grant marked · ctrl-a all · ctrl-d none' \
+        --bind='ctrl-a:select-all,ctrl-d:deselect-all' |
       while IFS=$'\t' read -r token _rest; do
         [[ -n "${token}" ]] && printf '%s\n' "${token}"
       done
