@@ -25,10 +25,15 @@ sections, bold for item titles, bullets for lists).
 
 Runs take a few minutes. Let Andrew know upfront.
 
-Pull from all seven sources in parallel. A missing connection is skipped silently; the
+Pull from all eight sources in parallel. A missing connection is skipped silently; the
 brief adapts. Do not suggest connector cards — just note any gap in one line if material.
 
 GitHub: authenticate as `andrewmrich` (work account). Query beacon-biosignals org.
+
+**0. Today's huddle transcript** — if a file dated today exists in the transcripts folder
+(see Standing context), read it plus its `.meta.json`. It is the authority for the "drop
+anything covered in the huddle" rule below. Read-only: the brief never writes notes, never
+updates INDEX.md, and never runs `--mark-reviewed`.
 
 **1. Calendar** — today 00:00 → 23:59 PT. Tomorrow 00:00 → 23:59 PT for prep context only.
 
@@ -198,7 +203,10 @@ semantic payload only, zero ceremony.
 - **Role**: <job title>, <job title>
 - **Manager**: uncertain as of 2026-09-23. <leader> is the new <leadership role>; unconfirmed whether Andrew reports to her or to <manager>.
 - **Active workstream**: <active workstream>; Asana tasks in scope
-- **Huddle**: daily Slack huddle at 8am PT, unrecorded. Brief may run before or after it.
+- **Huddle**: daily Slack huddle at 8am PT, transcribed locally by `huddle-transcribe`
+  (MacWhisper) into the `transcripts/` folder of the KB (`OUTPUT_DIR` in
+  `~/.config/huddle-transcribe/config`) within minutes of ending. Brief may run before
+  or after it.
 
 ## Ground rules
 
