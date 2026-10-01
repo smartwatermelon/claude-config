@@ -476,40 +476,49 @@ if [[ ${#_SUBMODULE_ROOTS[@]} -gt 0 ]]; then
 fi
 
 # ============================================================================
-# 7. PATH COMMANDS (~/.local/bin)
+# 7. COMMANDS (~/.local/bin, ~/Applications)
 # ============================================================================
-# Scripts meant to be run by hand get a ~/.local/bin link. The link targets the
-# DEPLOYED copy under ${DEPLOY_DIR}, not the repo, matching
-# ~/.local/bin/merge-lock -> ~/.claude/hooks/merge-lock.sh.
+# Scripts meant to be run by hand get a link outside ${DEPLOY_DIR}: a PATH
+# command in ~/.local/bin, or a Finder double-click launcher in ~/Applications.
+# The link targets the DEPLOYED copy under ${DEPLOY_DIR}, not the repo,
+# matching ~/.local/bin/merge-lock -> ~/.claude/hooks/merge-lock.sh.
 #
 # _ensure_symlink handles dry-run, idempotency, and backup of a pre-existing
 # file. An already-correct link takes its _skip path, so it never counts as
 # pending work in `--sync --dry-run` (claude-config#344).
 #
-# The ~/.local/bin link is outside DEPLOY_DIR, so the symlink health check
-# below does not cover it.
+# These links are outside DEPLOY_DIR, so the symlink health check below does
+# not cover them.
 
-# Gate on TRACKED, not merely present: section 5 deploys tracked files only, so
-# an untracked script would leave this link dangling.
-_incognito_tracked=false
-for _tf in "${_TRACKED_FILES[@]}"; do
-  if [[ "${_tf}" == "scripts/claude-incognito.sh" ]]; then
-    _incognito_tracked=true
-    break
+# Usage: _link_command <repo-relative script> <link path>
+_link_command() {
+  local rel="$1" link="$2" name tracked=false
+  name="$(basename "${link}")"
+
+  # Gate on TRACKED, not merely present: section 5 deploys tracked files only,
+  # so an untracked script would leave this link dangling.
+  for _tf in "${_TRACKED_FILES[@]}"; do
+    if [[ "${_tf}" == "${rel}" ]]; then
+      tracked=true
+      break
+    fi
+  done
+
+  if ! ${tracked}; then
+    # Not an error: a checkout without the script (or the bats fixture, which
+    # copies only install.sh into a throwaway repo) simply has nothing to link.
+    _skip "No tracked ${rel} — skipping ${link} link"
+  elif [[ ! -x "${REPO_DIR}/${rel}" ]]; then
+    _warn "Not executable: ${REPO_DIR}/${rel}"
+    failures+=("${name}-not-executable")
+  else
+    _ensure_symlink "${DEPLOY_DIR}/${rel}" "${link}"
   fi
-done
+}
 
-if ! ${_incognito_tracked}; then
-  # Not an error: a checkout without the script (or the bats fixture, which
-  # copies only install.sh into a throwaway repo) simply has nothing to link.
-  _skip "No tracked claude-incognito script — skipping ~/.local/bin link"
-elif [[ ! -x "${REPO_DIR}/scripts/claude-incognito.sh" ]]; then
-  _warn "Not executable: ${REPO_DIR}/scripts/claude-incognito.sh"
-  failures+=("claude-incognito-not-executable")
-else
-  _ensure_symlink "${DEPLOY_DIR}/scripts/claude-incognito.sh" \
-    "${HOME}/.local/bin/claude-incognito"
-fi
+_link_command scripts/claude-incognito.sh "${HOME}/.local/bin/claude-incognito"
+# Opens merge-lock's TUI in a new Terminal window from Finder or Spotlight.
+_link_command hooks/merge-lock.command "${HOME}/Applications/merge-lock.command"
 
 # ============================================================================
 # 8. GIT CLEAN FILTER (iTerm2 cc-status home directory)
