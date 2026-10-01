@@ -258,6 +258,15 @@ lock_file() {
   grep -q -- "--multi" "${TMP_HOME}/fzf-args"
 }
 
+@test "fzf shows a header naming TAB and binds select-all" {
+  stub_fzf
+  FZF_PICK="acme/widgets#10" run bash "${SCRIPT}" tui "wave 3"
+  [ "${status}" -eq 0 ]
+  grep -q -- "--header=TAB mark" "${TMP_HOME}/fzf-args"
+  grep -q -- "ctrl-a:select-all" "${TMP_HOME}/fzf-args"
+  grep -q -- "ctrl-d:deselect-all" "${TMP_HOME}/fzf-args"
+}
+
 # --- fallback without fzf ----------------------------------------------------
 
 @test "the numbered fallback grants the selected lock without fzf" {
