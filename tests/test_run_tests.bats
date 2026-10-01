@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
-# Tests for scripts/run-tests.sh, the runner CI calls. RUN_TESTS_ROOT points it at a scratch tree of fake suites, so
-# these tests never run (or recurse into) the real suite.
+# Tests for scripts/run-tests.sh, the runner CI calls. RUN_TESTS_ROOT points
+# it at a scratch tree of fake suites, so these tests never run (or recurse
+# into) the real suite.
 #
 # Run: bats ~/Developer/claude-config/tests/test_run_tests.bats
 
