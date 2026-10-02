@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for destination and author resolution and the CLI in
-# scripts/gate-route.sh (_repo_from_dir, _author_for_repo, main).
+# scripts/gate-route.sh (_repo_from_dir, _host_from_dir, _author_for_repo, main).
 
 set -uo pipefail
 unset CDPATH GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
@@ -69,6 +69,33 @@ for url in \
   check "url spelling ${url}" "${val}" "some/name"
 done
 
+# Host spellings. owner= rules match only when this is exactly github.com.
+i=0
+while IFS='|' read -r url want; do
+  i=$((i + 1))
+  mkrepo "host${i}" "${url}"
+  val="$(got _host_from_dir "${TMP}/host${i}")"
+  check "host of ${url}" "${val}" "${want}"
+done <<'URLS'
+git@github.com:o/r.git|github.com
+https://github.com/o/r|github.com
+https://github.com/o/r.git|github.com
+ssh://git@github.com/o/r.git|github.com
+ssh://git@github.com:22/o/r.git|github.com
+git@GitHub.com:o/r.git|github.com
+https://user@github.com/o/r|github.com
+github.com:o/r.git|github.com
+git@gitlab.com:o/r.git|gitlab.com
+git@github-beacon:o/r.git|github-beacon
+https://github.com.evil.example/o/r|github.com.evil.example
+https://github.com@evil.example/o/r|evil.example
+file:///srv/git/o/r.git|
+/srv/git/o/r.git|
+URLS
+mkrepo hostnone ""
+val="$(got _host_from_dir "${TMP}/hostnone")"
+check "host, no origin" "${val}" ""
+
 # CLI cases. run_cli <args...> sets OUT, ERR, RC.
 run_cli() {
   OUT="$("${SCRIPT}" "$@" 2>"${TMP}/err")"
@@ -90,7 +117,50 @@ check "beacon-biosignals" "${val}" "pangram${TAB}2"
 mkrepo tm "https://github.com/twistedmelonman/y"
 run_cli --dir "${TMP}/tm"
 val="$(f12 "${OUT}")"
-check "twistedmelonman" "${val}" "visual${TAB}3"
+check "twistedmelonman" "${val}" "visual${TAB}5"
+
+# owner= rules through the CLI. Every github.com spelling of a personal org
+# is exempt; forks, third parties and other hosts fall through to visual.
+i=0
+for url in \
+  "git@github.com:smartwatermelon/x.git" \
+  "https://github.com/smartwatermelon/x" \
+  "https://github.com/SmartWatermelon/x.git" \
+  "ssh://git@github.com/smartwatermelon/x.git"; do
+  i=$((i + 1))
+  mkrepo "swm${i}" "${url}"
+  run_cli --dir "${TMP}/swm${i}"
+  val="$(f12 "${OUT}")"
+  check "owner via ${url}" "${val}" "exempt${TAB}3"
+done
+mkrepo nos "git@github.com:nightowlstudiollc/site.git"
+run_cli --dir "${TMP}/nos"
+val="$(f12 "${OUT}")"
+check "owner nightowlstudiollc" "${val}" "exempt${TAB}4"
+while IFS='|' read -r name url; do
+  mkrepo "${name}" "${url}"
+  run_cli --dir "${TMP}/${name}"
+  val="$(f12 "${OUT}")"
+  check "gated: ${url}" "${val}" "visual${TAB}5"
+done <<'URLS'
+fork|git@github.com:twistedmelonman/Instapaper-MCP.git
+third|https://github.com/anthropics/claude-code.git
+gitlab|git@gitlab.com:smartwatermelon/x.git
+lookalike|https://github.com.evil.example/smartwatermelon/x
+userinfo|https://github.com@evil.example/smartwatermelon/x
+filepath|file:///srv/smartwatermelon/x.git
+URLS
+
+# --repo is gh's owner/name, which names a github.com repository.
+run_cli --repo smartwatermelon/x --dir /nonexistent
+val="$(f12 "${OUT}")"
+check "--repo owner exempt" "${val}" "exempt${TAB}3"
+run_cli --repo SmartWatermelon/X
+val="$(f12 "${OUT}")"
+check "--repo owner mixed case" "${val}" "exempt${TAB}3"
+run_cli --repo anthropics/claude-code --dir "${TMP}/swm1"
+val="$(f12 "${OUT}")"
+check "--repo third party over personal dir" "${val}" "visual${TAB}5"
 
 run_cli --repo beacon-biosignals/x --dir /nonexistent
 val="$(f12 "${OUT}")"
@@ -105,7 +175,7 @@ mkrepo noorigin ""
 for d in "${TMP}/plain" "${TMP}/noorigin"; do
   run_cli --dir "${d}"
   val="$(f12 "${OUT}")"
-  check "unresolved ${d##*/}" "${val}:${RC}" "visual${TAB}3:0"
+  check "unresolved ${d##*/}" "${val}:${RC}" "visual${TAB}5:0"
   if [[ "${ERR}" == *"gate-route: repo unresolved"* ]]; then ok; else bad "unresolved ${d##*/}: stderr '${ERR}'"; fi
 done
 
@@ -114,7 +184,7 @@ OUT="$(cd "${TMP}/plain" && "${SCRIPT}" 2>"${TMP}/err")"
 RC=$?
 ERR="$(cat "${TMP}/err")"
 val="$(f12 "${OUT}")"
-check "no args" "${val}:${RC}" "visual${TAB}3:0"
+check "no args" "${val}:${RC}" "visual${TAB}5:0"
 check "no args stderr" "${ERR}" "gate-route: repo unresolved
 gate-route: author unresolved"
 
