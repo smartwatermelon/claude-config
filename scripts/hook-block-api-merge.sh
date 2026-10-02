@@ -24,6 +24,25 @@ set -euo pipefail
 input=$(cat)
 cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 
+# INDIRECT gh (smartwatermelon/dotfiles#339). The guards in dotfiles' gh-wrapper.sh (off-org --draft, merge review,
+# REST/GraphQL bypass blocking) run only when bare `gh` resolves to the wrapper function or ~/.local/bin/gh.
+# An absolute path to the real binary (/opt/homebrew/bin/gh) skips all of them, and an agent opened a
+# non-draft off-org PR that way. GH_INDIRECT matches the forms that may not reach the wrapper: any path
+# ending in /gh, `\gh`, and gh behind a prefix command (command, env, exec, nohup, sudo, time, xargs).
+# GH_ANY is bare gh or any indirect form; the api rules below use it so an absolute path is caught too.
+# Best effort, not complete: a regex is not a shell parser. `bash -c '...gh...'`, a variable holding the path,
+# or an alias still get past it. GH_PREFIX takes one optional argument per option (`sudo -u root gh`).
+# CP is the command-position anchor (see claude-config#405 below), plus `(` for a subshell. ASSIGN allows
+# leading VAR=value words, e.g. `GH_TOKEN=... /opt/homebrew/bin/gh pr merge 1`. GF is the global-flag run.
+CP='(^|&&[[:space:]]*|\|\|[[:space:]]*|;[[:space:]]*|[|&][[:space:]]*|[`]|\$\(|\()[[:space:]]*'
+ASSIGN='([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
+GF='(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*'
+GH_PATH="[\"']?[^[:space:];&|()\`\"']*/gh[\"']?"
+GH_PREFIX='(command|env|exec|nohup|sudo|time|xargs)[[:space:]]+(-[^[:space:]]*[[:space:]]+([^-/[:space:]][^[:space:]]*[[:space:]]+)?|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
+GH_INDIRECT="(${GH_PREFIX}(${GH_PATH}|gh)|${GH_PATH}|\\\\gh)"
+GH_ANY="(gh|${GH_INDIRECT})"
+CP="${CP}${ASSIGN}"
+
 # Early-exempt: git commit/log/show/diff invocations without a chained gh
 # call. Their arguments (commit messages, log output, diff text) may
 # legitimately contain the literal patterns matched below — a commit
@@ -48,8 +67,8 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # starts with `gh` anyway — but excluding it keeps the check symmetric
 # with the gh-pr|issue-create exemption below.
 if printf '%s\n' "${cmd}" | grep -qE '^[[:space:]]*git[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*(commit|log|show|diff)([[:space:]]|$)' \
-  && ! printf '%s\n' "${cmd}" | grep -qE '[;&|(`][[:space:]]*gh[[:space:]]+' \
-  && ! printf '%s\n' "${cmd}" | tail -n +2 | grep -qE '^gh[[:space:]]+'; then
+  && ! printf '%s\n' "${cmd}" | grep -qE "[;&|(\`][[:space:]]*${ASSIGN}${GH_ANY}[[:space:]]+" \
+  && ! printf '%s\n' "${cmd}" | tail -n +2 | grep -qE "^${ASSIGN}${GH_ANY}[[:space:]]+"; then
   exit 0
 fi
 
@@ -71,8 +90,8 @@ fi
 # the unindented-line check via `tail -n +2`, so only genuine follow-on
 # lines starting with `gh` at column 0 trip the negation.
 if printf '%s\n' "${cmd}" | grep -qE '^[[:space:]]*gh[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*(pr|issue)[[:space:]]+(create|edit|comment)([[:space:]]|$)' \
-  && ! printf '%s\n' "${cmd}" | grep -qE '[;&|(`][[:space:]]*gh[[:space:]]+' \
-  && ! printf '%s\n' "${cmd}" | tail -n +2 | grep -qE '^gh[[:space:]]+'; then
+  && ! printf '%s\n' "${cmd}" | grep -qE "[;&|(\`][[:space:]]*${ASSIGN}${GH_ANY}[[:space:]]+" \
+  && ! printf '%s\n' "${cmd}" | tail -n +2 | grep -qE "^${ASSIGN}${GH_ANY}[[:space:]]+"; then
   exit 0
 fi
 
@@ -103,7 +122,7 @@ fi
 #   gh api /repos/owner/repo/pulls/123/merge
 #   gh api "repos/owner/repo/pulls/123/merge"
 #   echo x && gh api repos/o/r/pulls/1/merge --method PUT
-if printf '%s\n' "${cmd}" | grep -qE '(^|&&[[:space:]]*|\|\|[[:space:]]*|;[[:space:]]*|[|&][[:space:]]*|[`]|\$\()[[:space:]]*gh[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*api[[:space:]].*pulls/[0-9]+/merge([[:space:]]|$|[^[:alnum:]_])'; then
+if printf '%s\n' "${cmd}" | grep -qE "${CP}${GH_ANY}[[:space:]]+${GF}"'api[[:space:]].*pulls/[0-9]+/merge([[:space:]]|$|[^[:alnum:]_])'; then
   printf '%s BLOCKED API MERGE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log" || true
   printf '🛑 BLOCKED: Direct REST API PR merge bypasses code quality gates.\n' >&2
   printf '\n' >&2
@@ -119,7 +138,7 @@ fi
 # Block: gh api graphql with mergePullRequest mutation
 # GraphQL offers the same merge capability as the REST endpoint above.
 # Covers inline mutations passed via -f query=... or --field query=...
-if printf '%s\n' "${cmd}" | grep -qE '(^|&&[[:space:]]*|\|\|[[:space:]]*|;[[:space:]]*|[|&][[:space:]]*|[`]|\$\()[[:space:]]*gh[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*api[[:space:]].*graphql.*mergePullRequest'; then
+if printf '%s\n' "${cmd}" | grep -qE "${CP}${GH_ANY}[[:space:]]+${GF}"'api[[:space:]].*graphql.*mergePullRequest'; then
   printf '%s BLOCKED GRAPHQL MERGE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log" || true
   printf '🛑 BLOCKED: GraphQL mergePullRequest mutation bypasses code quality gates.\n' >&2
   printf '\n' >&2
@@ -136,7 +155,7 @@ fi
 # linting, block this pattern unconditionally. Legitimate data queries
 # rarely need --input; they can be expressed inline via -f query=.
 # Previously documented as a known gap (Protocol 6 in CLAUDE.md) — now closed.
-if printf '%s\n' "${cmd}" | grep -qE '(^|&&[[:space:]]*|\|\|[[:space:]]*|;[[:space:]]*|[|&][[:space:]]*|[`]|\$\()[[:space:]]*gh[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*api[[:space:]].*graphql.*(--input([[:space:]=]|$)|(-F|--field)[[:space:]=]*input)'; then
+if printf '%s\n' "${cmd}" | grep -qE "${CP}${GH_ANY}[[:space:]]+${GF}"'api[[:space:]].*graphql.*(--input([[:space:]=]|$)|(-F|--field)[[:space:]=]*input)'; then
   printf '%s BLOCKED GRAPHQL --input: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log" || true
   printf '🛑 BLOCKED: gh api graphql --input reads the mutation from a file,\n' >&2
   printf '   hiding its contents from the command-line merge-bypass scanners.\n' >&2
@@ -151,7 +170,7 @@ fi
 # gh'"'"'s @<filename> convention for -f / --field reads the value from a file,
 # which lets a mutation body live on disk and still get executed. Covers the
 # gap left by the --input check above. Issue #133.
-if printf '%s\n' "${cmd}" | grep -qE '(^|&&[[:space:]]*|\|\|[[:space:]]*|;[[:space:]]*|[|&][[:space:]]*|[`]|\$\()[[:space:]]*gh[[:space:]]+(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*api[[:space:]].*graphql.*(-[fF]|--field)[[:space:]=]*(query|mutation)[[:space:]]*=[[:space:]]*@'; then
+if printf '%s\n' "${cmd}" | grep -qE "${CP}${GH_ANY}[[:space:]]+${GF}"'api[[:space:]].*graphql.*(-[fF]|--field)[[:space:]=]*(query|mutation)[[:space:]]*=[[:space:]]*@'; then
   printf '%s BLOCKED GRAPHQL @file: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log" || true
   printf '🛑 BLOCKED: gh api graphql with -f/-F query=@<file> (or mutation=@<file>)\n' >&2
   printf '   reads the payload body from a file via gh'"'"'s @<filename> convention,\n' >&2
@@ -184,4 +203,55 @@ if printf '%s\n' "${cmd}" | grep -qE '(^|&&[[:space:]]*|\|\|[[:space:]]*|;[[:spa
   printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
   printf 'Do NOT use global flag placement as a workaround.\n' >&2
   exit 2
+fi
+
+# Block: indirect gh pr merge (smartwatermelon/dotfiles#339)
+# `/opt/homebrew/bin/gh pr merge N` never reaches the wrapper, so pre-merge-review.sh and the merge-lock
+# check do not run. Bare `gh pr merge` is left to the wrapper, as before.
+if printf '%s\n' "${cmd}" | grep -qE "${CP}${GH_INDIRECT}[[:space:]]+${GF}pr[[:space:]]+merge([[:space:]]|\$)"; then
+  printf '%s BLOCKED INDIRECT GH MERGE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log" || true
+  printf '🛑 BLOCKED: gh pr merge through a path or prefix command skips the gh wrapper.\n' >&2
+  printf '\n' >&2
+  printf 'The real binary at an absolute path runs no pre-merge review and no merge-lock check.\n' >&2
+  printf "Use plain \`gh pr merge <number>\` so the wrapper runs.\n" >&2
+  printf 'If gh pr merge is failing, report the failure and ask the human to merge manually.\n' >&2
+  exit 2
+fi
+
+# Block: indirect gh pr create without --draft (smartwatermelon/dotfiles#339)
+# The wrapper forces --draft for an off-org repo. The real binary does not, and this hook cannot tell
+# in-org from off-org without resolving the repo, so an indirect create must carry --draft (or -d)
+# itself. Quoted text is removed before the flag check, so "--draft" inside --body does not count.
+# Backslash-newline continuations are joined first so a flag on a later line is seen.
+joined="${cmd//$'\\\n'/ }"
+create_re="${CP}${GH_INDIRECT}[[:space:]]+${GF}pr[[:space:]]+create([[:space:]]|\$)"
+if printf '%s\n' "${joined}" | grep -qE "${create_re}"; then
+  # Unquote a quoted gh path, replace other quoted strings with Q (a --body may hold ; or --draft), then put each
+  # command on its own line by turning every operator into a newline. Each indirect create must have --draft.
+  # If no line still holds one, the match was inside quoted text that may be a $(...) or backtick: block that too.
+  draft_ok=1
+  seen=0
+  split=$(printf '%s\n' "${joined}" \
+    | sed -E "s#[\"']([^\"'[:space:]]*/gh)[\"']#\\1#g; s/\"[^\"]*\"/Q/g; s/'[^']*'/Q/g" \
+    | tr ';&|()`' '\n')
+  seg_re="^[[:space:]]*${ASSIGN}${GH_INDIRECT}[[:space:]]+${GF}pr[[:space:]]+create([[:space:]]|\$)"
+  while IFS= read -r seg; do
+    printf '%s\n' "${seg}" | grep -qE "${seg_re}" || continue
+    seen=1
+    seg=$(printf '%s\n' "${seg}" | sed -E 's/^.*pr[[:space:]]+create//')
+    if ! printf '%s\n' "${seg}" | grep -qE '(^|[[:space:]])(--draft|--draft=true|-d)([[:space:]]|$)'; then
+      draft_ok=0
+    fi
+  done <<<"${split}"
+  [[ "${seen}" == "1" ]] || draft_ok=0
+  if [[ "${draft_ok}" == "0" ]]; then
+    printf '%s BLOCKED INDIRECT GH CREATE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log" || true
+    printf '🛑 BLOCKED: gh pr create through a path or prefix command skips the gh wrapper.\n' >&2
+    printf '\n' >&2
+    printf 'The wrapper forces --draft for a repo outside smartwatermelon, nightowlstudiollc and\n' >&2
+    printf 'twistedmelonman. The real binary does not, so this call could open a non-draft PR.\n' >&2
+    printf "Use plain \`gh pr create ...\` so the wrapper runs.\n" >&2
+    printf "The real binary is for read-only checks only, e.g. \`/opt/homebrew/bin/gh api user --jq .login\`.\n" >&2
+    exit 2
+  fi
 fi

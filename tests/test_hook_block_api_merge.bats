@@ -176,3 +176,124 @@ _make_input() {
   [[ "$output" == *"BLOCKED"* ]]
   [[ "$output" == *"gh pr merge"* ]]
 }
+
+# --- Indirect gh: absolute path / prefix command (smartwatermelon/dotfiles#339) ---
+# The real binary at an absolute path skips every guard in dotfiles' gh-wrapper.sh.
+
+_run_hook() {
+  run bash -c "printf '%s' \"\$(cat)\" | \"${HOOK}\"" <<<"$(_make_input "$1")"
+}
+
+@test "blocks: /opt/homebrew/bin/gh pr create without --draft (dotfiles#339)" {
+  _run_hook '/opt/homebrew/bin/gh pr create --repo beacon-biosignals/infra --title t --body b'
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"plain"* ]]
+}
+
+@test "blocks: env-assigned absolute-path gh pr create without --draft" {
+  _run_hook 'GH_TOKEN=x /usr/local/bin/gh pr create --title t --body-file /tmp/b'
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: command gh / env gh / backslash-gh pr create without --draft" {
+  _run_hook 'command gh pr create --title t'
+  [ "$status" -eq 2 ]
+  _run_hook 'env GH_TOKEN=x gh pr create --title t'
+  [ "$status" -eq 2 ]
+  _run_hook '\gh pr create --title t'
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: absolute-path gh pr create whose --draft is only inside --body text" {
+  _run_hook '/opt/homebrew/bin/gh pr create --title t --body "please use --draft"'
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: absolute-path gh pr create chained after another command" {
+  _run_hook 'git push -u origin b && /opt/homebrew/bin/gh pr create --fill'
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: two indirect creates on one line, only the second with --draft" {
+  _run_hook '/opt/homebrew/bin/gh pr create --title t && /opt/homebrew/bin/gh pr create --draft'
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: indirect create after a git exemption with a VAR=value prefix" {
+  _run_hook 'git log -1 && FOO=1 /opt/homebrew/bin/gh pr create --title t'
+  [ "$status" -eq 2 ]
+  _run_hook 'git log -1 && GH_TOKEN=x /opt/homebrew/bin/gh pr merge 12'
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: sudo -u root and quoted path and command substitution forms" {
+  _run_hook 'sudo -u root /opt/homebrew/bin/gh pr create --title t'
+  [ "$status" -eq 2 ]
+  _run_hook '"/opt/homebrew/bin/gh" pr create --title t'
+  [ "$status" -eq 2 ]
+  _run_hook 'echo "$(/opt/homebrew/bin/gh pr create --title t)"'
+  [ "$status" -eq 2 ]
+}
+
+@test "allows: absolute-path gh pr create with --draft (also on a continuation line)" {
+  _run_hook '/opt/homebrew/bin/gh pr create --draft --title t --body b'
+  [ "$status" -eq 0 ]
+  _run_hook '/opt/homebrew/bin/gh pr create -d --title t'
+  [ "$status" -eq 0 ]
+  _run_hook $'/opt/homebrew/bin/gh pr create --title t \\\n  --draft'
+  [ "$status" -eq 0 ]
+}
+
+@test "allows: bare gh pr create without --draft (the wrapper handles it)" {
+  _run_hook 'gh pr create --repo beacon-biosignals/infra --title t --body b'
+  [ "$status" -eq 0 ]
+}
+
+@test "blocks: /opt/homebrew/bin/gh pr merge (dotfiles#339)" {
+  _run_hook '/opt/homebrew/bin/gh pr merge 12 --squash --delete-branch'
+  [ "$status" -eq 2 ]
+  _run_hook 'GH_TOKEN=x /opt/homebrew/bin/gh -R o/r pr merge 12'
+  [ "$status" -eq 2 ]
+  _run_hook 'command gh pr merge 12'
+  [ "$status" -eq 2 ]
+  _run_hook 'echo hi; ( /opt/homebrew/bin/gh pr merge 12 )'
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: absolute-path gh api REST merge and GraphQL merge forms" {
+  _run_hook '/opt/homebrew/bin/gh api -X PUT repos/o/r/pulls/12/merge'
+  [ "$status" -eq 2 ]
+  _run_hook "/usr/local/bin/gh api graphql -f query='mutation { mergePullRequest(input:{}) { clientMutationId } }'"
+  [ "$status" -eq 2 ]
+  _run_hook '/opt/homebrew/bin/gh api graphql --input /tmp/q.json'
+  [ "$status" -eq 2 ]
+  _run_hook '/opt/homebrew/bin/gh api graphql -F query=@/tmp/q.graphql'
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: git log chained with absolute-path gh merge (git exemption must not fire)" {
+  _run_hook 'git log -1 && /opt/homebrew/bin/gh api -X PUT repos/o/r/pulls/1/merge'
+  [ "$status" -eq 2 ]
+  _run_hook $'git diff\n/opt/homebrew/bin/gh pr merge 1'
+  [ "$status" -eq 2 ]
+}
+
+@test "allows: absolute-path gh read-only calls (documented identity check)" {
+  _run_hook '/opt/homebrew/bin/gh api user --jq .login'
+  [ "$status" -eq 0 ]
+  _run_hook 'GH_TOKEN=x /opt/homebrew/bin/gh api repos/o/r --jq .permissions'
+  [ "$status" -eq 0 ]
+  _run_hook '/opt/homebrew/bin/gh pr view 12 --json state'
+  [ "$status" -eq 0 ]
+}
+
+@test "allows: prose mentioning absolute-path gh pr create/merge in a commit, echo, grep" {
+  _run_hook 'git commit -m "fix: block /opt/homebrew/bin/gh pr create and /opt/homebrew/bin/gh pr merge"'
+  [ "$status" -eq 0 ]
+  _run_hook 'echo "agents ran /opt/homebrew/bin/gh pr create without --draft"'
+  [ "$status" -eq 0 ]
+  _run_hook 'grep -n "gh pr merge" ~/.local/bin/gh'
+  [ "$status" -eq 0 ]
+  _run_hook 'which -a gh; ls -l /opt/homebrew/bin/gh'
+  [ "$status" -eq 0 ]
+}
