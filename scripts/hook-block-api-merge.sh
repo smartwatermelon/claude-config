@@ -218,26 +218,29 @@ if printf '%s\n' "${cmd}" | grep -qE "${CP}${GH_INDIRECT}[[:space:]]+${GF}pr[[:s
   exit 2
 fi
 
-# Block: indirect gh pr create without --draft (smartwatermelon/dotfiles#339)
+# Segments for the indirect-create, pr-ready and api-pulls rules below (smartwatermelon/dotfiles#339).
+# Backslash-newline continuations are joined first so a flag on a later line is seen. Then: unquote a quoted gh
+# path, a quoted pulls endpoint, POST and draft=true; replace other quoted strings with Q (a --body may hold ; or
+# --draft); and turn every operator into a newline so each command is on its own line.
+joined="${cmd//$'\\\n'/ }"
+split=$(printf '%s\n' "${joined}" \
+  | sed -E "s#[\"']([^\"'[:space:]]*/gh)[\"']#\\1#g; s#[\"'](/?repos/[^\"'[:space:]]+/pulls)[\"']#\\1#g; s#[\"']([Pp][Oo][Ss][Tt]|draft=true)[\"']#\\1#g; s/\"[^\"]*\"/Q/g; s/'[^']*'/Q/g" \
+  | tr ';&|()`' '\n')
+seg_re="^[[:space:]]*${ASSIGN}${GH_INDIRECT}[[:space:]]+${GF}"
+
+# Block: indirect gh pr create without --draft
 # The wrapper forces --draft for an off-org repo. The real binary does not, and this hook cannot tell
 # in-org from off-org without resolving the repo, so an indirect create must carry --draft (or -d)
 # itself. Quoted text is removed before the flag check, so "--draft" inside --body does not count.
-# Backslash-newline continuations are joined first so a flag on a later line is seen.
 # `gh pr new` is an alias of `gh pr create`, so both are matched.
-joined="${cmd//$'\\\n'/ }"
 create_re="${CP}${GH_INDIRECT}[[:space:]]+${GF}pr[[:space:]]+(create|new)([[:space:]]|\$)"
 if printf '%s\n' "${joined}" | grep -qE "${create_re}"; then
-  # Unquote a quoted gh path, replace other quoted strings with Q (a --body may hold ; or --draft), then put each
-  # command on its own line by turning every operator into a newline. Each indirect create must have --draft.
-  # If no line still holds one, the match was inside quoted text that may be a $(...) or backtick: block that too.
+  # Each indirect create must have --draft. If no segment still holds one, the match was inside quoted
+  # text that may be a $(...) or backtick: block that too.
   draft_ok=1
   seen=0
-  split=$(printf '%s\n' "${joined}" \
-    | sed -E "s#[\"']([^\"'[:space:]]*/gh)[\"']#\\1#g; s/\"[^\"]*\"/Q/g; s/'[^']*'/Q/g" \
-    | tr ';&|()`' '\n')
-  seg_re="^[[:space:]]*${ASSIGN}${GH_INDIRECT}[[:space:]]+${GF}pr[[:space:]]+(create|new)([[:space:]]|\$)"
   while IFS= read -r seg; do
-    printf '%s\n' "${seg}" | grep -qE "${seg_re}" || continue
+    printf '%s\n' "${seg}" | grep -qE "${seg_re}pr[[:space:]]+(create|new)([[:space:]]|\$)" || continue
     seen=1
     seg=$(printf '%s\n' "${seg}" | sed -E 's/^.*pr[[:space:]]+(create|new)//')
     if ! printf '%s\n' "${seg}" | grep -qE '(^|[[:space:]])(--draft|--draft=true|-d)([[:space:]]|$)'; then
@@ -253,6 +256,72 @@ if printf '%s\n' "${joined}" | grep -qE "${create_re}"; then
     printf 'twistedmelonman. The real binary does not, so this call could open a non-draft PR.\n' >&2
     printf "Use plain \`gh pr create ...\` so the wrapper runs.\n" >&2
     printf "The real binary is for read-only checks only, e.g. \`/opt/homebrew/bin/gh api user --jq .login\`.\n" >&2
+    exit 2
+  fi
+fi
+
+# New rules block an unseen match (all quoted) only if the command holds a $( or backtick that could run it.
+has_subst=0
+[[ "${joined}" == *"\$("* ||"${joined}" == *'`'* ]] && has_subst=1
+
+# Block: indirect gh pr ready without --undo
+# The wrapper refuses `pr ready` for an off-org repo. The real binary does not, so an indirect call could
+# take an off-org draft out of draft. `--undo` returns a PR to draft, which is safe.
+ready_re="${CP}${GH_INDIRECT}[[:space:]]+${GF}pr[[:space:]]+ready([[:space:]]|\$)"
+if printf '%s\n' "${joined}" | grep -qE "${ready_re}"; then
+  ready_ok=1
+  seen=0
+  while IFS= read -r seg; do
+    printf '%s\n' "${seg}" | grep -qE "${seg_re}pr[[:space:]]+ready([[:space:]]|\$)" || continue
+    seen=1
+    printf '%s\n' "${seg}" | grep -qE '(^|[[:space:]])--undo([[:space:]]|$)' || ready_ok=0
+  done <<<"${split}"
+  [[ "${seen}" == "1" || "${has_subst}" == "0" ]] || ready_ok=0
+  if [[ "${ready_ok}" == "0" ]]; then
+    printf '%s BLOCKED INDIRECT GH READY: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log" || true
+    printf '🛑 BLOCKED: gh pr ready through a path or prefix command skips the gh wrapper.\n' >&2
+    printf '\n' >&2
+    printf "The wrapper refuses \`pr ready\` for an off-org repo. The real binary does not.\n" >&2
+    printf "Use plain \`gh pr ready\` so the wrapper runs. (\`--undo\`, back to draft, is allowed.)\n" >&2
+    exit 2
+  fi
+fi
+
+# Block: indirect gh api that creates a PR without draft=true
+# POST repos/<o>/<r>/pulls opens a PR and skips the wrapper's off-org draft forcing. POST is explicit (-X/--method)
+# or implicit (-f/-F/--field/--raw-field/--input with no explicit method). Only the exact endpoint counts: GET on it
+# and pulls/<n>/... subpaths are untouched. A field must set draft=true; --input hides the body, so it is blocked.
+api_re="${CP}${GH_INDIRECT}[[:space:]]+${GF}api[[:space:]]"
+if printf '%s\n' "${joined}" | grep -qE "${api_re}"; then
+  api_ok=1
+  seen=0
+  pulls_ep='(^|[[:space:]])/?repos/[^/[:space:]]+/[^/[:space:]]+/pulls(\?[^[:space:]]*)?/?([[:space:]]|$)'
+  method_re='(^|[[:space:]])(-X|--method)[[:space:]=]*([A-Za-z]+)'
+  field_re='(^|[[:space:]])(-[fF]|--field|--raw-field|--input)'
+  draft_re='(^|[[:space:]])(-[fF]|--field|--raw-field)[[:space:]=]*draft=true([[:space:]]|$)'
+  while IFS= read -r seg; do
+    printf '%s\n' "${seg}" | grep -qE "${seg_re}api[[:space:]]" || continue
+    seen=1
+    seg=$(printf '%s\n' "${seg}" | sed -E 's/^.*[[:space:]]api[[:space:]]/ /')
+    [[ "${seg}" =~ ${pulls_ep} ]] || continue
+    if [[ "${seg}" =~ ${method_re} ]]; then
+      is_post=0
+      [[ "${BASH_REMATCH[3]^^}" == "POST" ]] && is_post=1
+    elif [[ "${seg}" =~ ${field_re} ]]; then
+      is_post=1
+    else
+      is_post=0
+    fi
+    [[ "${is_post}" == "1" ]] || continue
+    [[ "${seg}" =~ ${draft_re} ]] || api_ok=0
+  done <<<"${split}"
+  [[ "${seen}" == "1" || "${has_subst}" == "0" ]] || api_ok=0
+  if [[ "${api_ok}" == "0" ]]; then
+    printf '%s BLOCKED INDIRECT GH API PULLS: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log" || true
+    printf '🛑 BLOCKED: gh api POST repos/<owner>/<repo>/pulls through a path or prefix command skips the gh wrapper.\n' >&2
+    printf '\n' >&2
+    printf 'The wrapper forces a draft PR for an off-org repo. The real binary does not.\n' >&2
+    printf "Add \`-F draft=true\` to the call, or use plain \`gh pr create\` so the wrapper runs.\n" >&2
     exit 2
   fi
 fi
