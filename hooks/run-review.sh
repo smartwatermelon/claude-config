@@ -2474,6 +2474,25 @@ REVIEW_LOG="${REVIEW_LOG:-${GIT_DIR_PATH}/last-review-result.log}"
 # doubles as the dedup source of truth for issue filing (claude-config#332).
 # Overridable by env var so tests can point it at a temp path.
 DISAGREEMENT_LOG="${DISAGREEMENT_LOG:-${GIT_DIR_PATH}/reviewer-disagreements.log}"
+# Copies of REVIEW_LOG from runs that blocked (claude-config#455). REVIEW_LOG is
+# truncated by the next run, so a retry used to erase the evidence for a block.
+REVIEW_BLOCKED_DIR="${REVIEW_BLOCKED_DIR:-${GIT_DIR_PATH}/review-blocked}"
+REVIEW_BLOCKED_KEEP=20
+
+# Called from the EXIT trap. Any non-zero exit counts: FAIL, INCOMPLETE, too
+# large, or a crash all stop the commit or push, and each needs its evidence.
+# Filenames are UTC stamps, so the sorted glob is oldest-first for pruning.
+preserve_blocked_log() {
+  local _rc="$1" _stamp _files
+  [[ "${_rc}" -ne 0 && -s "${REVIEW_LOG}" ]] || return 0
+  mkdir -p "${REVIEW_BLOCKED_DIR}" || return 0
+  _stamp=$(date -u +%Y%m%dT%H%M%SZ) || return 0
+  cp "${REVIEW_LOG}" "${REVIEW_BLOCKED_DIR}/${_stamp}-${REVIEW_MODE}.log" || return 0
+  _files=("${REVIEW_BLOCKED_DIR}"/*.log)
+  if [[ ${#_files[@]} -gt ${REVIEW_BLOCKED_KEEP} ]]; then
+    rm -f "${_files[@]:0:$((${#_files[@]} - REVIEW_BLOCKED_KEEP))}"
+  fi
+}
 _review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
 _review_repo=$(cdup=$(git rev-parse --show-cdup 2>/dev/null) && cd "./${cdup:-.}" >/dev/null 2>&1 && pwd -L || echo "unknown")
 _review_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "detached")
@@ -2498,7 +2517,15 @@ _global_log="${HOME}/.claude/last-review-result.log"
 } >"${_global_log}" || true
 
 _ec=0 # captured by EXIT trap; declared here so shellcheck sees the assignment
-trap '_ec=$?; rm -rf "${_chunk_results:-}" 2>/dev/null; rm -f "${_cr_out:-}" "${_ar_out:-}" "${DIFF_TMPFILE:-}" "${_codebase_err:-}" 2>/dev/null; [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >> "${REVIEW_LOG}" || true' EXIT
+# Named, not an inline string, so the final pass path can call it directly.
+_on_review_exit() {
+  _ec=$?
+  rm -rf "${_chunk_results:-}" 2>/dev/null || true
+  rm -f "${_cr_out:-}" "${_ar_out:-}" "${DIFF_TMPFILE:-}" "${_codebase_err:-}" 2>/dev/null || true
+  [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >>"${REVIEW_LOG}" || true
+  preserve_blocked_log "$_ec" || true
+}
+trap _on_review_exit EXIT
 
 if [[ -z "${DIFF}" ]]; then
   log_warn "No staged changes to review"
@@ -3654,4 +3681,8 @@ _review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
 } >"${_global_log}.tmp" \
   && mv "${_global_log}.tmp" "${_global_log}" || true
 log_success "Review timestamp: ${_review_ts}  ← verify this matches commit time"
+# Disarm the trap and run its handler directly, as claude-incognito.sh does, so
+# it runs once either way. shellcheck does not count a trap-only call (SC2329).
+trap - EXIT
+_on_review_exit
 exit 0
