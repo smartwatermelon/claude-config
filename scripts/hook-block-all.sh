@@ -30,24 +30,49 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Read input once and pass to each hook
 input=$(cat)
 
-# hook-block-secret-leak.sh runs FIRST, deliberately. Every other hook here
-# logs the full command text to blocked-commands.log when it blocks, and this
-# loop stops at the first hook that does. If a command carries a live secret
-# AND trips another rule, running that other hook first would write the secret
-# to disk before the secret-leak hook ever saw it. First position means the
-# name-only log wins.
-for hook in \
-  "${SCRIPT_DIR}/hook-block-secret-leak.sh" \
-  "${SCRIPT_DIR}/hook-block-gate-dir-write.sh" \
-  "${SCRIPT_DIR}/hook-block-no-verify.sh" \
-  "${SCRIPT_DIR}/hook-block-short-no-verify.sh" \
-  "${SCRIPT_DIR}/hook-block-main-commit.sh" \
-  "${SCRIPT_DIR}/hook-block-personify.sh" \
-  "${SCRIPT_DIR}/hook-check-commit-message.py" \
-  "${SCRIPT_DIR}/hook-block-merge-lock-authorize.sh" \
-  "${SCRIPT_DIR}/hook-block-api-merge.sh" \
-  "${SCRIPT_DIR}/hook-block-git-worktree.sh"; do
-  if [[ -x "${hook}" ]]; then
-    printf '%s\n' "${input}" | "${hook}" || exit $?
+# Every hook below is REQUIRED. hook-block-secret-leak.sh runs FIRST,
+# deliberately. Every other hook here logs the full command text to
+# blocked-commands.log when it blocks, and this loop stops at the first hook
+# that does. If a command carries a live secret AND trips another rule, running
+# that other hook first would write the secret to disk before the secret-leak
+# hook ever saw it. First position means the name-only log wins.
+REQUIRED_HOOKS=(
+  hook-block-secret-leak.sh
+  hook-block-gate-dir-write.sh
+  hook-block-no-verify.sh
+  hook-block-short-no-verify.sh
+  hook-block-main-commit.sh
+  hook-block-personify.sh
+  hook-check-commit-message.py
+  hook-block-merge-lock-authorize.sh
+  hook-block-api-merge.sh
+  hook-block-git-worktree.sh
+)
+
+# Fail closed (#660). This loop used to skip a hook that was not executable, so
+# a lost symlink disabled that guard without a word. Check the whole list before
+# running any hook, and block with exit 2 (the PreToolUse block code) if one is
+# missing, dangling or not executable. This blocks every Bash call, including
+# the fix, so the message tells the human to run it in a terminal.
+missing=()
+for name in "${REQUIRED_HOOKS[@]}"; do
+  hook="${SCRIPT_DIR}/${name}"
+  if [[ -L "${hook}" && ! -e "${hook}" ]]; then
+    missing+=("${hook} (dangling symlink)")
+  elif [[ ! -e "${hook}" ]]; then
+    missing+=("${hook} (missing)")
+  elif [[ ! -x "${hook}" ]]; then
+    missing+=("${hook} (not executable)")
   fi
+done
+if ((${#missing[@]} > 0)); then
+  printf 'hook-block-all.sh: BLOCKED: required hook(s) cannot run, so no Bash command is checked:\n' >&2
+  printf '  %s\n' "${missing[@]}" >&2
+  printf 'Fix (in a terminal; Bash tool calls stay blocked until then): run install.sh --sync from the claude-config clone.\n' >&2
+  printf 'If a hook is "not executable", chmod +x it in the repo and commit.\n' >&2
+  exit 2
+fi
+
+for name in "${REQUIRED_HOOKS[@]}"; do
+  printf '%s\n' "${input}" | "${SCRIPT_DIR}/${name}" || exit $?
 done
