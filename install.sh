@@ -238,8 +238,9 @@ PRUNE_COUNT=0
 WRONG_TARGET_COUNT=0
 NOEXEC_COUNT=0
 
-# A deployed hook that is absent, dangling or not executable is SKIPPED, not
-# failed: hook-block-all.sh runs each sub-hook only `if [[ -x "${hook}" ]]`.
+# A deployed hook that is absent, dangling or not executable cannot run. Since
+# #660 hook-block-all.sh blocks every Bash call when one of its required hooks
+# is in that state; other hooks are just silently inert.
 # These are the tracked paths that guard applies to (the dispatcher's
 # sub-hooks live in scripts/, the git/review hooks in hooks/).
 _is_hook_path() {
@@ -263,8 +264,8 @@ repair_symlinks() {
 
     # A tracked file with no link at all. --repair does not create links
     # (--sync does), but it must not call this state healthy: a missing hook
-    # link silently disables that hook (hook-block-all.sh skips a hook that
-    # is not executable). --sync creates these in its main loop, so only
+    # link disables that hook (or, for a hook-block-all.sh required hook,
+    # blocks every Bash call). --sync creates these in its main loop, so only
     # --repair reports them.
     if [[ ! -e "${link}" && ! -L "${link}" ]]; then
       if ${REPAIR_ONLY}; then
@@ -312,8 +313,8 @@ repair_symlinks() {
       fi
     fi
 
-    # A hook whose deployed path resolves but is not executable is skipped by
-    # hook-block-all.sh without a word. Report it; do not chmod here, because
+    # A hook whose deployed path resolves but is not executable cannot run
+    # (hook-block-all.sh fails closed on it, #660). Report it; do not chmod here, because
     # the mode is tracked in git and the fix belongs in the repo. --repair
     # only: --sync reports it later, from the smoke test (hooks/*.sh) and the
     # symlink health check (scripts/hook-*), which also make --sync fail.
@@ -424,7 +425,7 @@ if ${REPAIR_ONLY}; then
       _warn "NOT healthy: ${WRONG_TARGET_COUNT} symlink(s) point somewhere other than this repo; run install.sh --sync"
     fi
     if [[ "${NOEXEC_COUNT}" -gt 0 ]]; then
-      _warn "NOT healthy: ${NOEXEC_COUNT} hook(s) not executable, so hook-block-all.sh skips them; chmod +x in the repo and commit"
+      _warn "NOT healthy: ${NOEXEC_COUNT} hook(s) not executable, so they cannot run; chmod +x in the repo and commit"
     fi
     if [[ "${REPAIR_COUNT}" -gt 0 || "${PRUNE_COUNT}" -gt 0 ]]; then
       _info "Also fixed: ${REPAIR_COUNT} repaired, ${PRUNE_COUNT} stale link(s) pruned"
@@ -717,7 +718,7 @@ else
         failures+=("broken-symlink:${link}")
         ((symlink_errors += 1))
       elif [[ "${file}" == scripts/hook-* && ! -x "${link}" ]]; then
-        # hook-block-all.sh skips a sub-hook that is not executable (#439).
+        # A sub-hook that is not executable cannot run (#439); hook-block-all.sh fails closed on it (#660).
         # The smoke test above covers hooks/*.sh; this covers the dispatcher's
         # sub-hooks in scripts/.
         _warn "Hook not executable, so it never runs: ${link}"
