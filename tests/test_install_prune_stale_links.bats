@@ -168,8 +168,8 @@ run_install() {
 
 # --- #439: --repair must not call a disabled guard "healthy" -----------------
 #
-# hook-block-all.sh runs each sub-hook only `if [[ -x "${hook}" ]]`, so a hook
-# whose deployed path is dangling or not executable is skipped without a word.
+# hook-block-all.sh used to run each sub-hook only `if [[ -x "${hook}" ]]` (fail-closed since #660), so a hook
+# whose deployed path is dangling or not executable was skipped without a word.
 # Two such states still got "All symlinks healthy" after #600:
 #   - a dangling link at a tracked path whose target is outside REPO_DIR (an
 #     old clone path); prune_stale_symlinks does not own it and repair_symlinks
