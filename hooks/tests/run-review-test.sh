@@ -1145,7 +1145,13 @@ assert_contains \
 echo ""
 echo "=== Test 16: EXIT trap includes DIFF_TMPFILE and _codebase_err cleanup ==="
 
-trap_line="$(grep -m1 "^trap '_ec=\$?;" "${SUBJECT}")"
+# The trap calls a named handler (#455), so read the handler's body.
+trap_line="$(sed -n '/^_on_review_exit() {$/,/^}$/p' "${SUBJECT}")"
+
+assert_contains \
+  "EXIT trap is set to the handler" \
+  "trap _on_review_exit EXIT" \
+  "$(grep -m1 '^trap _on_review_exit EXIT$' "${SUBJECT}" || true)"
 
 assert_contains \
   "EXIT trap cleanup references DIFF_TMPFILE" \

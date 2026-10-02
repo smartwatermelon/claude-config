@@ -252,6 +252,8 @@ Check: timestamp within ~60s, repo matches, branch matches, commit matches HEAD.
 
 The global `~/.claude/last-review-result.log` is a pointer file with a `log:` field pointing to the per-repo authoritative log.
 
+Each run overwrites that log. When a run blocks (any non-zero exit), a copy is kept in `<git-dir>/review-blocked/<UTC-time>-<mode>.log`. The newest 20 copies are kept.
+
 ### Review Timeouts
 
 What a timeout (or agent error) does depends on the path:
