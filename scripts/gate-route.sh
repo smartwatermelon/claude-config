@@ -3,8 +3,15 @@
 #
 # Rules file: ${GATE_RULES_FILE:-${HOME}/.claude/gate-rules.conf}
 # One rule per line: "<matcher> <outcome>". First match wins.
-#   matcher: repo=<owner/name> | author=<login> | *
+#   matcher: repo=<owner/name> | author=<login> | owner=<login> | *
 #   outcome: pangram | visual | exempt
+#
+# owner=<login> matches the owner part of an owner/name destination, exactly
+# and case-insensitively, and only when the destination host is github.com.
+# A --repo value (gh's owner/name) counts as github.com; a --dir origin must
+# name github.com itself. Any other host, or none, falls through (fail closed).
+# author= cannot do this job: the gh wrapper maps every unknown owner to
+# twistedmelonman, so it cannot tell a personal repo from someone else's.
 #
 # Sourced by tests and later tasks: main runs only when executed.
 
@@ -57,6 +64,14 @@ _load_rules_inner() {
         kind="author"
         value="${matcher#author=}"
         ;;
+      owner=?*)
+        kind="owner"
+        value="${matcher#owner=}"
+        if [[ "${value}" == */* ]]; then
+          echo "gate-route: ${file}:${lineno}: owner value must not contain '/': '${matcher}'" >&2
+          return 4
+        fi
+        ;;
       *)
         echo "gate-route: ${file}:${lineno}: unknown matcher '${matcher}'" >&2
         return 4
@@ -76,13 +91,15 @@ _load_rules_inner() {
   return 0
 }
 
-# _match_rule <repo> <author>
+# _match_rule <repo> <author> [host]
 # Print "<outcome>\t<rule number>\t<reason>" for the first matching rule.
-# Return 4 if no rule matches.
+# Return 4 if no rule matches. An owner rule needs host github.com and a repo
+# of exactly owner/name; without both it never matches.
 _match_rule() {
-  local repo="${1:-}" author="${2:-}" i
+  local repo="${1:-}" author="${2:-}" host="${3:-}" i
   repo="${repo,,}"
   author="${author,,}"
+  host="${host,,}"
   for i in "${!RULE_KIND[@]}"; do
     case "${RULE_KIND[i]}" in
       repo)
@@ -94,6 +111,12 @@ _match_rule() {
       author)
         if [[ "${author}" == "${RULE_VALUE[i]}" ]]; then
           printf '%s\t%d\tmatched author=%s\n' "${RULE_OUTCOME[i]}" "$((i + 1))" "${RULE_VALUE[i]}"
+          return 0
+        fi
+        ;;
+      owner)
+        if [[ "${host}" == "github.com" && "${repo}" =~ ^[^/]+/[^/]+$ && "${repo%%/*}" == "${RULE_VALUE[i]}" ]]; then
+          printf '%s\t%d\tmatched owner=%s\n' "${RULE_OUTCOME[i]}" "$((i + 1))" "${RULE_VALUE[i]}"
           return 0
         fi
         ;;
@@ -121,6 +144,29 @@ _repo_from_dir() {
   printf '%s\n' "${url,,}"
 }
 
+# _host_from_dir <dir>
+# Print the lowercase host of <dir>'s origin URL, or nothing when there is no
+# origin or the URL names no host (a local path or file://). Handles
+# scheme://[user@]host[:port]/path and scp-like [user@]host:path.
+_host_from_dir() {
+  local dir="$1" url host
+  url="$(git -C "${dir}" config --get remote.origin.url 2>/dev/null || true)"
+  [[ -n "${url}" ]] || return 0
+  if [[ "${url}" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*:// ]]; then
+    host="${url#*://}"
+    host="${host%%/*}"
+    host="${host##*@}"
+    host="${host%%:*}"
+  elif [[ "${url}" == *:* && "${url%%:*}" != */* ]]; then
+    host="${url%%:*}"
+    host="${host##*@}"
+  else
+    return 0
+  fi
+  [[ -n "${host}" ]] && printf '%s\n' "${host,,}"
+  return 0
+}
+
 # _author_for_repo <owner/name> <dir>
 # Print the gh identity for the repo's owner, or nothing. Sources the gh
 # wrapper in a subshell so its state never leaks into this process.
@@ -137,7 +183,7 @@ _author_for_repo() {
 
 main() {
   set -euo pipefail
-  local repo="" dir="." author rules_file result
+  local repo="" dir="." author host="" rules_file result
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo)
@@ -158,11 +204,18 @@ main() {
   done
   rules_file="${GATE_RULES_FILE:-${HOME}/.claude/gate-rules.conf}"
   _load_rules "${rules_file}" || exit 4
-  [[ -n "${repo}" ]] || repo="$(_repo_from_dir "${dir}")"
+  if [[ -n "${repo}" ]]; then
+    # gh resolves a bare owner/name (-R, a repos/ path, a github.com URL) on
+    # github.com.
+    host="github.com"
+  else
+    repo="$(_repo_from_dir "${dir}")"
+    host="$(_host_from_dir "${dir}")"
+  fi
   [[ -n "${repo}" ]] || echo "gate-route: repo unresolved" >&2
   author="$(_author_for_repo "${repo}" "${dir}")"
   [[ -n "${author}" ]] || echo "gate-route: author unresolved" >&2
-  result="$(_match_rule "${repo}" "${author}")" || exit 4
+  result="$(_match_rule "${repo}" "${author}" "${host}")" || exit 4
   printf '%s\n' "${result}"
 }
 

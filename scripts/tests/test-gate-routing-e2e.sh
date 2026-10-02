@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# End to end: stage -> approve -> hook, across the three destinations the
-# shipped gate-rules.conf routes differently.
+# End to end: stage -> approve -> hook, across the destinations the shipped
+# gate-rules.conf routes differently.
 #
-#   andrewmrich/beacon-workspace  rule 1  visual   (banner, no record needed)
-#   beacon-biosignals/x           rule 2  pangram  (blocks until a record exists)
-#   twistedmelonman/y             rule 3  visual   (banner, no record needed)
+#   andrewmrich/beacon-workspace  rule 1    visual   (banner, no record needed)
+#   beacon-biosignals/x           rule 2    pangram  (blocks until a record exists)
+#   smartwatermelon/z             rule 3    exempt   (passes unapproved)
+#   twistedmelonman/y             rule 5    visual   (banner, no record needed)
+#   anthropics/claude-code        rule 5    visual   (blocks unapproved)
 #
 # GATE_RULES_FILE points at the repo's real gate-rules.conf, so an edit that
 # changes the routing fails here. The check-records directory is a sandbox:
@@ -158,10 +160,10 @@ else
   _no "personal: stage and approve without a record"
 fi
 line="$(cat "${TMP}/pers.line" 2>/dev/null || true)"
-if [[ "${line}" == "# pers: NOT PANGRAM REVIEWED (rule 3: "* ]]; then
-  _ok "personal: review shows the rule 3 banner"
+if [[ "${line}" == "# pers: NOT PANGRAM REVIEWED (rule 5: "* ]]; then
+  _ok "personal: review shows the rule 5 banner"
 else
-  _no "personal: review shows the rule 3 banner: ${line}"
+  _no "personal: review shows the rule 5 banner: ${line}"
 fi
 PERS_APPROVED="$(cat "${TMP}/pers.path" 2>/dev/null || true)"
 _hook "${PERSONAL}" "git -C ${PERSONAL} commit -F ${PERS_APPROVED}"
@@ -207,6 +209,61 @@ if ((rc == 0)); then
   _ok "employer: hook passes once the record exists"
 else
   _no "employer: hook passes once the record exists (rc=${rc}): ${err}"
+fi
+
+# --- owner= rules: personal org exempt, third party still gated -------------
+# The text is never staged or approved: an exempt destination must pass it
+# unmeasured, and every other destination must block it.
+ORG="${TMP}/org"
+THIRD="${TMP}/third"
+NOWHERE="${TMP}/nowhere"
+_mkrepo "${ORG}" smartwatermelon/z
+_mkrepo "${THIRD}" anthropics/claude-code
+mkdir -p "${NOWHERE}"
+UNAPPROVED="${TMP}/unapproved.txt"
+printf 'fix(z): text nobody approved\n' >"${UNAPPROVED}"
+
+_hook "${ORG}" "git -C ${ORG} commit -F ${UNAPPROVED}"
+if ((rc == 0)); then
+  _ok "org: commit passes unapproved"
+else
+  _no "org: commit passes unapproved (rc=${rc}): ${err}"
+fi
+_hook "${ORG}" "gh pr create --title t --body-file ${UNAPPROVED}"
+if ((rc == 0)); then
+  _ok "org: PR from the checkout passes unapproved"
+else
+  _no "org: PR from the checkout passes unapproved (rc=${rc}): ${err}"
+fi
+_hook "${NOWHERE}" "gh pr create --title t --body-file ${UNAPPROVED} -R smartwatermelon/z"
+if ((rc == 0)); then
+  _ok "org: PR with -R passes unapproved"
+else
+  _no "org: PR with -R passes unapproved (rc=${rc}): ${err}"
+fi
+_hook "${THIRD}" "git -C ${THIRD} commit -F ${UNAPPROVED}"
+if ((rc == 2)); then
+  _ok "third party: commit blocks unapproved"
+else
+  _no "third party: commit blocks unapproved (rc=${rc}): ${err}"
+fi
+_hook "${THIRD}" "gh pr create --title t --body-file ${UNAPPROVED}"
+if ((rc == 2)); then
+  _ok "third party: PR from the checkout blocks unapproved"
+else
+  _no "third party: PR from the checkout blocks unapproved (rc=${rc}): ${err}"
+fi
+_hook "${ORG}" "gh pr create --title t --body-file ${UNAPPROVED} -R anthropics/claude-code"
+if ((rc == 2)); then
+  _ok "third party: PR with -R from an org checkout blocks unapproved"
+else
+  _no "third party: PR with -R from an org checkout blocks unapproved (rc=${rc}): ${err}"
+fi
+_hook "${PERSONAL}" "git -C ${PERSONAL} commit -F ${UNAPPROVED}"
+if ((rc == 2)); then
+  _ok "twistedmelonman: commit blocks unapproved"
+else
+  _no "twistedmelonman: commit blocks unapproved (rc=${rc}): ${err}"
 fi
 
 echo ""
