@@ -223,8 +223,9 @@ fi
 # in-org from off-org without resolving the repo, so an indirect create must carry --draft (or -d)
 # itself. Quoted text is removed before the flag check, so "--draft" inside --body does not count.
 # Backslash-newline continuations are joined first so a flag on a later line is seen.
+# `gh pr new` is an alias of `gh pr create`, so both are matched.
 joined="${cmd//$'\\\n'/ }"
-create_re="${CP}${GH_INDIRECT}[[:space:]]+${GF}pr[[:space:]]+create([[:space:]]|\$)"
+create_re="${CP}${GH_INDIRECT}[[:space:]]+${GF}pr[[:space:]]+(create|new)([[:space:]]|\$)"
 if printf '%s\n' "${joined}" | grep -qE "${create_re}"; then
   # Unquote a quoted gh path, replace other quoted strings with Q (a --body may hold ; or --draft), then put each
   # command on its own line by turning every operator into a newline. Each indirect create must have --draft.
@@ -234,11 +235,11 @@ if printf '%s\n' "${joined}" | grep -qE "${create_re}"; then
   split=$(printf '%s\n' "${joined}" \
     | sed -E "s#[\"']([^\"'[:space:]]*/gh)[\"']#\\1#g; s/\"[^\"]*\"/Q/g; s/'[^']*'/Q/g" \
     | tr ';&|()`' '\n')
-  seg_re="^[[:space:]]*${ASSIGN}${GH_INDIRECT}[[:space:]]+${GF}pr[[:space:]]+create([[:space:]]|\$)"
+  seg_re="^[[:space:]]*${ASSIGN}${GH_INDIRECT}[[:space:]]+${GF}pr[[:space:]]+(create|new)([[:space:]]|\$)"
   while IFS= read -r seg; do
     printf '%s\n' "${seg}" | grep -qE "${seg_re}" || continue
     seen=1
-    seg=$(printf '%s\n' "${seg}" | sed -E 's/^.*pr[[:space:]]+create//')
+    seg=$(printf '%s\n' "${seg}" | sed -E 's/^.*pr[[:space:]]+(create|new)//')
     if ! printf '%s\n' "${seg}" | grep -qE '(^|[[:space:]])(--draft|--draft=true|-d)([[:space:]]|$)'; then
       draft_ok=0
     fi

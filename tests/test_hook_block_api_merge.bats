@@ -214,6 +214,11 @@ _run_hook() {
   [ "$status" -eq 2 ]
 }
 
+@test "blocks: absolute-path gh pr new (alias of pr create) without --draft" {
+  _run_hook '/opt/homebrew/bin/gh pr new --title t'
+  [ "$status" -eq 2 ]
+}
+
 @test "blocks: two indirect creates on one line, only the second with --draft" {
   _run_hook '/opt/homebrew/bin/gh pr create --title t && /opt/homebrew/bin/gh pr create --draft'
   [ "$status" -eq 2 ]
