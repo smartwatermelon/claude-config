@@ -302,3 +302,99 @@ _run_hook() {
   _run_hook 'which -a gh; ls -l /opt/homebrew/bin/gh'
   [ "$status" -eq 0 ]
 }
+
+# --- indirect gh pr ready / api POST pulls (smartwatermelon/dotfiles#339) ---
+
+@test "blocks: indirect gh pr ready without --undo (path, prefix, backslash)" {
+  _run_hook '/opt/homebrew/bin/gh pr ready 12'
+  [ "$status" -eq 2 ]
+  _run_hook 'command gh pr ready 12'
+  [ "$status" -eq 2 ]
+  _run_hook '\gh -R o/r pr ready 12'
+  [ "$status" -eq 2 ]
+  _run_hook 'echo hi && GH_TOKEN=x /opt/homebrew/bin/gh pr ready'
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: indirect gh pr ready whose --undo is only inside --body text" {
+  _run_hook '/opt/homebrew/bin/gh pr ready 12 --body "pass --undo"'
+  [ "$status" -eq 2 ]
+}
+
+@test "allows: indirect gh pr ready --undo" {
+  _run_hook '/opt/homebrew/bin/gh pr ready 12 --undo'
+  [ "$status" -eq 0 ]
+}
+
+@test "allows: plain gh pr ready (the wrapper handles it)" {
+  _run_hook 'gh pr ready 12'
+  [ "$status" -eq 0 ]
+}
+
+@test "blocks: indirect gh api POST pulls, explicit method" {
+  _run_hook '/opt/homebrew/bin/gh api -X POST repos/o/r/pulls -f title=t -f head=h -f base=main'
+  [ "$status" -eq 2 ]
+  _run_hook 'command gh api --method POST "/repos/o/r/pulls" -f title=t'
+  [ "$status" -eq 2 ]
+  _run_hook '/opt/homebrew/bin/gh api repos/o/r/pulls -X "POST" -F draft=false'
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: indirect gh api pulls, implicit POST via -f/-F/--field/--raw-field/--input" {
+  _run_hook '/opt/homebrew/bin/gh api repos/o/r/pulls -f title=t'
+  [ "$status" -eq 2 ]
+  _run_hook '/opt/homebrew/bin/gh api repos/o/r/pulls -F title=t'
+  [ "$status" -eq 2 ]
+  _run_hook '/opt/homebrew/bin/gh api repos/o/r/pulls --field title=t'
+  [ "$status" -eq 2 ]
+  _run_hook '/opt/homebrew/bin/gh api repos/o/r/pulls --raw-field title=t'
+  [ "$status" -eq 2 ]
+  _run_hook '/opt/homebrew/bin/gh api repos/o/r/pulls --input /tmp/body.json'
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: indirect gh api pulls POST with draft=true only inside --body text" {
+  _run_hook '/opt/homebrew/bin/gh api repos/o/r/pulls -f body="set -F draft=true"'
+  [ "$status" -eq 2 ]
+}
+
+@test "allows: indirect gh api POST pulls with draft=true" {
+  _run_hook '/opt/homebrew/bin/gh api -X POST repos/o/r/pulls -f title=t -F draft=true'
+  [ "$status" -eq 0 ]
+  _run_hook '/opt/homebrew/bin/gh api repos/o/r/pulls -f title=t --field draft=true'
+  [ "$status" -eq 0 ]
+}
+
+@test "allows: indirect gh api GET on pulls, and pulls/<n> subpaths" {
+  _run_hook '/opt/homebrew/bin/gh api repos/o/r/pulls'
+  [ "$status" -eq 0 ]
+  _run_hook '/opt/homebrew/bin/gh api repos/o/r/pulls --jq ".[].number"'
+  [ "$status" -eq 0 ]
+  _run_hook '/opt/homebrew/bin/gh api -X GET repos/o/r/pulls -f state=open'
+  [ "$status" -eq 0 ]
+  _run_hook '/opt/homebrew/bin/gh api repos/o/r/pulls/5/comments -f body=x'
+  [ "$status" -eq 0 ]
+  _run_hook '/opt/homebrew/bin/gh api -X PATCH repos/o/r/pulls/5 -f title=x'
+  [ "$status" -eq 0 ]
+}
+
+@test "allows: plain gh api POST pulls (the wrapper handles it)" {
+  _run_hook 'gh api repos/o/r/pulls -f title=t -f head=h -f base=main'
+  [ "$status" -eq 0 ]
+  _run_hook 'gh api -X POST repos/o/r/pulls -f title=t'
+  [ "$status" -eq 0 ]
+}
+
+@test "allows: trigger text inside a --body or echo does not block" {
+  _run_hook 'gh pr comment 1 --body "ran /opt/homebrew/bin/gh pr ready 1 and /opt/homebrew/bin/gh api repos/o/r/pulls -f a=b"'
+  [ "$status" -eq 0 ]
+  _run_hook 'echo "/opt/homebrew/bin/gh pr ready 1; /opt/homebrew/bin/gh api repos/o/r/pulls -f a=b"'
+  [ "$status" -eq 0 ]
+}
+
+@test "blocks: indirect pr ready / api pulls POST hidden in a quoted command substitution" {
+  _run_hook 'echo "$(/opt/homebrew/bin/gh pr ready 1)"'
+  [ "$status" -eq 2 ]
+  _run_hook 'echo "$(/opt/homebrew/bin/gh api repos/o/r/pulls -f a=b)"'
+  [ "$status" -eq 2 ]
+}
