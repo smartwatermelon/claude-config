@@ -55,21 +55,51 @@ setup() {
   # PASS unless ${MOCK_DIR}/fail-<agent> exists, in which case that agent
   # returns a BLOCKING FAIL, or ${MOCK_DIR}/error-<agent> exists, in which
   # case the CLI exits 1 with no output (an agent error).
+  #
+  # The chunked-path arbiter (#647) is told apart by its argv, not its agent
+  # name: it runs as adversarial-reviewer too, so fail-adversarial-reviewer
+  # must not also fail it. A call carrying --allowedTools is the arbiter; it
+  # is recorded as "arbiter:<agent>" and answers PASS unless
+  # ${MOCK_DIR}/arbiter-fail (FAIL), arbiter-empty (exit 0, no output) or
+  # arbiter-error (exit 1) exists. Every call's argv is appended to
+  # ${ARGV_RECORD} as one line, each argument in brackets, so [--tools][]
+  # is distinguishable from [--tools][Read,Grep,Glob].
   export AGENT_RECORD="${MOCK_DIR}/agents-invoked"
+  export ARGV_RECORD="${MOCK_DIR}/argv-invoked"
   cat >"${MOCK_DIR}/claude" <<EOF
 #!/usr/bin/env bash
 agent=""
 prev=""
+is_arbiter=false
+argv_line=""
 for a in "\$@"; do
   if [[ "\$a" == "--version" ]]; then
     echo "mock-claude 0.0.1"
     exit 0
   fi
   [[ "\$prev" == "--agent" ]] && agent="\$a"
+  [[ "\$a" == "--allowedTools" ]] && is_arbiter=true
+  argv_line="\${argv_line}[\$a]"
   prev="\$a"
 done
-printf '%s\n' "\${agent}" >>"${AGENT_RECORD}"
+printf '%s\n' "\${argv_line}" >>"${ARGV_RECORD}"
 cat >/dev/null
+if [[ "\${is_arbiter}" == true ]]; then
+  printf 'arbiter:%s\n' "\${agent}" >>"${AGENT_RECORD}"
+  [[ -f "${MOCK_DIR}/arbiter-error" ]] && exit 1
+  [[ -f "${MOCK_DIR}/arbiter-empty" ]] && exit 0
+  if [[ -f "${MOCK_DIR}/arbiter-fail" ]]; then
+    jq -n '{type:"result",subtype:"success",is_error:false,
+      result:"VERDICT: FAIL\nThe finding holds.\nISSUE: upheld\nSEVERITY: BLOCKING\nLOCATION: a.sh:1\nDETAILS: mock",
+      structured_output:{verdict:"FAIL",blocking:true,findings:[{severity:"BLOCKING",location:"a.sh:1",issue:"upheld"}]}}'
+  else
+    jq -n '{type:"result",subtype:"success",is_error:false,
+      result:"VERDICT: PASS\nRead a.sh; the claim does not match the code.",
+      structured_output:{verdict:"PASS",blocking:false,findings:[]}}'
+  fi
+  exit 0
+fi
+printf '%s\n' "\${agent}" >>"${AGENT_RECORD}"
 [[ -f "${MOCK_DIR}/error-\${agent}" ]] && exit 1
 if [[ -f "${MOCK_DIR}/fail-\${agent}" ]]; then
   # A non-empty fail-<agent> file overrides the finding: line 1 ISSUE,
@@ -286,6 +316,9 @@ _stage_three_files() {
 
 @test "#646: a security finding outside the diff still blocks (same exemption as single-pass)" {
   _stage_three_files
+  # The adversarial pass passes, so the #647 arbiter runs; uphold the block
+  # so this test sees only the downgrade decision.
+  touch "${MOCK_DIR}/arbiter-fail"
   printf '%s\n' "hardcoded secret in config" "ghost.sh:1" "a credential is committed in plain text" \
     >"${MOCK_DIR}/fail-${CODE_REVIEWER}"
 
@@ -296,6 +329,9 @@ _stage_three_files() {
 
 @test "#646: a per-file BLOCKING finding at a path inside the diff still blocks" {
   _stage_three_files
+  # The adversarial pass passes, so the #647 arbiter runs; uphold the block
+  # so this test sees only the downgrade decision.
+  touch "${MOCK_DIR}/arbiter-fail"
   printf '%s\n' "off-by-one in the loop bound" "a.sh:1" "the loop runs one extra time" \
     >"${MOCK_DIR}/fail-${CODE_REVIEWER}"
 
@@ -317,4 +353,121 @@ _stage_three_files() {
   [ "$status" -ne 0 ]
   ! grep -q '^downgraded:' "${EXPECTED_LOG}"
   grep -q '^adversarial-reviewer: FAIL' "${EXPECTED_LOG}"
+}
+
+# --- #647: an arbiter with read-only tools rules on per-file blocks -----------
+#
+# Per-file reviewers see one file's diff and no tools, and on 2026-09-30 they
+# blocked a 2,162-line commit on claims the code contradicted while the
+# whole-diff adversarial pass passed it. The single-pass path arbitrates that
+# disagreement; the chunked path let the block stand. The arbiter here can
+# Read/Grep/Glob, so it checks the claim against the file.
+
+# One blocking per-file finding, on a.sh. b.sh's and c.sh's reviewers report
+# the same a.sh location, which #646 downgrades, so exactly a.sh blocks.
+_stage_one_blocking_file() {
+  _stage_three_files
+  printf '%s\n' "arguments reversed" "a.sh:1" "the call swaps its arguments" \
+    >"${MOCK_DIR}/fail-${CODE_REVIEWER}"
+}
+
+@test "#647: per-file BLOCKING + adversarial PASS + arbiter PASS lets the commit through" {
+  _stage_one_blocking_file
+
+  run _run_review
+  [ "$status" -eq 0 ]
+  [ "$(grep -cx 'arbiter:adversarial-reviewer' "${AGENT_RECORD}")" -eq 1 ]
+  grep -q '^arbiter: PASS (a.sh)' "${EXPECTED_LOG}"
+  grep -q '^=== ARBITER: a.sh ===' "${EXPECTED_LOG}"
+  # The original block stays on record, as on the single-pass path.
+  grep -q '^code-reviewer: FAIL' "${EXPECTED_LOG}"
+  [[ "$output" == *"Cleared by arbiter: 1/1"* ]]
+  # The disagreement is recorded locally.
+  grep -q '^arbiter_verdict: PASS' "${TMPDIR_TEST}/.git/reviewer-disagreements.log"
+}
+
+@test "#647: arbiter FAIL keeps the per-file block" {
+  _stage_one_blocking_file
+  touch "${MOCK_DIR}/arbiter-fail"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  grep -q '^arbiter: FAIL (a.sh)' "${EXPECTED_LOG}"
+  [[ "$output" != *"Chunked review passed"* ]]
+}
+
+@test "#647: arbiter empty output fails closed" {
+  _stage_one_blocking_file
+  touch "${MOCK_DIR}/arbiter-empty"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  grep -q '^arbiter: FAIL (a.sh)' "${EXPECTED_LOG}"
+}
+
+@test "#647: arbiter agent error fails closed" {
+  _stage_one_blocking_file
+  touch "${MOCK_DIR}/arbiter-error"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  grep -q '^arbiter: FAIL (a.sh)' "${EXPECTED_LOG}"
+}
+
+@test "#647: a blocking adversarial FAIL means no arbiter call" {
+  _stage_one_blocking_file
+  printf '%s\n' "race in the loop" "c.sh:1" "the loop races" \
+    >"${MOCK_DIR}/fail-adversarial-reviewer"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  ! grep -q '^arbiter:' "${AGENT_RECORD}"
+  ! grep -q '^arbiter:' "${EXPECTED_LOG}"
+}
+
+@test "#647: an incomplete adversarial pass means no arbiter call" {
+  _stage_one_blocking_file
+  touch "${MOCK_DIR}/error-adversarial-reviewer"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  ! grep -q '^arbiter:' "${AGENT_RECORD}"
+  grep -q '^adversarial-reviewer: skipped (timeout or agent error)' "${EXPECTED_LOG}"
+}
+
+@test "#647: only the arbiter gets read-only tools; reviewers keep --tools \"\"" {
+  _stage_one_blocking_file
+
+  run _run_review
+  [ "$status" -eq 0 ]
+  local arbiter_argv reviewer_argv
+  arbiter_argv=$(grep -F '[--allowedTools]' "${ARGV_RECORD}")
+  [ "$(grep -cF '[--allowedTools]' "${ARGV_RECORD}")" -eq 1 ]
+  [[ "${arbiter_argv}" == *"[--allowedTools][Read,Grep,Glob]"* ]]
+  [[ "${arbiter_argv}" == *"[--tools][Read,Grep,Glob]"* ]]
+  [[ "${arbiter_argv}" == *"[--strict-mcp-config]"* ]]
+  [[ "${arbiter_argv}" != *"[--tools][]"* ]]
+  # Three per-file reviewers and one adversarial pass, all with no tools.
+  # Only --agent calls count: the model-alias probe also calls the CLI.
+  reviewer_argv=$(grep -F '[--agent]' "${ARGV_RECORD}" | grep -vF '[--allowedTools]')
+  [ "$(grep -c . <<<"${reviewer_argv}")" -eq 4 ]
+  [ "$(grep -cF '[--tools][]' <<<"${reviewer_argv}")" -eq 4 ]
+  [ "$(grep -cF "[--agent][${CODE_REVIEWER}]" <<<"${reviewer_argv}")" -eq 3 ]
+  [ "$(grep -cF '[--agent][adversarial-reviewer]' <<<"${reviewer_argv}")" -eq 1 ]
+}
+
+@test "#647: an unreviewed file still blocks when the arbiter clears the rest" {
+  _write_file "big.sh" 40 # > chunkSize 30: not reviewed
+  _write_file "a.sh" 20
+  git -C "${TMPDIR_TEST}" add big.sh a.sh
+  printf '%s\n' "arguments reversed" "a.sh:1" "the call swaps its arguments" \
+    >"${MOCK_DIR}/fail-${CODE_REVIEWER}"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  grep -q '^arbiter: PASS (a.sh)' "${EXPECTED_LOG}"
+  grep -q 'unreviewed: big.sh' "${EXPECTED_LOG}"
+  grep -q 'chunked: INCOMPLETE' "${EXPECTED_LOG}"
+  # The unreviewed file was not sent to the arbiter.
+  [ "$(grep -cx 'arbiter:adversarial-reviewer' "${AGENT_RECORD}")" -eq 1 ]
 }
