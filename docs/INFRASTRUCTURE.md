@@ -236,6 +236,7 @@ This enforcement exists because of two incidents on 2026-02-24:
   - adversarial-reviewer: `claude-sonnet-5-5` in every mode
   - arbiter: `claude-sonnet-5-5`, invoked only when code-reviewer returns a BLOCKING FAIL and adversarial-reviewer returns PASS
 - Size limits: `review.maxLines` (default 1000) is the full-review ceiling; above it, review is chunked per file. Above `review.skipThreshold` (default 2500) the commit is blocked and must be split.
+- Attempt limit: `review.maxAttempts` (default 3) caps consecutive blocked commit reviews per branch. At the limit the hook prints a STOP message, and later attempts are refused without review. The refusal still blocks the commit. Any passing commit resets the count. Counters live in `<git-dir>/review-attempts/<branch>`, one set per worktree. A human resets one with the `rm` command that the STOP message prints.
 - commit-msg skips review when the subject starts with `fixup!`, `squash!`, `wip:`, `WIP:`, or `wip`/`WIP` followed by whitespace
 - The pre-push hook runs one `--mode=full-diff` review that must pass. It files no issues. `--mode=codebase` is weekly/on-demand only (see CHECKLISTS.md, "On-Demand Codebase Review").
 - `run-review.sh` has no special path for security-critical files. `is_security_critical` (in `lib-review-issues.sh`) is used only by `pre-merge-review.sh` (those diffs are never summarized) and for the `security` issue label. See REFERENCE.md for the pattern.
