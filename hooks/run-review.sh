@@ -45,6 +45,9 @@ unset CDPATH
 #                             (default: claude-sonnet-5-5, only invoked when
 #                             code-reviewer BLOCKING FAIL disagrees with an
 #                             adversarial-reviewer PASS)
+#   review.maxAttempts     - Consecutive blocked commit reviews allowed per
+#                             branch before the hook refuses to review again
+#                             (default: 3). See check_attempt_limit (#646).
 #
 # EXAMPLES:
 #   git config --global review.maxLines 2000
@@ -97,6 +100,9 @@ REVIEW_NO_FILE="${REVIEW_NO_FILE:-}"
 REVIEW_MAX_LINES=$(git config --get --type=int review.maxLines 2>/dev/null || echo "1000")
 REVIEW_SKIP_THRESHOLD=$(git config --get --type=int review.skipThreshold 2>/dev/null || echo "2500")
 REVIEW_CHUNK_SIZE=$(git config --get --type=int review.chunkSize 2>/dev/null || echo "800")
+REVIEW_MAX_ATTEMPTS=$(git config --get --type=int review.maxAttempts 2>/dev/null || echo "3")
+# A zero or negative limit would refuse every commit; fall back to the default.
+[[ "${REVIEW_MAX_ATTEMPTS}" -ge 1 ]] || REVIEW_MAX_ATTEMPTS=3
 
 # --- Mode ---
 REVIEW_MODE="commit" # default: pre-commit review (code-reviewer + adversarial)
@@ -2461,7 +2467,7 @@ DIFF=$(cat)
 # result looks like a repo to any `[ -d .git ]` check while git itself rejects
 # it, and a later real `git init` silently inherits the stale artifacts. There
 # is also nothing to review outside a repo, so refuse rather than invent a path.
-if ! GIT_DIR_PATH="$(git rev-parse --git-dir 2>/dev/null)"; then
+if ! GIT_DIR_PATH="$(git rev-parse --absolute-git-dir 2>/dev/null)"; then
   _review_cwd=$(pwd -L || echo "unknown")
   echo "run-review.sh: not inside a git repository; nothing to review." >&2
   echo "  cwd: ${_review_cwd}" >&2
@@ -2516,16 +2522,74 @@ _global_log="${HOME}/.claude/last-review-result.log"
   printf 'log: %s\n' "${REVIEW_LOG}"
 } >"${_global_log}" || true
 
+# --- Commit attempt limit (#646) ---
+# An agent once retried a blocked commit 8 times; each retry re-ran the full
+# review. Count consecutive blocked commit reviews per branch. At the limit,
+# refuse before any reviewer runs. Fail closed: the refusal still blocks.
+# State lives in the git dir, so each worktree has its own counters.
+ATTEMPTS_DIR="${GIT_DIR_PATH}/review-attempts"
+ATTEMPTS_FILE="${ATTEMPTS_DIR}/$(printf '%s' "${_review_branch}" | tr -c 'A-Za-z0-9._-' '_')"
+_attempt_refused=false
+
+read_attempt_count() {
+  local _n=0
+  [[ -f "${ATTEMPTS_FILE}" ]] && _n=$(head -1 "${ATTEMPTS_FILE}" 2>/dev/null || echo 0)
+  [[ "${_n}" =~ ^[0-9]+$ ]] || _n=0
+  printf '%s\n' "${_n}"
+}
+
+print_attempt_stop() {
+  local _n="$1"
+  log_error ""
+  log_error "STOP: ${_n} consecutive blocked commit reviews on branch '${_review_branch}' (limit: ${REVIEW_MAX_ATTEMPTS})."
+  log_error "  Agents: do NOT retry this commit. Leave the work staged and report the"
+  log_error "  findings to your parent or the human. Further attempts are refused unreviewed."
+  log_error "  Human reset: rm '${ATTEMPTS_FILE}'"
+  log_error "  Change the limit: git config review.maxAttempts <n>"
+}
+
+# Called from the EXIT trap. Any exit 0, a skip included, means the commit
+# went through, so it resets the count.
+record_attempt() {
+  local _rc="$1" _n
+  [[ "${REVIEW_MODE}" == "commit" && "${_attempt_refused}" != true ]] || return 0
+  if [[ "${_rc}" -eq 0 ]]; then
+    rm -f "${ATTEMPTS_FILE}"
+    return 0
+  fi
+  _n=$(read_attempt_count)
+  _n=$((_n + 1))
+  mkdir -p "${ATTEMPTS_DIR}" && printf '%s\n' "${_n}" >"${ATTEMPTS_FILE}" || return 0
+  printf 'attempts: %d of %d\n' "${_n}" "${REVIEW_MAX_ATTEMPTS}" >>"${REVIEW_LOG}" || true
+  [[ "${_n}" -lt "${REVIEW_MAX_ATTEMPTS}" ]] || print_attempt_stop "${_n}"
+}
+
+check_attempt_limit() {
+  local _n
+  [[ "${REVIEW_MODE}" == "commit" ]] || return 0
+  _n=$(read_attempt_count)
+  [[ "${_n}" -ge "${REVIEW_MAX_ATTEMPTS}" ]] || return 0
+  _attempt_refused=true
+  print_attempt_stop "${_n}"
+  log_error "BLOCKING: commit refused without review (attempt limit reached)"
+  printf 'blocked: attempt limit reached (%d of %d)\n' "${_n}" "${REVIEW_MAX_ATTEMPTS}" >>"${REVIEW_LOG}" || true
+  exit 1
+}
+
 _ec=0 # captured by EXIT trap; declared here so shellcheck sees the assignment
 # Named, not an inline string, so the final pass path can call it directly.
 _on_review_exit() {
   _ec=$?
   rm -rf "${_chunk_results:-}" 2>/dev/null || true
   rm -f "${_cr_out:-}" "${_ar_out:-}" "${DIFF_TMPFILE:-}" "${_codebase_err:-}" 2>/dev/null || true
+  record_attempt "$_ec" || true
   [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >>"${REVIEW_LOG}" || true
   preserve_blocked_log "$_ec" || true
 }
 trap _on_review_exit EXIT
+
+# Before the cache and skips, so no cheap commit can reset a refused branch.
+check_attempt_limit
 
 if [[ -z "${DIFF}" ]]; then
   log_warn "No staged changes to review"
