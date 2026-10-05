@@ -87,7 +87,22 @@ commit_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do
 # `env git commit` needs no stripping, and letting the same branch cover both
 # forms avoids a second pattern. Do not "fix" the `*` to `+` — that would
 # leave the zero-assignment form unnormalized for no gain.
-_scan=$(printf '%s\n' "${cmd}" | sed -E 's/(^|[[:space:]])env[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*/\1env /g')
+#
+# A value may be quoted and hold spaces (`FOO="a b" git commit`), so the value
+# pattern steps over quoted runs. The single quote is spelled via ${sq}: it
+# cannot appear inside a single-quoted sed script.
+sq=$(printf '\047')
+readonly sq
+_aval="([^[:space:]\"${sq}]|\"[^\"]*\"|${sq}[^${sq}]*${sq})*"
+readonly _aval
+_assign="[A-Za-z_][A-Za-z0-9_]*=${_aval}[[:space:]]+"
+readonly _assign
+_scan=$(printf '%s\n' "${cmd}" | sed -E "s/(^|[[:space:]])env[[:space:]]+(${_assign})*/\\1env /g")
+
+# A bare leading assignment (`SKIP=x git commit`, #651) sits between the
+# separator and git, and neither wrapper arm consumes it. Strip it after any
+# command separator, the same approach hook-block-personify.sh uses.
+_scan=$(printf '%s\n' "${_scan}" | sed -E "s/(^|&&|\\|\\||;|\\||&|\\(|\\{)[[:space:]]*(${_assign})+/\\1 /g")
 
 if printf '%s\n' "${_scan}" | grep -qE "${commit_re}"; then
   # Prefer the repo the command names. Only the -C belonging to the matched
