@@ -118,6 +118,19 @@ check "path-qualified git commit" 2 '/usr/bin/git commit -m msg'
 check "commit after && separator" 2 'git add f && git commit -m msg'
 check "commit after ; separator" 2 'git add f ; git commit -m msg'
 
+echo "--- MUST BLOCK: leading assignments before git commit (#651) ---"
+check "bare SKIP=x git commit" 2 'SKIP=x git commit -m t'
+check "env SKIP=x git commit" 2 'env SKIP=x git commit -m t'
+check "SKIP=a,b git commit" 2 'SKIP=a,b git commit -m t'
+check "two assignments" 2 'FOO=1 SKIP=x git commit -m t'
+check "double-quoted value with space" 2 'FOO="a b" git commit -m t'
+check "single-quoted value with space" 2 "FOO='a b' git commit -m t"
+check "env with quoted value" 2 'env FOO="a b" git commit -m t'
+check "assignment after && separator" 2 'git add f && FOO=1 git commit -m t'
+check "assignment before git -C commit" 2 'FOO=1 git -C . commit -m t'
+check_from "assignment before git -C <master repo> commit" 2 "${REPO_FEATURE}" \
+  "FOO=1 git -C ${REPO_MASTER} commit -m t"
+
 echo "--- MUST BLOCK: master, not just main ---"
 check_from "git commit while on master" 2 "${REPO_MASTER}" 'git commit -m msg'
 check_from "git -C <master repo> commit" 2 "${REPO_FEATURE}" \
@@ -227,6 +240,11 @@ echo "--- MUST NOT BLOCK: committing while NOT on main ---"
 check_from "git commit from a feature branch" 0 "${REPO_FEATURE}" 'git commit -m msg'
 check_from "git -C <feature repo> commit" 0 "${REPO_MAIN}" \
   "git -C ${REPO_FEATURE} commit -m msg"
+check_from "assignment + commit on a feature branch" 0 "${REPO_FEATURE}" 'FOO=1 git commit -m msg'
+check_from "assignment + git -C <feature repo> commit" 0 "${REPO_MAIN}" \
+  "FOO=1 git -C ${REPO_FEATURE} commit -m msg"
+check "assignment before a non-commit git command" 0 'FOO=1 git status'
+check "message that merely contains SKIP=" 0 'git log --grep "SKIP=x"'
 
 echo
 echo "Passed: ${pass}  Failed: ${fail}"
