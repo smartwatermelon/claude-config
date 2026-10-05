@@ -1748,7 +1748,13 @@ invoke_agent() {
   if [[ "${BASHPID}" != "$$" ]]; then
     trap '_slow_notice_stop' EXIT
   fi
-  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p "${model_args[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" --tools "" --no-session-persistence 2>"${_agent_err}") || exit_code=$?
+  # No tools by default. invoke_agent_readonly (below) is the only caller
+  # that sets INVOKE_AGENT_READONLY; see the comment there for why.
+  local -a tool_args=(--tools "")
+  if [[ -n "${INVOKE_AGENT_READONLY:-}" ]]; then
+    tool_args=(--tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" --strict-mcp-config)
+  fi
+  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p "${model_args[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" "${tool_args[@]}" --no-session-persistence 2>"${_agent_err}") || exit_code=$?
   _slow_notice_stop
   if [[ -s "${_agent_err}" ]]; then
     cat "${_agent_err}" >&2
@@ -1801,6 +1807,27 @@ invoke_agent() {
     echo "PASS" >"${cache_file}"
     date -u +%Y-%m-%dT%H:%M:%SZ >>"${cache_file}"
   fi
+}
+
+# invoke_agent, but the agent can read the repository: Read, Grep and Glob,
+# and nothing else. Same arguments, output, cache and error handling.
+#
+# Only the chunked-path arbiter uses this (claude-config#647). Reviewers stay
+# on `--tools ""`, and the unverifiable-claim downgrade still assumes they
+# cannot read files. The arbiter is different on both cost and need:
+#   * It runs only when a per-file reviewer blocks and the whole-diff
+#     adversarial pass did not, so a tool-using session is rare.
+#   * The false blocks it exists to clear were checkable by reading the file.
+#     On 2026-09-30 per-file reviewers blocked a 2,162-line commit on "arguments
+#     reversed" (they were not) and "unquoted in jq" (it read --arg p "${PLUG}").
+#
+# All three flags matter. --tools limits the built-in set; --allowedTools
+# pre-approves, so -p mode does not stop on a permission prompt. Neither one
+# drops MCP servers: a probe on 2026-10-05 with both flags still reported
+# Gmail, Drive, Notion and 1Password tools. Adding --strict-mcp-config left
+# only Glob, Grep and Read. (Codebase mode passes --allowedTools alone.)
+invoke_agent_readonly() {
+  INVOKE_AGENT_READONLY=1 invoke_agent "$@"
 }
 
 # Records a code-reviewer/adversarial-reviewer disagreement and how the
@@ -2070,6 +2097,9 @@ perform_chunked_review() {
   # file that was never dispatched (already listed above) from one whose
   # subshell died without writing a result, which must not vanish silently.
   local dispatched_list=""
+  # Files whose per-file review blocked, with that reviewer's (downgraded)
+  # output at the same index. The arbiter reads these (#647).
+  local -a blocking_files=() blocking_outputs=()
 
   # Parallel dispatch: up to CHUNK_PARALLEL claude invocations in flight.
   # Each subshell writes its result (file path on line 1, agent output from
@@ -2302,6 +2332,8 @@ ${file_diff}
       if output_blocks "${_rout}"; then
         ((blocking_count += 1))
         overall_verdict="FAIL"
+        blocking_files+=("${_rfile}")
+        blocking_outputs+=("${_rout}")
       else
         ((warning_count += 1))
       fi
@@ -2347,6 +2379,130 @@ $(strip_structured_blocking "${_rout}")"
     fi
   fi
 
+  # --- Arbiter: per-file BLOCKING vs whole-diff adversarial PASS (#647) ---
+  # The single-pass path asks an arbiter when the two reviewers disagree; this
+  # path used to let any per-file block stand. On 2026-09-30 that blocked a
+  # 2,162-line commit twice on claims the code contradicted, while the
+  # adversarial pass read the same diff and passed it both times.
+  #
+  # Runs only when adversarial-reviewer completed with a PASS verdict. FAIL
+  # (blocking or warnings), timeout/error, unparseable and not-installed all
+  # leave the per-file blocks as they were.
+  #
+  # One arbiter call per blocking file, not one for all of them: each ruling
+  # then clears exactly one block, the prompt carries that file's diff only
+  # (bounded by review.chunkSize; the whole diff is large by definition), and
+  # one bad finding cannot drag a sound one down with it. Calls are serial;
+  # this runs only on disagreement.
+  #
+  # Fail closed: only a parsed VERDICT: PASS clears a block. FAIL, empty
+  # output, timeout or agent error leave it blocking. Unreviewed files are not
+  # arbitrated and still block below, whatever the arbiter rules here (#588).
+  #
+  # Cached adversarial PASS (dev-env#35 / claude-config#246): accepted as the
+  # trigger. The chunked adversarial cache is keyed on DIFF_HASH (script SHA +
+  # exact diff), so a hit means this same diff passed before. The single-pass
+  # path forces a live run on a retry because its arbiter weighs adversarial
+  # prose as evidence; that mechanism (ROUND_HISTORY_FILE) is set up only after
+  # this path has exited. Here the arbiter's evidence is the file itself: it
+  # has Read/Grep/Glob and is told to check the claim. A cache hit carries no
+  # reasoning ("VERDICT: PASS (cached)"), so the prompt says so plainly rather
+  # than presenting it as a reasoned verdict.
+  #
+  # The arbiter cache key adds a hash of the disputed finding to DIFF_HASH and
+  # the file. A failed per-file review is never cached, so a retry can raise a
+  # different finding on the same file; a DIFF_HASH+file key would hand that
+  # new finding the old finding's PASS.
+  local original_blocking_count=${blocking_count} overruled_count=0 arbiter_log=""
+  if [[ ${blocking_count} -gt 0 && "${adv_status}" == "pass" ]]; then
+    log_warn "${blocking_count} per-file BLOCKING result(s) disagree with adversarial-reviewer PASS - arbitrating"
+    local _adv_evidence _ai _afile _afindings _adiff _akey _aprompt _aout _averdict _asafe
+    if grep -q 'VERDICT: PASS (cached)' <<<"${adv_display}"; then
+      _adv_evidence="VERDICT: PASS (cached result from an earlier run on this identical diff; no reasoning is available. Do not treat it as evidence beyond \"passed\". Rely on the file.)"
+    else
+      _adv_evidence="${adv_display}"
+    fi
+    for _ai in "${!blocking_files[@]}"; do
+      _afile="${blocking_files[${_ai}]}"
+      _afindings=$(strip_structured_blocking "${blocking_outputs[${_ai}]}")
+      _adiff=$(git diff --cached -U10 -- "${_afile}" 2>/dev/null || true)
+      _aprompt="Two reviewers disagree on whether this commit is safe. A per-file reviewer read only the diff of ${_afile} and found a BLOCKING issue. A second reviewer read the whole diff and found no blocking issue. Decide whether the per-file finding holds.
+
+IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
+Do NOT output Protocol 0 environment check or any preamble.
+Begin your response directly with the verdict in the specified format below.
+
+You can use Read, Grep and Glob. Before ruling, open the cited file and check the claim against the current code. Paths are relative to the repository root, which is your working directory. The diff below is what is staged for this commit; the working-tree file can also hold unstaged edits, so where the two differ, the diff wins.
+
+=== PER-FILE REVIEWER (${_afile}; found a BLOCKING issue) ===
+${_afindings}
+
+=== WHOLE-DIFF ADVERSARIAL REVIEWER (found no blocking issue) ===
+${_adv_evidence}
+
+=== DIFF OF ${_afile} ===
+\`\`\`diff
+${_adiff}
+\`\`\`
+
+Decide: is the per-file reviewer's BLOCKING finding a genuine, currently-present issue in this diff, or does it not hold (contradicted by the code, out of scope, already mitigated, a false positive)?
+
+${REVIEW_SEVERITY_RULES}
+
+You are ruling on ONE question: does the disputed finding meet the BLOCKING bar
+above? If it is real but does not meet that bar — including anything that is
+merely FIX_NOW-shaped or a style preference — the correct ruling is PASS. Do
+not introduce new findings of your own; you are arbitrating, not reviewing.
+
+CRITICAL: Respond with this exact format:
+
+VERDICT: [PASS or FAIL]
+
+[Explain which reviewer is correct and why, in 2-4 sentences. Name what you read in the file.]
+
+[If VERDICT: FAIL, restate the still-blocking issue:]
+ISSUE: [one-line description]
+SEVERITY: BLOCKING
+LOCATION: [file:line]
+DETAILS: [explanation and fix]"
+      _akey=$(printf '%s\n%s\n' "${_afile}" "${_afindings}" | shasum -a 256 2>/dev/null | awk '{print $1}' || true)
+      _asafe="${_afile//\//__}"
+      _asafe="${_asafe// /_}"
+      if [[ -n "${_akey}" ]]; then
+        _akey="${CACHE_DIR}/arbiter-chunked-${DIFF_HASH}-${_asafe}-${_akey}"
+      fi
+      _aout=$(invoke_agent_readonly "adversarial-reviewer" "${_aprompt}" "${_akey}" "${ARBITER_MODEL_ARGS[@]}") || true
+      [[ -n "${_aout//[[:space:]]/}" ]] || _aout="VERDICT: FAIL (agent error: invoke_agent produced no output)"
+      # Read from the VERDICT line, as on the single-pass path; the structured
+      # sentinel has no consumer here.
+      _aout=$(strip_structured_blocking "${_aout}")
+      _averdict=$(parse_verdict "${_aout}")
+      [[ "${_averdict}" == "PASS" ]] || _averdict="FAIL"
+
+      echo "=== ARBITER: ${_afile} (per-file reviewer vs adversarial-reviewer) ===" >&2
+      echo "${_aout}" >&2
+      echo "" >&2
+      arbiter_log="${arbiter_log}=== ARBITER: ${_afile} ===
+${_aout}
+arbiter: ${_averdict} (${_afile})
+"
+      file_reviewer_disagreement_issue "${_afindings}" "${adv_display}" "${_aout}" "${_averdict}"
+
+      if [[ "${_averdict}" == "PASS" ]]; then
+        log_success "Arbiter cleared the per-file block on ${_afile} (now a warning)"
+        # Not ((blocking_count -= 1)): reaching 0 returns status 1 under set -e.
+        blocking_count=$((blocking_count - 1))
+        ((warning_count += 1))
+        ((overruled_count += 1))
+      else
+        log_error "Arbiter upheld the per-file block on ${_afile}"
+      fi
+    done
+    if [[ ${blocking_count} -eq 0 ]]; then
+      overall_verdict="PASS"
+    fi
+  fi
+
   rm -rf "${_chunk_results}"
   unset _chunk_results _chunk_pids
 
@@ -2365,6 +2521,9 @@ $(strip_structured_blocking "${_rout}")"
     printf '%s' "${unreviewed_list}" | sed 's/^/  - /' >&2
   fi
   echo "Blocking issues: ${blocking_count}" >&2
+  if [[ ${overruled_count} -gt 0 ]]; then
+    echo "Cleared by arbiter: ${overruled_count}/${original_blocking_count} per-file blocks (counted as warnings)" >&2
+  fi
   echo "Warnings: ${warning_count}" >&2
   case "${adv_status}" in
     "") echo "adversarial-reviewer: NOT RUN (agent not installed)" >&2 ;;
@@ -2397,7 +2556,9 @@ $(strip_structured_blocking "${_rout}")"
     # Same verdict lines as the whole-diff path, so the Protocol 4 log check
     # reads a chunked commit the same way. A reviewer that did not run says
     # so here rather than leaving the line out.
-    if [[ "${overall_verdict}" == "FAIL" ]]; then
+    # A per-file block the arbiter cleared still logs code-reviewer: FAIL,
+    # followed by the arbiter lines, as on the single-pass path.
+    if [[ "${overall_verdict}" == "FAIL" || ${original_blocking_count} -gt 0 ]]; then
       printf 'code-reviewer: FAIL\n'
     else
       printf 'code-reviewer: PASS (%d/%d files)\n' "${reviewed_files}" "${file_count}"
@@ -2408,6 +2569,9 @@ $(strip_structured_blocking "${_rout}")"
       unparseable) printf 'adversarial-reviewer: FAIL (unparseable)\n' ;;
       *) printf 'adversarial-reviewer: %s\n' "${adv_verdict}" ;;
     esac
+    if [[ -n "${arbiter_log}" ]]; then
+      printf '%s' "${arbiter_log}"
+    fi
   } >>"${REVIEW_LOG}" || true
 
   if [[ "${overall_verdict}" == "FAIL" ]]; then
