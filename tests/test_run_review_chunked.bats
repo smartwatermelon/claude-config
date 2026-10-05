@@ -72,10 +72,17 @@ printf '%s\n' "\${agent}" >>"${AGENT_RECORD}"
 cat >/dev/null
 [[ -f "${MOCK_DIR}/error-\${agent}" ]] && exit 1
 if [[ -f "${MOCK_DIR}/fail-\${agent}" ]]; then
-  jq -n '{type:"result",subtype:"success",is_error:false,
-          result:"VERDICT: FAIL\nISSUE: mock blocking issue\nSEVERITY: BLOCKING\nLOCATION: x:1\nDETAILS: mock",
-          structured_output:{verdict:"FAIL",blocking:true,
-            findings:[{severity:"BLOCKING",location:"x:1",issue:"mock blocking issue"}]}}'
+  # A non-empty fail-<agent> file overrides the finding: line 1 ISSUE,
+  # line 2 LOCATION, line 3 DETAILS.
+  issue="mock blocking issue"; loc="x:1"; details="mock"
+  if [[ -s "${MOCK_DIR}/fail-\${agent}" ]]; then
+    { IFS= read -r issue; IFS= read -r loc; IFS= read -r details; } <"${MOCK_DIR}/fail-\${agent}"
+  fi
+  jq -n --arg i "\${issue}" --arg l "\${loc}" --arg d "\${details}" \
+    '{type:"result",subtype:"success",is_error:false,
+      result:("VERDICT: FAIL\nISSUE: " + \$i + "\nSEVERITY: BLOCKING\nLOCATION: " + \$l + "\nDETAILS: " + \$d),
+      structured_output:{verdict:"FAIL",blocking:true,
+        findings:[{severity:"BLOCKING",location:\$l,issue:\$i}]}}'
 else
   jq -n '{type:"result",subtype:"success",is_error:false,
           result:"VERDICT: PASS\nNo blocking issues found.",
@@ -234,4 +241,80 @@ EOF
   grep -q '^adversarial-reviewer: skipped (timeout or agent error)' "${EXPECTED_LOG}"
   [[ "$output" == *"adversarial-reviewer timed out or errored - it did NOT review this commit"* ]]
   [[ "$output" == *"code-reviewer only"* ]]
+}
+
+# --- #646: out-of-diff findings are downgraded on the chunked path too -------
+#
+# The single-pass path runs downgrade_unverifiable_findings; the chunked path
+# exited before reaching it, so a BLOCKING finding whose LOCATION names a file
+# the reviewer was never shown blocked a large commit and not a small one.
+# ghost.sh is in no fixture diff, and its name contains no fixture basename.
+
+# The per-file agent name run-review.sh uses when review.codeReviewerAgent is
+# unset; the mock keys its fail-<agent> file on it.
+CODE_REVIEWER="comprehensive-review:comprehensive-review-code-reviewer"
+
+_stage_three_files() {
+  _write_file "a.sh" 20
+  _write_file "b.sh" 20
+  _write_file "c.sh" 20
+  git -C "${TMPDIR_TEST}" add a.sh b.sh c.sh
+}
+
+@test "#646: a per-file BLOCKING finding at a path outside the diff is downgraded" {
+  _stage_three_files
+  printf '%s\n' "off-by-one in the loop bound" "ghost.sh:1" "the loop runs one extra time" \
+    >"${MOCK_DIR}/fail-${CODE_REVIEWER}"
+
+  run _run_review
+  [ "$status" -eq 0 ]
+  grep -q '^downgraded: LOCATION names no file in the reviewed diff (#488): ghost.sh:1' "${EXPECTED_LOG}"
+  # One downgrade per file: each per-file reviewer reported it.
+  [ "$(grep -c "^downgraded:" "${EXPECTED_LOG}")" -eq 3 ]
+}
+
+@test "#646: an adversarial BLOCKING finding at a path outside the diff is downgraded" {
+  _stage_three_files
+  printf '%s\n' "off-by-one in the loop bound" "ghost.sh:1" "the loop runs one extra time" \
+    >"${MOCK_DIR}/fail-adversarial-reviewer"
+
+  run _run_review
+  [ "$status" -eq 0 ]
+  grep -q '^downgraded: LOCATION names no file in the reviewed diff (#488): ghost.sh:1' "${EXPECTED_LOG}"
+  ! grep -q '^adversarial-reviewer: FAIL' "${EXPECTED_LOG}"
+}
+
+@test "#646: a security finding outside the diff still blocks (same exemption as single-pass)" {
+  _stage_three_files
+  printf '%s\n' "hardcoded secret in config" "ghost.sh:1" "a credential is committed in plain text" \
+    >"${MOCK_DIR}/fail-${CODE_REVIEWER}"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  ! grep -q '^downgraded:' "${EXPECTED_LOG}"
+}
+
+@test "#646: a per-file BLOCKING finding at a path inside the diff still blocks" {
+  _stage_three_files
+  printf '%s\n' "off-by-one in the loop bound" "a.sh:1" "the loop runs one extra time" \
+    >"${MOCK_DIR}/fail-${CODE_REVIEWER}"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  # The mock gives every per-file reviewer the same a.sh finding. a.sh's own
+  # reviewer saw a.sh, so its finding blocks. The b.sh and c.sh reviewers did
+  # not, so theirs are downgraded: the check is scoped to what each one saw.
+  [ "$(grep -c "^downgraded:" "${EXPECTED_LOG}")" -eq 2 ]
+  [[ "$output" == *"Blocking issues: 1"* ]]
+}
+
+@test "#646: an adversarial BLOCKING finding at a path inside the diff still blocks" {
+  _stage_three_files
+  printf '%s\n' "off-by-one in the loop bound" "c.sh:1" "the loop runs one extra time" \
+    >"${MOCK_DIR}/fail-adversarial-reviewer"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  ! grep -q '^downgraded:' "${EXPECTED_LOG}"
+  grep -q '^adversarial-reviewer: FAIL' "${EXPECTED_LOG}"
 }

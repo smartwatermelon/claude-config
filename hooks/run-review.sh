@@ -1346,6 +1346,17 @@ diff_changed_paths() {
   done | sort -u
 }
 
+# Every path a reviewer was shown, for downgrade_unverifiable_findings'
+# location check (#488): the file names passed in plus the headers of the
+# diff itself. Shared by the single-pass path and the chunked path (#646),
+# which must hand the check the same kind of list.
+#
+# $1 = newline-separated file names (may be empty)
+# $2 = the diff the reviewer saw
+reviewed_paths_for() {
+  printf '%s\n%s\n' "$1" "$(diff_changed_paths "$2")" | grep -v '^$' | sort -u || true
+}
+
 # --- Unverifiable-claim downgrade (claude-config#455, #555, #488) ---
 #
 # Reviewers here run with `--tools ""`: no network, no filesystem. Two kinds
@@ -2243,7 +2254,7 @@ ${file_diff}
   # order (so the issues_output digest is deterministic and matches the
   # pre-parallel serial order, not alphabetic-by-sanitized-name). Runs
   # serially on the main shell so accumulator updates are safe.
-  local _result_file _rfile _rout _agg_safe
+  local _result_file _rfile _rout _agg_safe _rpaths
   while IFS= read -r _rfile; do
     [[ -z "${_rfile}" ]] && continue
     _agg_safe="${_rfile//\//__}"
@@ -2279,6 +2290,13 @@ ${file_diff}
     # per-file so chunked review doesn't diverge in behavior from small diffs.
     _rout=$(downgrade_version_unfamiliarity_findings "${_rout}")
 
+    # Same out-of-diff location downgrade as the whole-diff path (#646). This
+    # reviewer saw only this file's diff, so only its paths count as "in the
+    # diff". Without this, a finding the single-pass path downgrades still
+    # blocks a commit that happens to be large enough to be chunked.
+    _rpaths=$(reviewed_paths_for "${_rfile}" "$(git diff --cached -- "${_rfile}" 2>/dev/null || true)")
+    _rout=$(downgrade_unverifiable_findings "${_rout}" "${_rpaths}")
+
     _chunk_verdict=$(parse_verdict "${_rout}")
     if [[ "${_chunk_verdict}" == "FAIL" || "${_chunk_verdict}" == "REVISE" ]]; then
       if output_blocks "${_rout}"; then
@@ -2302,11 +2320,15 @@ $(strip_structured_blocking "${_rout}")"
   # Read adversarial-reviewer's result (the `wait` above covered its job).
   # Same normalisation, downgrade and gate as the whole-diff path, so the
   # two paths reach the same decision on the same output.
-  local adv_verdict="N/A" adv_status="" adv_output="" adv_display=""
+  local adv_verdict="N/A" adv_status="" adv_output="" adv_display="" _adv_paths=""
   if [[ "${adv_available}" == true ]]; then
     adv_output=$(cat "${adv_out_file}" 2>/dev/null || true)
     [[ -n "${adv_output//[[:space:]]/}" ]] || adv_output="VERDICT: FAIL (agent error: invoke_agent produced no output)"
     adv_output=$(downgrade_version_unfamiliarity_findings "${adv_output}")
+    # This reviewer saw the whole diff. REVIEWED_PATHS is not set yet on the
+    # chunked path (the caller exits before it is built), so build it here.
+    _adv_paths=$(reviewed_paths_for "${files}" "${DIFF}")
+    adv_output=$(downgrade_unverifiable_findings "${adv_output}" "${_adv_paths}")
     adv_display=$(strip_structured_blocking "${adv_output}")
     adv_verdict=$(parse_verdict "${adv_output}")
     if [[ "${adv_verdict}" == "REVISE" ]]; then
@@ -2808,7 +2830,7 @@ unset SUBMODULE_ONLY_LINES
 # Every path the reviewed diff touches, for downgrade_unverifiable_findings'
 # location check (#488). The staged index (commit mode) plus the diff's own
 # headers, which are the only source in full-diff mode.
-REVIEWED_PATHS=$(printf '%s\n%s\n' "${CHANGED_FILES}" "$(diff_changed_paths "${DIFF}")" | grep -v '^$' | sort -u || true)
+REVIEWED_PATHS=$(reviewed_paths_for "${CHANGED_FILES}" "${DIFF}")
 
 # --- Full-diff mode (pre-push cross-file review) ---
 if [[ "${REVIEW_MODE}" == "full-diff" ]]; then
