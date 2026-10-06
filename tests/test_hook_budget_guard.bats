@@ -30,6 +30,9 @@
 HOOK="${BATS_TEST_DIRNAME}/../scripts/hook-budget-guard.sh"
 
 setup() {
+  # Hermetic: tests that assert a DEFAULT ceiling must not inherit an override
+  # exported by the caller's shell (claude-config#591).
+  unset BUDGET_SUBAGENT_TOKENS BUDGET_SESSION_TOKENS BUDGET_SESSION_WARN_TOKENS
   TMPD="$(mktemp -d)"
 }
 
