@@ -101,14 +101,17 @@ _run_review() {
   )
 }
 
-# Fail when PATTERN matches any FILE. A bare `! grep` is not enough here:
+# Pass only when grep reports "no match" (status 1). A match (0) fails, and
+# so does a grep error (2: a missing log, an unmatched glob), which would
+# otherwise look like a clean result. A bare `! grep` is not enough here:
 # bash's errexit ignores a `!`-negated command, so mid-test it could never
 # fail the test. A function that returns 1 does trip errexit.
 refute_grep() {
-  local pattern="$1"
+  local pattern="$1" rc=0
   shift
-  if grep -q -- "${pattern}" "$@"; then
-    echo "unexpected match for '${pattern}' in: $*" >&2
+  grep -q -- "${pattern}" "$@" || rc=$?
+  if [ "${rc}" -ne 1 ]; then
+    echo "refute_grep '${pattern}' in $*: grep status ${rc} (want 1, no match)" >&2
     return 1
   fi
 }
