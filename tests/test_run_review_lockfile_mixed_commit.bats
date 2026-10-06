@@ -101,6 +101,18 @@ _run_review() {
   )
 }
 
+# Fail when PATTERN matches any FILE. A bare `! grep` is not enough here:
+# bash's errexit ignores a `!`-negated command, so mid-test it could never
+# fail the test. A function that returns 1 does trip errexit.
+refute_grep() {
+  local pattern="$1"
+  shift
+  if grep -q -- "${pattern}" "$@"; then
+    echo "unexpected match for '${pattern}' in: $*" >&2
+    return 1
+  fi
+}
+
 # How many prompts reached the mock reviewer. Counted with find and compared
 # with [ ], rather than returned as a function status, so the result does not
 # depend on how the shell treats a failing function on a test's last line.
@@ -116,8 +128,8 @@ _prompt_count() {
   run _run_review
   [ "$status" -eq 0 ]
   [ "$(_prompt_count)" -gt 0 ]
-  ! grep -q 'blocked: diff too large' "${EXPECTED_LOG}"
-  ! grep -q 'skipped: lockfile-only' "${EXPECTED_LOG}"
+  refute_grep 'blocked: diff too large' "${EXPECTED_LOG}"
+  refute_grep 'skipped: lockfile-only' "${EXPECTED_LOG}"
   grep -q 'excluded: lockfiles (pnpm-lock.yaml)' "${EXPECTED_LOG}"
   # The non-blocking nudge toward a separate lockfile commit.
   [[ "$output" == *"Lockfile excluded from review"* ]]
@@ -135,8 +147,8 @@ _prompt_count() {
   # Positive control first: the saved prompts do carry the diff.
   grep -q 'astro' "${SEEN_DIR}"/prompt.*
   # No lockfile content and no lockfile diff header in any prompt.
-  ! grep -q 'pnpm-lock.yaml line' "${SEEN_DIR}"/prompt.*
-  ! grep -q 'diff --git a/pnpm-lock.yaml' "${SEEN_DIR}"/prompt.*
+  refute_grep 'pnpm-lock.yaml line' "${SEEN_DIR}"/prompt.*
+  refute_grep 'diff --git a/pnpm-lock.yaml' "${SEEN_DIR}"/prompt.*
 }
 
 @test "a mixed commit whose remainder lands in the chunked band leaves the lockfile out of the chunks" {
@@ -151,9 +163,9 @@ _prompt_count() {
   run _run_review
   [ "$status" -eq 0 ]
   grep -q 'chunked review' "${EXPECTED_LOG}"
-  ! grep -q 'blocked: diff too large' "${EXPECTED_LOG}"
+  refute_grep 'blocked: diff too large' "${EXPECTED_LOG}"
   grep -q 'a.sh line' "${SEEN_DIR}"/prompt.*
-  ! grep -q 'yarn.lock line' "${SEEN_DIR}"/prompt.*
+  refute_grep 'yarn.lock line' "${SEEN_DIR}"/prompt.*
 }
 
 @test "a lockfile-only commit is still skipped as lockfile-only" {
@@ -193,6 +205,6 @@ _prompt_count() {
   git -C "${TMPDIR_TEST}" add package.json pnpm-lock.yaml
 
   run _run_review --mode=full-diff --no-file
-  ! grep -q 'excluded: lockfiles' "${EXPECTED_LOG}"
+  refute_grep 'excluded: lockfiles' "${EXPECTED_LOG}"
   [[ "$output" != *"Lockfile excluded from review"* ]]
 }
