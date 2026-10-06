@@ -66,24 +66,14 @@ repos:
   # Markdown linting, byte-identical to the global config's hook definition
   # (dotfiles/pre-commit/config.yaml) so the two cannot drift in behaviour.
   #
-  # The repo-local-config probe in the entry is inert here — this repo has no
-  # .markdownlint.* at its root, so the else branch (the personal global
-  # config) is what runs. It is kept rather than simplified precisely to
-  # preserve byte-identity with global.
+  # The entry calls lint-markdown.sh, which resolves config the way CI does.
+  # This repo has no .markdownlint.* at its root, so the canonical config
+  # (~/.config/markdownlint-cli/.markdownlint.json) is the whole policy.
   - repo: local
     hooks:
       - id: markdownlint
         name: "Markdown Lint (fix)"
-        entry: >-
-          bash -c 'has_local_config=0;
-          for f in .markdownlint.json .markdownlint.yaml .markdownlint.yml
-          .markdownlint.jsonc .markdownlintrc; do
-          [[ -f "$f" ]] && { has_local_config=1; break; }; done;
-          if [[ "$has_local_config" -eq 1 ]]; then
-          markdownlint --fix "$@";
-          else
-          markdownlint --fix --config "$HOME/.config/markdownlint-cli/.markdownlint.json" "$@";
-          fi' --
+        entry: bash -c '$HOME/.config/git/hooks/lint-markdown.sh "$@"' --
         language: system
         types: [markdown]
         pass_filenames: true
