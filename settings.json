@@ -44,7 +44,7 @@
     "react-native-3d@smartwatermelon-marketplace": false,
     "security-compliance@claude-code-workflows": false,
     "slack@claude-plugins-official": false,
-    "superpowers@superpowers-marketplace": true,
+    "superpowers@smartwatermelon-marketplace": true,
     "tdd-workflows@claude-code-workflows": false,
     "team-collaboration@claude-code-workflows": false,
     "unit-testing@claude-code-workflows": false
@@ -84,12 +84,6 @@
       "source": {
         "source": "git",
         "url": "https://github.com/smartwatermelon/smartwatermelon-marketplace.git"
-      }
-    },
-    "superpowers-marketplace": {
-      "source": {
-        "repo": "obra/superpowers-marketplace",
-        "source": "github"
       }
     }
   },
