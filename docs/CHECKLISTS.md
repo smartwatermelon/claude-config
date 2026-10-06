@@ -37,6 +37,9 @@
 □ No hardcoded secrets
 □ No commented-out code
 □ Commit message follows conventional format
+□ Regenerated lockfile? Commit it on its own when you can. A lockfile-only
+  commit skips AI review. In a mixed commit the hook leaves the lockfile out
+  of the review and the size count, and prints a hint saying so.
 ```
 
 ---

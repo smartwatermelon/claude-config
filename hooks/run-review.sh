@@ -104,6 +104,18 @@ REVIEW_MAX_ATTEMPTS=$(git config --get --type=int review.maxAttempts 2>/dev/null
 # A zero or negative limit would refuse every commit; fall back to the default.
 [[ "${REVIEW_MAX_ATTEMPTS}" -ge 1 ]] || REVIEW_MAX_ATTEMPTS=3
 
+# Generated lockfiles: exempt from review at any size (#427), and in commit
+# mode excluded from a mixed commit's review input and size count (#689).
+# One ERE, matched against a repo-relative path, so the lockfile-only skip,
+# the mixed-commit exclusion, the chunked file list and the large-diff summary
+# cannot disagree about what a lockfile is.
+LOCKFILE_RE='(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Gemfile\.lock|Cargo\.lock|composer\.lock|\.terraform\.lock\.hcl)$'
+
+# Drop lockfile paths from a newline-separated path list on stdin.
+filter_out_lockfiles() {
+  grep -vE "${LOCKFILE_RE}" || true
+}
+
 # --- Mode ---
 REVIEW_MODE="commit" # default: pre-commit review (code-reviewer + adversarial)
 # --- Optional commit-message override ---
@@ -2039,15 +2051,19 @@ show_large_diff_summary() {
   echo "" >&2
 
   # File statistics
-  local files_changed
-  files_changed=$(git diff --cached --numstat 2>/dev/null | wc -l | tr -d ' ')
+  # Lockfiles are left out of the measured diff (#689), so leave them out of
+  # the summary too, or the listed files would not add up to the total.
+  local numstat files_changed
+  numstat=$(git diff --cached --numstat 2>/dev/null | filter_out_lockfiles || true)
+  files_changed=$(grep -c . <<<"${numstat}" || true)
 
   echo "Total changes: ${total_lines} lines across ${files_changed} files" >&2
   echo "" >&2
 
   # Top changed files
   echo "Top 10 changed files:" >&2
-  git diff --cached --numstat 2>/dev/null \
+  printf '%s\n' "${numstat}" \
+    | grep . \
     | sort -rn \
     | head -10 \
     | awk '{printf "  %5d + | %5d - | %s\n", $1, $2, $3}' >&2 || true
@@ -2070,9 +2086,11 @@ perform_chunked_review() {
 
   log_info "Performing chunked review (${total_lines} lines total, reviewing files ≤ ${REVIEW_CHUNK_SIZE} lines each)"
 
-  # Get list of changed files
+  # Get list of changed files. Lockfiles are excluded from commit-mode review
+  # (#689); without this a mixed commit routed here would re-read the
+  # lockfile per file and block on its oversized chunk.
   local files
-  files=$(git diff --cached --name-only 2>/dev/null || echo "")
+  files=$(git diff --cached --name-only 2>/dev/null | filter_out_lockfiles || true)
 
   if [[ -z "${files}" ]]; then
     log_warn "No files to review"
@@ -2839,6 +2857,8 @@ unset _current_branch
 # lockfile is one indivisible file, so "split into smaller commits" is not
 # available to the human, and `review.skipThreshold` only reroutes it into a
 # chunked review that fails on the oversized chunk. Issue #427.
+# The same reasoning covers a lockfile staged WITH other files: the lockfile
+# check below also strips it from DIFF before DIFF_LINES is measured. #689.
 #
 # Derive CHANGED_FILES outside the guard so it's defined (empty) in other
 # modes; the two checks below are both no-ops when unset.
@@ -2861,11 +2881,52 @@ fi
 # Skip code review for lockfiles - they're generated files
 if [[ -n "${CHANGED_FILES}" ]]; then
   # Check if ALL changed files are lockfiles
-  NON_LOCK_FILES=$(echo "${CHANGED_FILES}" | grep -vE '(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Gemfile\.lock|Cargo\.lock|composer\.lock|\.terraform\.lock\.hcl)$' || echo "")
+  NON_LOCK_FILES=$(printf '%s\n' "${CHANGED_FILES}" | filter_out_lockfiles)
   if [[ -z "${NON_LOCK_FILES}" ]]; then
     log_info "Lockfile-only changes detected - skipping code review (generated files)"
     printf 'skipped: lockfile-only\n' >>"${REVIEW_LOG}" || true
     exit 0
+  fi
+
+  # Mixed commit (#689): a manifest staged with the lockfile it produced.
+  # Review the rest, but leave the lockfile out of both the reviewer input
+  # and the size count. It is exempt at any size (#427), so its lines could
+  # only ever push an otherwise reviewable commit over review.skipThreshold.
+  #
+  # DIFF is rebuilt from the index rather than cut out of the piped text: git
+  # already knows the file boundaries, and parsing `diff --git` headers would
+  # have to handle quoted names and every prefix style. `-U10` matches the
+  # commit-msg hook's own `git diff --cached -U10` and the chunked path.
+  # Paths come from `-z` so core.quotePath cannot quote a name into a
+  # pathspec that matches nothing; `:(literal)` stops a name being read as a
+  # glob. Commit mode only (CHANGED_FILES is empty otherwise), per #131.
+  #
+  # The markdown-only and artifact-only checks above still see the full file
+  # list, so README.md + lockfile is reviewed as before: this change only
+  # removes the lockfile, it does not widen the other skips.
+  if [[ "${NON_LOCK_FILES}" != "${CHANGED_FILES}" ]]; then
+    _review_paths=()
+    while IFS= read -r -d '' _p; do
+      [[ "${_p}" =~ ${LOCKFILE_RE} ]] && continue
+      _review_paths+=(":(top,literal)${_p}")
+    done < <(git diff --cached --name-only -z 2>/dev/null || true)
+    _filtered_diff=""
+    if [[ ${#_review_paths[@]} -gt 0 ]]; then
+      _filtered_diff=$(git diff --cached -U10 -- "${_review_paths[@]}" 2>/dev/null || true)
+    fi
+    if [[ -n "${_filtered_diff}" ]]; then
+      DIFF="${_filtered_diff}"
+      _lockfiles=$(printf '%s\n' "${CHANGED_FILES}" | grep -E "${LOCKFILE_RE}" | paste -sd ' ' - || true)
+      log_info "Lockfile excluded from review and size count: ${_lockfiles}"
+      log_info "  Tip: commit a regenerated lockfile on its own; a lockfile-only commit skips review."
+      printf 'excluded: lockfiles (%s)\n' "${_lockfiles}" >>"${REVIEW_LOG}" || true
+      unset _lockfiles
+    else
+      # Fail toward reviewing more: an empty rebuild with non-lockfiles staged
+      # means the rebuild went wrong, not that there is nothing to review.
+      log_warn "Could not rebuild the diff without lockfiles; reviewing the full staged diff"
+    fi
+    unset _review_paths _p _filtered_diff
   fi
 fi
 
@@ -2931,7 +2992,8 @@ if [[ "${REVIEW_MODE}" != "full-diff" && "${REVIEW_MODE}" != "codebase" ]] && [[
   log_error "BLOCKING: Diff too large for automated review (${DIFF_LINES} lines)"
   log_error ""
   log_error "Options:"
-  log_error "  1. Split into smaller commits (recommended)"
+  log_error "  1. Split into smaller commits (recommended). A regenerated lockfile"
+  log_error "     can go in a commit of its own; a lockfile-only commit skips review."
   log_error "  2. Increase threshold: git config review.skipThreshold 5000"
   log_error "     Chunked review then needs every file's diff under review.chunkSize"
   log_error "     (current: ${REVIEW_CHUNK_SIZE}); a larger file blocks the commit"

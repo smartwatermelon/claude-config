@@ -134,10 +134,14 @@ _run_review() {
   echo 'resource "aws_iam_policy" "x" {}' >"${TMPDIR_TEST}/main.tf"
   git -C "${TMPDIR_TEST}" add terraform/repositories/example/.terraform.lock.hcl main.tf
 
+  # Since #689 the lockfile is left out of the size count, so the commit is
+  # no longer size-blocked: the .tf file reaches the reviewer, whose mock
+  # FAIL blocks it. Reaching the reviewer is the property under test.
   run _run_review
   [ "$status" -ne 0 ]
   [[ "$output" != *"Lockfile-only changes detected"* ]]
-  grep -q 'blocked: diff too large' "${EXPECTED_LOG}"
+  [ -f "${AGENT_INVOKED}" ]
+  ! grep -q 'blocked: diff too large' "${EXPECTED_LOG}"
 }
 
 @test "large markdown-only diff skips review instead of hard-blocking on size" {
@@ -175,8 +179,10 @@ _run_review() {
 
 @test "a large diff mixing code with generated files is still reviewed" {
   # The skips must remain ALL-or-nothing. Moving them earlier must not let a
-  # code change ride along inside a large generated-file commit unreviewed:
-  # here the size dispatch is still the correct handler.
+  # code change ride along inside a large generated-file commit unreviewed.
+  # Since #689 the lockfile is excluded from the size count, so the small
+  # code file goes to the reviewer (whose mock FAIL blocks it) instead of
+  # being size-blocked.
   _write_big_file "package-lock.json"
   echo "def exploit(): pass" >"${TMPDIR_TEST}/app.py"
   git -C "${TMPDIR_TEST}" add package-lock.json app.py
@@ -184,7 +190,8 @@ _run_review() {
   run _run_review
   [ "$status" -ne 0 ]
   [[ "$output" != *"Lockfile-only changes detected"* ]]
-  grep -q 'blocked: diff too large' "${EXPECTED_LOG}"
+  [ -f "${AGENT_INVOKED}" ]
+  ! grep -q 'blocked: diff too large' "${EXPECTED_LOG}"
 }
 
 # --- Artifact-only skip (claude-config#481) ---------------------------------
