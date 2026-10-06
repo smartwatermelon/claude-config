@@ -16,9 +16,11 @@ unset CDPATH
 # FEATURES:
 #   - Filters out outdated and resolved inline comments
 #   - Targeted diff extraction for large PRs:
-#     * Small diffs (<= 1000 lines): Full diff included
-#     * Large diffs (> 1000 lines): Extracts complete diff sections
-#       for files with inline comments, summarizes others
+#     * Small diffs (<= 1000 lines AND <= 200 KB): Full diff included
+#     * Large diffs (> 1000 lines OR > 200 KB): Extracts complete diff
+#       sections for files with inline comments, summarizes others
+#     * Any single file diff too large for the prompt is elided (path,
+#       size, +/- counts) and the prompt says it was NOT reviewed
 #     * Ensures critical review context is always visible
 #   - Honors `gh --repo OWNER/NAME` (and `-R`, `--repo=`, `-R=`) so the
 #     caller can invoke `gh pr merge` from any directory. When --repo is
@@ -68,6 +70,27 @@ TIMEOUT_OVERRIDE=$(git config --get --type=int review.preMergeTimeout 2>/dev/nul
 
 # Placeholder until the prompt exists; see compute_effective_timeout() below.
 TIMEOUT_SECONDS="${TIMEOUT_FLOOR_SECONDS}"
+
+# Diff size policy — see build_targeted_diff().
+#
+# The diff goes into the prompt in full only when it is under BOTH the line
+# threshold and the byte budget. Lines alone are not enough: a generated,
+# single-line JSON file is one diff line however large it is. The observed
+# failure (#612) was a 567-line diff carrying 1.7 MB of one-line JSON; the
+# prompt was 1,758,974 bytes (~1.4M tokens) and the CLI rejected it.
+#   - LINE_THRESHOLD is the original line gate, unchanged.
+#   - BYTE_BUDGET routes a byte-heavy diff to the smart path. 200 KB is about
+#     50-70K tokens: roomy for a real code diff, far below the 1M-token limit.
+#   - FILE_BYTE_CAP: on the smart path, a single file's diff above this is
+#     elided (path, size and +/- counts only). It applies to every file,
+#     security-critical ones included, because no other branch can shrink a
+#     single long line.
+#   - BYTE_TOTAL_CAP bounds the sum of inlined file diffs, so many mid-sized
+#     files cannot add up past the limit either. Files past it are elided.
+DIFF_LINE_THRESHOLD=1000
+DIFF_BYTE_BUDGET=200000
+DIFF_FILE_BYTE_CAP=100000
+DIFF_BYTE_TOTAL_CAP=600000
 
 # --- Colors ---
 RED='\033[0;31m'
@@ -216,6 +239,205 @@ truncate_code_diff() {
     echo ""
     echo "${footer}"
   fi
+}
+
+# Byte length of a string. `${#var}` counts characters under a UTF-8 locale,
+# not bytes, and the prompt limit that matters here is a byte/token limit.
+_byte_len() {
+  local n
+  n=$(printf '%s' "$1" | wc -c)
+  # macOS wc pads with spaces; arithmetic expansion strips them.
+  echo "$((n))"
+}
+
+# Stub for a file whose diff is too large to put in the prompt.
+#
+# Deliberately NOT summarize_data_file's wording: that stub says "CI validated
+# data file", which the prompt tells the model to trust. An elided file has
+# not been reviewed by anyone, so the stub says so in plain terms.
+#
+# Args:
+#   $1 - file path
+#   $2 - the file's diff section
+#   $3 - the file's diff size in bytes
+#   $4 - why it was elided (shown to the model)
+summarize_oversized_file() {
+  local file_path="$1"
+  local file_diff="$2"
+  local file_bytes="$3"
+  local reason="$4"
+  local counts
+
+  # Count +/- content lines, skipping the ---/+++ file headers.
+  counts=$(printf '%s\n' "${file_diff}" | awk '
+    /^\+\+\+ (b\/|\/dev\/null)/ { next }
+    /^--- (a\/|\/dev\/null)/ { next }
+    /^\+/ { a++ }
+    /^-/ { r++ }
+    END { printf "+%d -%d", a, r }
+  ')
+
+  echo "diff --git a/${file_path} b/${file_path}"
+  echo "--- ELIDED: diff too large to include in this prompt (NOT reviewed, NOT validated) ---"
+  echo "File: ${file_path}"
+  echo "Diff size: ${file_bytes} bytes"
+  echo "Reason: ${reason}"
+  echo "Changes: ${counts} lines"
+  echo ""
+}
+
+# Build the diff context that goes into the analysis prompt.
+#
+# Reads PR_DIFF, COMMENTED_FILES and REQUIRED_CHECKS; sets TARGETED_DIFF.
+#
+# The gate counts BYTES as well as lines. A generated single-line JSON file of
+# 1.2 MB is one diff line, so a line-only gate sent a 1,758,974-byte prompt
+# (~1.4M tokens, over the CLI's 1M limit) down the "include everything" path.
+# The CLI refused it, the merge failed with a valid lock and green CI, and the
+# PR was merged in the web UI, which skips this review entirely (#612).
+#
+# On the smart path, the per-file and running-total byte caps are checked
+# BEFORE every other branch, including security-critical and commented files:
+# no branch below can shrink a single long line, and the prompt cannot carry
+# the content whatever CI says. Elided files get an explicit stub, the prompt
+# tells the model they were not reviewed, and the review runs on the rest.
+build_targeted_diff() {
+  local diff_lines diff_bytes
+  diff_lines=$(echo "${PR_DIFF}" | wc -l)
+  diff_lines=$((diff_lines))
+  diff_bytes=$(_byte_len "${PR_DIFF}")
+
+  if [[ ${diff_lines} -le ${DIFF_LINE_THRESHOLD} && ${diff_bytes} -le ${DIFF_BYTE_BUDGET} ]]; then
+    # Small diff - include everything
+    log_info "Diff is ${diff_lines} lines, ${diff_bytes} bytes (under threshold), including full diff"
+    TARGETED_DIFF="${PR_DIFF}"
+    return 0
+  fi
+
+  # Large diff - build smart targeted context
+  log_info "Diff is large (${diff_lines} lines, ${diff_bytes} bytes), building smart targeted context..."
+
+  # Check if CI passed, judged on the REQUIRED checks only — a red advisory
+  # check should not cost us diff-filtering headroom on a large PR.
+  #
+  # This tests for the ABSENCE of a failing/pending required check rather than
+  # the presence of a passing one. The previous form matched a single SUCCESS
+  # anywhere in the list, so a PR with one green check and four red ones read
+  # as "CI passed".
+  local ci_passed=false
+  if [[ -n "${REQUIRED_CHECKS}" ]] \
+    && ! echo "${REQUIRED_CHECKS}" | grep -qE "(FAILURE|NEUTRAL|CANCELLED|TIMED_OUT|pending|IN_PROGRESS|QUEUED)"; then
+    ci_passed=true
+    log_info "Required CI checks passed - enabling smart data file filtering"
+  fi
+
+  local full_count=0 summarized_count=0 truncated_count=0 elided_count=0
+  local processed_diff="" file_summaries="" elided_summaries=""
+  local inlined_bytes=0
+  local file_path file_diff file_bytes summary truncated
+
+  while IFS= read -r file_path; do
+    if [[ -z "${file_path}" ]]; then
+      continue
+    fi
+
+    file_diff=$(extract_file_diff "${PR_DIFF}" "${file_path}")
+    file_bytes=$(_byte_len "${file_diff}")
+
+    # Decision tree: size first, then security-first.
+    if [[ ${file_bytes} -gt ${DIFF_FILE_BYTE_CAP} ]]; then
+      summary=$(summarize_oversized_file "${file_path}" "${file_diff}" "${file_bytes}" \
+        "over the ${DIFF_FILE_BYTE_CAP}-byte per-file cap")
+      elided_summaries+="${summary}
+"
+      elided_count=$((elided_count + 1))
+      continue
+    fi
+    if [[ $((inlined_bytes + file_bytes)) -gt ${DIFF_BYTE_TOTAL_CAP} ]]; then
+      summary=$(summarize_oversized_file "${file_path}" "${file_diff}" "${file_bytes}" \
+        "would push the inlined diff past the ${DIFF_BYTE_TOTAL_CAP}-byte total cap")
+      elided_summaries+="${summary}
+"
+      elided_count=$((elided_count + 1))
+      continue
+    fi
+
+    # Security-critical files are checked BEFORE data files to ensure
+    # sensitive JSON/config files (credentials, secrets) are never summarized
+    if is_security_critical "${file_path}"; then
+      # Always show security-critical files in full
+      processed_diff+="${file_diff}
+"
+      inlined_bytes=$((inlined_bytes + file_bytes))
+      full_count=$((full_count + 1))
+
+    elif has_inline_comments "${file_path}"; then
+      # Always show files with inline comments in full
+      processed_diff+="${file_diff}
+"
+      inlined_bytes=$((inlined_bytes + file_bytes))
+      full_count=$((full_count + 1))
+
+    elif is_data_file "${file_path}"; then
+      if [[ "${ci_passed}" == true ]]; then
+        # Data file + CI passed + no comments = summarize
+        summary=$(summarize_data_file "${file_path}" "${file_diff}")
+        file_summaries+="${summary}
+"
+        summarized_count=$((summarized_count + 1))
+      else
+        # CI failed - include data file for debugging
+        processed_diff+="${file_diff}
+"
+        inlined_bytes=$((inlined_bytes + file_bytes))
+        full_count=$((full_count + 1))
+      fi
+
+    elif [[ "${ci_passed}" == true ]]; then
+      # Regular code file + CI passed + no comments = truncate
+      truncated=$(truncate_code_diff "${file_diff}")
+      processed_diff+="${truncated}
+"
+      inlined_bytes=$((inlined_bytes + $(_byte_len "${truncated}")))
+      truncated_count=$((truncated_count + 1))
+
+    else
+      # CI failed - show everything
+      processed_diff+="${file_diff}
+"
+      inlined_bytes=$((inlined_bytes + file_bytes))
+      full_count=$((full_count + 1))
+    fi
+  done < <(get_changed_files "${PR_DIFF}" || true)
+
+  if [[ ${elided_count} -gt 0 ]]; then
+    log_warn "Elided ${elided_count} oversized file diff(s) from the prompt; the review runs on the rest and is told they were NOT reviewed"
+  fi
+
+  # Build final targeted diff
+  TARGETED_DIFF="=== Smart Diff Context (${diff_lines} total lines, ${diff_bytes} bytes) ===
+
+Files shown in full: ${full_count}
+Files truncated (no comments, CI passed): ${truncated_count}
+Data files summarized (CI validated): ${summarized_count}
+Files ELIDED for size (NOT reviewed): ${elided_count}
+
+=== Full/Truncated Diffs ===
+
+${processed_diff}
+
+=== Data Files (CI Validated) ===
+
+${file_summaries}
+
+=== Elided Files (too large for the prompt - NOT reviewed) ===
+
+${elided_summaries}"
+
+  local targeted_lines targeted_bytes
+  targeted_lines=$(echo "${TARGETED_DIFF}" | wc -l)
+  targeted_bytes=$(_byte_len "${TARGETED_DIFF}")
+  log_info "Smart diff built: $((targeted_lines)) lines, ${targeted_bytes} bytes (down from ${diff_lines} lines, ${diff_bytes} bytes)"
 }
 
 # --- Non-Blocking Issue Functions (shared library) ---
@@ -797,108 +1019,7 @@ if [[ -n "${INLINE_COMMENTS_FILTERED}" && "${INLINE_COMMENTS_FILTERED}" != "[]" 
   COMMENTED_FILES=$(echo "${INLINE_COMMENTS_FILTERED}" | jq -r '.[].path' | grep -v '^[[:space:]]*$' | sort -u || true)
 fi
 
-DIFF_LINES=$(echo "${PR_DIFF}" | wc -l)
-
-if [[ ${DIFF_LINES} -le 1000 ]]; then
-  # Small diff - include everything
-  log_info "Diff is ${DIFF_LINES} lines (under threshold), including full diff"
-  TARGETED_DIFF="${PR_DIFF}"
-else
-  # Large diff - build smart targeted context
-  log_info "Diff is large (${DIFF_LINES} lines), building smart targeted context..."
-
-  # Check if CI passed, judged on the REQUIRED checks only — a red advisory
-  # check should not cost us diff-filtering headroom on a large PR.
-  #
-  # This tests for the ABSENCE of a failing/pending required check rather than
-  # the presence of a passing one. The previous form matched a single SUCCESS
-  # anywhere in the list, so a PR with one green check and four red ones read
-  # as "CI passed".
-  CI_PASSED=false
-  if [[ -n "${REQUIRED_CHECKS}" ]] \
-    && ! echo "${REQUIRED_CHECKS}" | grep -qE "(FAILURE|NEUTRAL|CANCELLED|TIMED_OUT|pending|IN_PROGRESS|QUEUED)"; then
-    CI_PASSED=true
-    log_info "Required CI checks passed - enabling smart data file filtering"
-  fi
-
-  # Initialize counters (required before arithmetic operations with set -e)
-  FULL_DIFF_COUNT=0
-  SUMMARIZED_COUNT=0
-  TRUNCATED_COUNT=0
-
-  # Process each file based on classification
-  PROCESSED_DIFF=""
-  FILE_SUMMARIES=""
-
-  while IFS= read -r file_path; do
-    if [[ -z "${file_path}" ]]; then
-      continue
-    fi
-
-    file_diff=$(extract_file_diff "${PR_DIFF}" "${file_path}")
-
-    # Decision tree: Security-first design
-    # Security-critical files are checked BEFORE data files to ensure
-    # sensitive JSON/config files (credentials, secrets) are never summarized
-    if is_security_critical "${file_path}"; then
-      # Always show security-critical files in full
-      PROCESSED_DIFF+="${file_diff}
-"
-      FULL_DIFF_COUNT=$((FULL_DIFF_COUNT + 1))
-
-    elif has_inline_comments "${file_path}"; then
-      # Always show files with inline comments in full
-      PROCESSED_DIFF+="${file_diff}
-"
-      FULL_DIFF_COUNT=$((FULL_DIFF_COUNT + 1))
-
-    elif is_data_file "${file_path}"; then
-      if [[ "${CI_PASSED}" == true ]]; then
-        # Data file + CI passed + no comments = summarize
-        summary=$(summarize_data_file "${file_path}" "${file_diff}")
-        FILE_SUMMARIES+="${summary}
-"
-        SUMMARIZED_COUNT=$((SUMMARIZED_COUNT + 1))
-      else
-        # CI failed - include data file for debugging
-        PROCESSED_DIFF+="${file_diff}
-"
-        FULL_DIFF_COUNT=$((FULL_DIFF_COUNT + 1))
-      fi
-
-    elif [[ "${CI_PASSED}" == true ]]; then
-      # Regular code file + CI passed + no comments = truncate
-      truncated=$(truncate_code_diff "${file_diff}")
-      PROCESSED_DIFF+="${truncated}
-"
-      TRUNCATED_COUNT=$((TRUNCATED_COUNT + 1))
-
-    else
-      # CI failed - show everything
-      PROCESSED_DIFF+="${file_diff}
-"
-      FULL_DIFF_COUNT=$((FULL_DIFF_COUNT + 1))
-    fi
-  done < <(get_changed_files "${PR_DIFF}" || true)
-
-  # Build final targeted diff
-  TARGETED_DIFF="=== Smart Diff Context (${DIFF_LINES} total lines) ===
-
-Files shown in full: ${FULL_DIFF_COUNT}
-Files truncated (no comments, CI passed): ${TRUNCATED_COUNT}
-Data files summarized (CI validated): ${SUMMARIZED_COUNT}
-
-=== Full/Truncated Diffs ===
-
-${PROCESSED_DIFF}
-
-=== Data Files (CI Validated) ===
-
-${FILE_SUMMARIES}"
-
-  TARGETED_LINES=$(echo "${TARGETED_DIFF}" | wc -l)
-  log_info "Smart diff built: ${TARGETED_LINES} lines (down from ${DIFF_LINES})"
-fi
+build_targeted_diff
 
 # Use targeted diff for analysis
 PR_DIFF="${TARGETED_DIFF}"
@@ -916,6 +1037,13 @@ The PR diff provided uses smart filtering to reduce token usage while preserving
 - **Full diffs**: Files with inline comments or security-critical files (auth, payment, db, etc.)
 - **Truncated diffs**: Code files without comments (first/last 50 lines shown, CI passed)
 - **Summarized**: Data files validated by CI (JSON, lock files, etc.)
+- **Elided**: File diffs too large to fit in this prompt (path, size, +/- counts only)
+
+If a file shows "ELIDED: diff too large to include", its content was NOT reviewed
+and is NOT covered by the CI-validation rule below. Do not treat it as approved.
+List every elided path in your output. If an elided path looks security-relevant
+(auth, credentials, secrets, CI/workflow config, executable code rather than data),
+return BLOCK_MERGE and name the path so a human reviews it.
 
 If a file shows "CI validated data file (not shown)", trust CI validation unless:
 1. The file type is security-critical (credentials, secrets)
