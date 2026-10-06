@@ -6,6 +6,11 @@ unset CDPATH GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
 CHECKER_SRC="${PERSONIFY_CHECKOUT:-${HOME}/Developer/personify}/scripts/length_check.py"
 if [[ ! -f "${CHECKER_SRC}" ]]; then
+  # CI must run this suite; a silent SKIP there hides the gap (claude-config#649).
+  if [[ "${CI:-}" == "true" ]]; then
+    echo "FAIL: CI=true but no personify checkout at ${CHECKER_SRC} (set PERSONIFY_CHECKOUT)" >&2
+    exit 1
+  fi
   echo "SKIP: no personify checkout at ${CHECKER_SRC} (set PERSONIFY_CHECKOUT)"
   exit 0
 fi
