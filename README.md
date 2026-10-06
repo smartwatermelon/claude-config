@@ -62,8 +62,8 @@ command (via `_claude_update()`). It:
 
 None. This repo tracks no submodules.
 
-Marketplaces — `superpowers-marketplace` included — are cloned and updated by
-Claude Code itself under `~/.claude/plugins/marketplaces/`, registered in
+Marketplaces are cloned and updated by Claude Code itself under
+`~/.claude/plugins/marketplaces/`, registered in
 `~/.claude/plugins/known_marketplaces.json`. They are runtime state, not repo
 content, so there is no pointer here to bump.
 
@@ -72,10 +72,6 @@ content, so there is no pointer here to bump.
 Plugins are sourced from marketplaces registered in
 `~/.claude/plugins/known_marketplaces.json` and managed by Claude Code.
 Enabled state is tracked in `settings.json`.
-
-### From superpowers-marketplace
-
-- **superpowers** ✓ — core skills library for TDD, debugging, collaboration, and development workflows
 
 ### From claude-code-workflows
 
@@ -88,6 +84,7 @@ Enabled state is tracked in `settings.json`.
 ### From smartwatermelon-marketplace
 
 - **code-critic** ✓ — adversarial code review agent
+- **superpowers** ✓ — hook-less vendored subset of obra/superpowers (brainstorming, planning, subagent-driven development, debugging, TDD, code review, verification). Vendored so upstream's SessionStart hook no longer injects `using-superpowers` into every session; see `plugins/superpowers/README.md` in that repo
 - **react-native-3d** — 3D rendering with React Three Fiber, expo-gl, Three.js (disabled on some machines — see [Per-Machine Notes](#per-machine-notes))
 
 ### From claude-plugins-official
@@ -129,7 +126,6 @@ from the tracked default.
 │       ├── claude-code-workflows         # Plugin marketplace
 │       ├── claude-plugins-official       # Plugin marketplace
 │       ├── smartwatermelon-marketplace   # Personal marketplace
-│       ├── superpowers-marketplace       # Upstream obra/superpowers-marketplace
 │       ├── personify                     # Plugin marketplace
 │       └── pr-review                     # Plugin marketplace
 ├── settings.json                         # enabledPlugins and hook configuration
@@ -173,7 +169,7 @@ See `CLAUDE.md` for protocol documentation.
 ## Reference
 
 - Main config: [CLAUDE.md](./CLAUDE.md)
-- Superpowers marketplace: <https://github.com/smartwatermelon/superpowers-marketplace> (fork of obra/superpowers-marketplace)
+- Superpowers: vendored in <https://github.com/smartwatermelon/smartwatermelon-marketplace> (`plugins/superpowers`, from obra/superpowers)
 - claude-code-workflows: <https://github.com/smartwatermelon/claude-code-workflows-agents> (fork of wshobson/agents)
 - Personify skill: <https://github.com/twistedmelonman/personify>
 - pr-review skill: <https://github.com/smartwatermelon/pr-review>
