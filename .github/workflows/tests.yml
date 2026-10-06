@@ -27,6 +27,16 @@ jobs:
       - name: Clone dotfiles
         run: git clone --depth 1 https://github.com/twistedmelonman/dotfiles.git "${RUNNER_TEMP}/dotfiles"
 
+      # The length suites run personify's real length_check.py and, under
+      # CI=true, fail rather than skip when it is absent (claude-config#649).
+      # Public repo; tracks main like dotfiles above.
+      - name: Checkout personify
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: smartwatermelon/personify
+          path: personify
+          persist-credentials: false
+
       - name: Install bats
         run: |
           sudo apt-get update -qq
@@ -36,4 +46,5 @@ jobs:
       - name: Run tests
         env:
           GH_WRAPPER_LIB: ${{ runner.temp }}/dotfiles/bash/gh-wrapper.sh
+          PERSONIFY_CHECKOUT: ${{ github.workspace }}/personify
         run: scripts/run-tests.sh
