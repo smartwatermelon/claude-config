@@ -157,8 +157,8 @@ EOF
   grep -q "feat: real message line one" "${PROMPT_CAPTURE}"
   grep -q "This is the body of the commit." "${PROMPT_CAPTURE}"
   # Comment lines must NOT leak into the prompt.
-  ! grep -q "Please enter the commit message" "${PROMPT_CAPTURE}"
-  ! grep -q "On branch test-branch" "${PROMPT_CAPTURE}"
+  ! grep -q "Please enter the commit message" "${PROMPT_CAPTURE}" || false
+  ! grep -q "On branch test-branch" "${PROMPT_CAPTURE}" || false
   ! grep -q "new file:   foo.txt" "${PROMPT_CAPTURE}"
 }
 

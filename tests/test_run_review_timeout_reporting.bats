@@ -145,7 +145,7 @@ _run_full_diff() {
   # invoke_agent no longer claims a block the caller does not enforce.
   [[ "$output" != *"BLOCKING: Review timeout"* ]]
   grep -qx 'code-reviewer: INCOMPLETE (timeout)' "${EXPECTED_LOG}"
-  ! grep -q '^code-reviewer: FAIL' "${EXPECTED_LOG}"
+  ! grep -q '^code-reviewer: FAIL' "${EXPECTED_LOG}" || false
   grep -q '^review: INCOMPLETE' "${EXPECTED_LOG}"
   grep -qx 'adversarial-reviewer: PASS' "${EXPECTED_LOG}"
 }

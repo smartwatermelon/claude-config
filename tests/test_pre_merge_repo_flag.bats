@@ -240,7 +240,7 @@ _lock_check_has_repo() {
   # exact pre-fix behavior, preserved by the new parser.
   [[ "$(_repo_view_count)" -ge 1 ]]
   # And no --repo flag is added to pr view / pr diff.
-  ! _pr_view_has_repo "owner/repo"
+  ! _pr_view_has_repo "owner/repo" || false
   _pr_view_has_number "123"
 }
 
