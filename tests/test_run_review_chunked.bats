@@ -254,7 +254,7 @@ EOF
 
   run _run_review
   [ "$status" -eq 0 ]
-  ! grep -qx 'adversarial-reviewer' "${AGENT_RECORD}"
+  ! grep -qx 'adversarial-reviewer' "${AGENT_RECORD}" || false
   grep -q '^adversarial-reviewer: skipped (agent not installed)' "${EXPECTED_LOG}"
   [[ "$output" == *"adversarial-reviewer"*"not"* ]]
 }
@@ -351,7 +351,7 @@ _stage_three_files() {
 
   run _run_review
   [ "$status" -ne 0 ]
-  ! grep -q '^downgraded:' "${EXPECTED_LOG}"
+  ! grep -q '^downgraded:' "${EXPECTED_LOG}" || false
   grep -q '^adversarial-reviewer: FAIL' "${EXPECTED_LOG}"
 }
 
@@ -421,7 +421,7 @@ _stage_one_blocking_file() {
 
   run _run_review
   [ "$status" -ne 0 ]
-  ! grep -q '^arbiter:' "${AGENT_RECORD}"
+  ! grep -q '^arbiter:' "${AGENT_RECORD}" || false
   ! grep -q '^arbiter:' "${EXPECTED_LOG}"
 }
 
@@ -431,7 +431,7 @@ _stage_one_blocking_file() {
 
   run _run_review
   [ "$status" -ne 0 ]
-  ! grep -q '^arbiter:' "${AGENT_RECORD}"
+  ! grep -q '^arbiter:' "${AGENT_RECORD}" || false
   grep -q '^adversarial-reviewer: skipped (timeout or agent error)' "${EXPECTED_LOG}"
 }
 

@@ -949,6 +949,8 @@ VERIFIED: a command"
   _parse_issue_fields "${block}" t s l d v
 
   [[ "${t}" == "Something" ]]
+  [[ "${s}" == "code-reviewer" ]]
+  [[ "${l}" == "src/a.ts:1" ]]
   [[ "${d}" == "First detail line.
 Second detail line." ]]
   [[ "${v}" == "a command" ]]
@@ -1301,6 +1303,7 @@ _load_gate3_fns() {
   # is cleared first so a second test in the same shell isn't no-op'd by the
   # guard.
   unset _LIB_REVIEW_ISSUES_LOADED
+  # shellcheck source=../hooks/lib-review-issues.sh
   source "${SCRIPT}"
 
   # Fail loudly if the source did not actually take effect. If a fixture
@@ -1397,8 +1400,8 @@ END_ISSUE"
   echo "${create_line}" | grep -q "verified:"
   echo "${create_line}" | grep -q "HTTP 404 Not Found"
   # ... and NO unverified label or caveat, since the claim carries support.
-  ! echo "${create_line}" | grep -q "tech-debt,unverified"
-  ! echo "${create_line}" | grep -q "unverified claim"
+  ! echo "${create_line}" | grep -q "tech-debt,unverified" || false
+  ! echo "${create_line}" | grep -q "unverified claim" || false
   # The VERIFIED: line must not leak into DETAILS / "What was flagged".
   ! echo "${create_line}" | grep -q "VERIFIED: gh api"
 }
@@ -1425,8 +1428,8 @@ END_ISSUE"
   local create_line
   create_line=$(grep "issue create" "${GH_CALLS_FILE}")
   [[ -n "${create_line}" ]]
-  ! echo "${create_line}" | grep -q "unverified"
-  ! echo "${create_line}" | grep -q "Unverified claim"
+  ! echo "${create_line}" | grep -q "unverified" || false
+  ! echo "${create_line}" | grep -q "Unverified claim" || false
   ! echo "${create_line}" | grep -q "## Verification"
 }
 
@@ -1496,7 +1499,7 @@ END_ISSUE"
   _asserts_incorrectness "" "This IS WRONG in the general case"
   _asserts_incorrectness "Tag v7.0.1 does not exist" ""
   _asserts_incorrectness "The job never runs" ""
-  ! _asserts_incorrectness "Consider extracting the retry loop" "Would reduce drift."
+  ! _asserts_incorrectness "Consider extracting the retry loop" "Would reduce drift." || false
   ! _asserts_incorrectness "It is unclear whether this path is reachable" "May want to check."
 }
 
@@ -1522,14 +1525,14 @@ END_ISSUE"
   # Measured against a 137-finding corpus: "is not" and "has no"
   # overwhelmingly catch the reviewer being CAREFUL, not asserting.
   # Flagging these would invert the gate's meaning.
-  ! _asserts_incorrectness "" "This is not a correctness issue — capped PRs simply wait."
-  ! _asserts_incorrectness "" "It is not currently vulnerable, but a future refactor could change that."
-  ! _asserts_incorrectness "" "This is not a confirmed regression — it may be correct as written."
-  ! _asserts_incorrectness "" "The --verbose flag has no observable effect."
-  ! _asserts_incorrectness "" "This has no practical impact, but the directive is dead."
+  ! _asserts_incorrectness "" "This is not a correctness issue — capped PRs simply wait." || false
+  ! _asserts_incorrectness "" "It is not currently vulnerable, but a future refactor could change that." || false
+  ! _asserts_incorrectness "" "This is not a confirmed regression — it may be correct as written." || false
+  ! _asserts_incorrectness "" "The --verbose flag has no observable effect." || false
+  ! _asserts_incorrectness "" "This has no practical impact, but the directive is dead." || false
 
   # Phrases #334 proposed that never occur in the real corpus.
-  ! _asserts_incorrectness "" "The entry is not present in the allowlist."
+  ! _asserts_incorrectness "" "The entry is not present in the allowlist." || false
   ! _asserts_incorrectness "" "The helper cannot be found on PATH."
 }
 
@@ -1552,11 +1555,11 @@ END_ISSUE"
 
   # Group 3 must not catch findings that make no factual claim about
   # external state -- those legitimately carry no VERIFIED: field.
-  ! _asserts_incorrectness "" "The function is long and would read better split into two helpers."
-  ! _asserts_incorrectness "" "Consider extracting this duplicated block into a shared helper."
-  ! _asserts_incorrectness "" "This variable name is ambiguous; rename for clarity."
-  ! _asserts_incorrectness "" "The comment density here is lower than the surrounding file."
-  ! _asserts_incorrectness "" "Test coverage for the error path is missing."
+  ! _asserts_incorrectness "" "The function is long and would read better split into two helpers." || false
+  ! _asserts_incorrectness "" "Consider extracting this duplicated block into a shared helper." || false
+  ! _asserts_incorrectness "" "This variable name is ambiguous; rename for clarity." || false
+  ! _asserts_incorrectness "" "The comment density here is lower than the surrounding file." || false
+  ! _asserts_incorrectness "" "Test coverage for the error path is missing." || false
   ! _asserts_incorrectness "" "This adds a second source of truth for the same list."
 }
 
@@ -1892,7 +1895,7 @@ SOURCE: pre-push whole-codebase review
 LOCATION: src/a.ts:1
 DETAILS: Detail one." "${PENDING_ISSUES_DIR}"
 
-  ! grep -q "PR #unknown" "${GH_CALLS_FILE}"
+  ! grep -q "PR #unknown" "${GH_CALLS_FILE}" || false
   ! grep -q "unknown" "${GH_CALLS_FILE}"
 }
 

@@ -47,7 +47,7 @@ PRE_MERGE="${BATS_TEST_DIRNAME}/../hooks/pre-merge-review.sh"
   # The old wording closed with "Run the one-liner, or ask the question
   # instead of making the assertion" and illustrated VERIFIED: with a `gh api`
   # invocation — both instructions to execute something it cannot execute.
-  ! grep -q 'Run the one-liner' "${RUN_REVIEW}"
+  ! grep -q 'Run the one-liner' "${RUN_REVIEW}" || false
   ! grep -q 'VERIFIED: gh api' "${RUN_REVIEW}"
 }
 
@@ -64,7 +64,7 @@ PRE_MERGE="${BATS_TEST_DIRNAME}/../hooks/pre-merge-review.sh"
 }
 
 @test "pre-merge prompt no longer tells the reviewer to run a command" {
-  ! grep -q 'run the command that checks it' "${PRE_MERGE}"
+  ! grep -q 'run the command that checks it' "${PRE_MERGE}" || false
   ! grep -q 'Run the one-liner' "${PRE_MERGE}"
 }
 

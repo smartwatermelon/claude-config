@@ -232,7 +232,7 @@ _run_review() {
   run _run_review
   [ "$status" -ne 0 ]
   [[ "$output" != *"Artifact-only changes detected"* ]]
-  ! grep -q 'skipped: artifact-only' "${EXPECTED_LOG}"
+  ! grep -q 'skipped: artifact-only' "${EXPECTED_LOG}" || false
   [ -f "${AGENT_INVOKED}" ]
 }
 
@@ -243,7 +243,7 @@ _run_review() {
 
   run _run_review
   [ "$status" -ne 0 ]
-  ! grep -q 'skipped: artifact-only' "${EXPECTED_LOG}"
+  ! grep -q 'skipped: artifact-only' "${EXPECTED_LOG}" || false
   [ -f "${AGENT_INVOKED}" ]
 }
 
@@ -254,7 +254,7 @@ _run_review() {
   git -C "${TMPDIR_TEST}" add data.csv
   run _run_review
   [ "$status" -ne 0 ]
-  ! grep -q 'skipped: artifact-only' "${EXPECTED_LOG}"
+  ! grep -q 'skipped: artifact-only' "${EXPECTED_LOG}" || false
 
   git -C "${TMPDIR_TEST}" rm -q --cached data.csv
   rm -f "${AGENT_INVOKED}"
