@@ -62,6 +62,9 @@ _setup_timeout_fn() {
   TIMEOUT_CEILING_SECONDS=900
   TIMEOUT_SECONDS="${TIMEOUT_FLOOR_SECONDS}"
   TIMEOUT_OVERRIDE="${1:-}"
+  # Read by the eval-loaded compute_effective_timeout, which shellcheck cannot
+  # see.
+  export TIMEOUT_PER_KB_SECONDS TIMEOUT_CEILING_SECONDS TIMEOUT_OVERRIDE
   _load_fn compute_effective_timeout
 }
 

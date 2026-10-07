@@ -39,6 +39,8 @@ setup() {
   _NL=$'\n'
   STRUCTURED_MARKER="__REVIEW_BLOCKING__"
   FIX_NOW_MARKER="__REVIEW_FIX_NOW__"
+  # Read by the eval-loaded function bodies, which shellcheck cannot see.
+  export STRUCTURED_MARKER FIX_NOW_MARKER
   # Stub the loggers rather than slicing them out by line number: a hardcoded
   # range silently evals the wrong lines the moment anything is inserted above
   # it, and this very fix inserts ~20 lines near the top of the file. No test
