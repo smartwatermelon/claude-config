@@ -22,6 +22,9 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 
 export GATE_REVIEW_DIR="${TMP}/gate"
+# Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
+GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
+export GATE_GH
 # A stub length_check.py that passes everything: CI has no personify checkout, and test-*-length.sh use the real one.
 _stub_personify() { # <config dir> <install dir>
   mkdir -p "$1/plugins" "$2/scripts"

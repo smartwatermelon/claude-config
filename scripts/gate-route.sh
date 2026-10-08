@@ -3,9 +3,13 @@
 #
 # Rules file: ${GATE_RULES_FILE:-${HOME}/.claude/gate-rules.conf}
 # One rule per line: "<matcher> <outcome>". First match wins.
-#   matcher: repo=<owner/name> | author=<login> | owner=<login> | *
+#   matcher: repo=<owner/name> | author=<login> | owner=<login> | fork=<login> | *
 #   outcome: pangram | visual | exempt
-#
+
+# fork=<login>: owner=<login> and GitHub says fork. Unknown never matches, so keep only gated rules below it.
+
+# --publish: gh posts from the --dir checkout. For a fork, unknown, or second remote: origin or `*`, the stricter.
+
 # owner=<login> matches the owner part of an owner/name destination, exactly
 # and case-insensitively, and only when the destination host is github.com.
 # A --repo value (gh's owner/name) counts as github.com; a --dir origin must
@@ -64,11 +68,11 @@ _load_rules_inner() {
         kind="author"
         value="${matcher#author=}"
         ;;
-      owner=?*)
-        kind="owner"
-        value="${matcher#owner=}"
+      owner=?* | fork=?*)
+        kind="${matcher%%=*}"
+        value="${matcher#*=}"
         if [[ "${value}" == */* ]]; then
-          echo "gate-route: ${file}:${lineno}: owner value must not contain '/': '${matcher}'" >&2
+          echo "gate-route: ${file}:${lineno}: ${kind} value must not contain '/': '${matcher}'" >&2
           return 4
         fi
         ;;
@@ -120,6 +124,14 @@ _match_rule() {
           return 0
         fi
         ;;
+      fork)
+        # Only a proven fork matches; not-a-fork and unknown both skip the rule.
+        if [[ "${host}" == "github.com" && "${repo}" =~ ^[^/]+/[^/]+$ && "${repo%%/*}" == "${RULE_VALUE[i]}" ]] &&
+          _is_fork "${repo}"; then
+          printf '%s\t%d\tmatched fork=%s\n' "${RULE_OUTCOME[i]}" "$((i + 1))" "${RULE_VALUE[i]}"
+          return 0
+        fi
+        ;;
       any)
         printf '%s\t%d\tno rule matched, default\n' "${RULE_OUTCOME[i]}" "$((i + 1))"
         return 0
@@ -132,6 +144,49 @@ _match_rule() {
   done
   echo "gate-route: no rule matched" >&2
   return 4
+}
+
+# _is_fork <owner/name>: 0 fork, 1 not a fork, 2 unknown. Callers treat 2 as not proven (gated).
+
+# Cache: gate-review/fork-cache/, which the write hooks guard. Answers only, 7 days; failures never.
+_is_fork() {
+  local repo="${1,,}" dir file ans="" now mtime ttl="${GATE_FORK_CACHE_TTL:-604800}"
+  [[ "${repo}" =~ ^[a-z0-9._-]+/[a-z0-9._-]+$ ]] || return 2
+  case "/${repo}/" in
+    */./* | */../*) return 2 ;;
+    *) ;;
+  esac
+  dir="${GATE_REVIEW_DIR:-${HOME}/.claude/gate-review}/fork-cache/${repo%%/*}"
+  file="${dir}/${repo#*/}"
+  if [[ -f "${file}" ]]; then
+    now="$(date +%s)"
+    mtime="$(stat -f %m "${file}" 2>/dev/null || stat -c %Y "${file}" 2>/dev/null || echo 0)"
+    if ((now - mtime < ttl)); then
+      ans="$(cat "${file}" 2>/dev/null || true)"
+    fi
+  fi
+  if [[ "${ans}" != "true" && "${ans}" != "false" ]]; then
+    ans="$("${GATE_GH:-gh}" api "repos/${repo}" --jq '.fork' 2>/dev/null </dev/null || true)"
+    if [[ "${ans}" == "true" || "${ans}" == "false" ]]; then
+      mkdir -p "${dir}" 2>/dev/null && printf '%s\n' "${ans}" >"${file}" 2>/dev/null || true
+    fi
+  fi
+  case "${ans}" in
+    true) return 0 ;;
+    false) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+# _other_remote <dir> <owner/name>: 0 if any remote names another repo. gh may publish to that one.
+_other_remote() {
+  local dir="$1" want="$2" url r
+  while IFS= read -r url; do
+    [[ -n "${url}" ]] || continue
+    r="$(printf '%s\n' "${url}" | sed -E 's#^(git@[^:]+:|[a-zA-Z]+://[^/]+/)##; s#\.git/?$##; s#/$##')"
+    [[ "${r,,}" == "${want}" ]] || return 0
+  done < <(git -C "${dir}" config --get-regexp '^remote\..*\.url$' 2>/dev/null | awk '{print $2}' || true)
+  return 1
 }
 
 # _repo_from_dir <dir>
@@ -183,9 +238,13 @@ _author_for_repo() {
 
 main() {
   set -euo pipefail
-  local repo="" dir="." author host="" rules_file result
+  local repo="" dir="." author host="" rules_file result publish=0 fork_rc=0 uncertain=0 other s_other s_result
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --publish)
+        publish=1
+        shift
+        ;;
       --repo)
         [[ $# -ge 2 ]] || { echo "gate-route: --repo needs a value" >&2; exit 2; }
         repo="${2,,}"
@@ -197,7 +256,7 @@ main() {
         shift 2
         ;;
       *)
-        echo "usage: gate-route.sh [--repo owner/name] [--dir path]" >&2
+        echo "usage: gate-route.sh [--repo owner/name] [--dir path] [--publish]" >&2
         exit 2
         ;;
     esac
@@ -211,12 +270,40 @@ main() {
   else
     repo="$(_repo_from_dir "${dir}")"
     host="$(_host_from_dir "${dir}")"
+    if ((publish == 1)) && [[ -n "${repo}" ]]; then
+      _is_fork "${repo}" || fork_rc=$?
+      if ((fork_rc != 1)); then
+        echo "gate-route: ${repo} is a fork, or its fork status is unknown; gh may publish to the parent; name the repository with gh -R <owner/name>" >&2
+        uncertain=1
+      elif _other_remote "${dir}" "${repo}"; then
+        echo "gate-route: ${dir} has a remote other than ${repo}; gh may publish there; name the repository with gh -R <owner/name>" >&2
+        uncertain=1
+      fi
+    fi
   fi
   [[ -n "${repo}" ]] || echo "gate-route: repo unresolved" >&2
   author="$(_author_for_repo "${repo}" "${dir}")"
   [[ -n "${author}" ]] || echo "gate-route: author unresolved" >&2
   result="$(_match_rule "${repo}" "${author}" "${host}")" || exit 4
+  # Uncertain: the text must satisfy both the origin and an unknown repo, so the stricter route wins.
+  if ((uncertain == 1)); then
+    other="$(_match_rule "" "" "${host}")" || exit 4
+    s_other="$(_strength "${other%%$'\t'*}")"
+    s_result="$(_strength "${result%%$'\t'*}")"
+    if ((s_other > s_result)); then
+      result="${other}"
+    fi
+  fi
   printf '%s\n' "${result}"
+}
+
+# _strength <outcome>: exempt 0, visual 1, pangram 2. Anything else is treated as the strictest.
+_strength() {
+  case "$1" in
+    exempt) printf '0\n' ;;
+    visual) printf '1\n' ;;
+    *) printf '2\n' ;;
+  esac
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
