@@ -27,6 +27,8 @@
 #   no message flag at all                         -> blocked; editor mode has
 #       no TTY here anyway, so it could never succeed
 #
+# All of this is for gated routes only: the route is asked first, and exempt text passes in any form (#698).
+#
 # PR and issue TITLES need no visual approval; they get a length check only. `gh pr edit` is
 # gated only when it carries a body flag, so label and title edits pass.
 # `gh pr review` follows the same rule: `--approve` alone passes, a review
@@ -341,6 +343,10 @@ _extract_path() {
 _verify_segment() {
   local seg="$1" surface="$2" inline_flags="$3" file_flags="$4" kind="$5" cap_kind="$6" path
 
+  # Route first (#698): exempt text passes in any form. An unresolvable destination denies in here.
+  _destination_for_segment "${seg}" "${kind}" "${surface}"
+  _dest_exempt "${cap_kind}" && return 0
+
   # An inline string cannot be hashed from the command line at all.
   if printf '%s\n' "${seg}" | grep -qE "[[:space:]](${inline_flags})([[:space:]]|=)"; then
     _deny "text given inline; only a file can be verified" "${surface}"
@@ -352,8 +358,27 @@ _verify_segment() {
     _deny "no message file named" "${surface}"
   fi
 
-  _destination_for_segment "${seg}" "${kind}" "${surface}"
   _verify_path "${path}" "${surface}" "${cap_kind}"
+}
+
+# Is DEST_* exempt? With DEST_ALSO_CWD the checkout must be exempt too. Any failure returns 1: full checks.
+_dest_exempt() {
+  local route outcome
+  [[ -x "${GATE}" ]] || return 1
+  local -a dest=()
+  [[ -z "${DEST_REPO:-}" ]] || dest+=(--repo "${DEST_REPO}")
+  [[ -z "${DEST_DIR:-}" ]] || dest+=(--dir "${DEST_DIR}")
+  ((${#dest[@]} > 0)) || return 1
+  route="$("${GATE}" route --kind "$1" "${dest[@]}" 2>/dev/null)" || return 1
+  outcome="${route%%$'\t'*}"
+  [[ "${outcome}" == "exempt" ]] || return 1
+  if [[ "${DEST_ALSO_CWD:-0}" -eq 1 ]]; then
+    [[ -n "${DEST_DIR:-}" ]] || return 1
+    route="$("${GATE}" route --kind "$1" --dir "${DEST_DIR}" 2>/dev/null)" || return 1
+    outcome="${route%%$'\t'*}"
+    [[ "${outcome}" == "exempt" ]] || return 1
+  fi
+  return 0
 }
 
 # Work out where this segment's text will be published, from the command
@@ -694,9 +719,12 @@ _verify_api_segment() {
   local seg="$1" surface="API body" m flag val matches cap_kind
   _destination_for_segment "${seg}" api "${surface}"
   cap_kind="$(_api_cap_kind "${seg}")"
+  # GraphQL names its target by node id, so it has no route and is never exempt.
   if _gql_has_body "${seg}"; then
     _deny "GraphQL mutation carries its body inline; use gh pr/issue comment --body-file" "${surface}"
   fi
+  # As in _verify_segment: an exempt destination passes in any form (#698).
+  _dest_exempt "${cap_kind}" && return 0
   matches="$(printf '%s\n' "${seg}" | grep -oE -- "${_api_body_re}" || true)"
   while IFS= read -r m; do
     [[ -n "${m}" ]] || continue

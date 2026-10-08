@@ -27,6 +27,9 @@ export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-/Users/andrewrich/Developer/dotfiles/ba
 export GATE_RULES_FILE="${TMP}/rules.conf"
 printf 'repo=acme/pang pangram\n* visual\n' >"${GATE_RULES_FILE}"
 export GATE_REVIEW_DIR="${TMP}/gate"
+# Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
+GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
+export GATE_GH
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
 # A stub length_check.py that passes everything: CI has no personify checkout, and test-*-length.sh use the real one.
 _stub_personify() { # <config dir> <install dir>
