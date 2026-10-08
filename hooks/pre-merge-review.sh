@@ -518,8 +518,8 @@ fi
 # "unauthorized" result, and would falsely block an already-authorized merge.
 log_info "Fetching PR review data..."
 
-PR_JSON_FIELDS="number,title,state,reviews,comments,reviewDecision,statusCheckRollup,baseRefName"
-PR_JSON_FIELDS_FALLBACK="number,title,state,reviews,comments,reviewDecision,baseRefName"
+PR_JSON_FIELDS="number,title,state,reviews,comments,reviewDecision,statusCheckRollup,baseRefName,url,author"
+PR_JSON_FIELDS_FALLBACK="number,title,state,reviews,comments,reviewDecision,baseRefName,url,author"
 
 # Fetch with statusCheckRollup first; fall back without it if the PAT lacks
 # Checks permission (fine-grained PATs cannot access the Checks API).
@@ -749,7 +749,33 @@ if [[ -n "${REPO_OWNER}" && -n "${REPO_NAME}" ]]; then
 fi
 
 MERGE_LOCK="${HOME}/.claude/hooks/merge-lock.sh"
-if [[ -x "${MERGE_LOCK}" ]]; then
+
+# Lock policy (dev-env#176): some repos need no human lock. Everything after this step still runs.
+
+# The repo comes from the PR's own URL, which GitHub canonicalizes, so an old owner name cannot dodge a lock.
+LOCK_POLICY="lock"
+LOCK_POLICY_WHY=""
+_pr_url=$(echo "${PR_JSON}" | jq -r '.url // empty' 2>/dev/null || true)
+_pr_author=$(echo "${PR_JSON}" | jq -r '.author.login // empty' 2>/dev/null || true)
+_canon_repo=""
+if [[ "${_pr_url}" =~ ^https://github\.com/([^/]+/[^/]+)/pull/[0-9]+$ ]]; then
+  _canon_repo="${BASH_REMATCH[1]}"
+fi
+if [[ -x "${MERGE_LOCK}" && -n "${_canon_repo}" && -n "${_pr_author}" ]]; then
+  # Fail closed: only an exit-0 line that starts with "exempt" skips the lock.
+  _policy_out=$("${MERGE_LOCK}" policy --repo "${_canon_repo}" --author "${_pr_author}" 2>/dev/null) || _policy_out=""
+  if [[ "${_policy_out}" == exempt$'\t'* ]]; then
+    LOCK_POLICY="exempt"
+    LOCK_POLICY_WHY="${_policy_out#exempt$'\t'}"
+  fi
+fi
+
+if [[ "${LOCK_POLICY}" == "exempt" ]]; then
+  log_success "Merge lock not required for ${_canon_repo}#${PR_NUMBER} by ${_pr_author} (${LOCK_POLICY_WHY//$'\t'/: }); CI and review still apply"
+  # Recorded beside the ledger, which holds human grants only. merge-audit.sh does not read this yet.
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "${_canon_repo}" "${PR_NUMBER}" "${_pr_author}" "${LOCK_POLICY_WHY//$'\t'/ }" \
+    >>"${HOME}/.claude/merge-locks/exempt.tsv" 2>/dev/null || true
+elif [[ -x "${MERGE_LOCK}" ]]; then
   if ! "${MERGE_LOCK}" check "${PR_NUMBER}" "${LOCK_REPO_FLAG[@]}" >/dev/null 2>&1; then
     echo "" >&2
     log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

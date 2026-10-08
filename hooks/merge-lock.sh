@@ -277,9 +277,18 @@ lock_path() {
 parse_args() {
   REPO_OVERRIDE=""
   TTL_OVERRIDE=""
+  AUTHOR_ARG=""
   POSITIONAL=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --author)
+        if [[ -z "${2:-}" ]]; then
+          echo "Error: --author requires a value" >&2
+          exit 1
+        fi
+        AUTHOR_ARG="$2"
+        shift 2
+        ;;
       --repo)
         if [[ -z "${2:-}" ]]; then
           echo "Error: --repo requires a value" >&2
@@ -381,6 +390,99 @@ append_ledger() {
   reason="${reason//$'\t'/ }"
   reason="${reason//$'\n'/ }"
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${ts}" "${repo}" "${pr}" "${ttl}" "${user}" "${reason}" >>"${LEDGER_FILE}"
+}
+
+# --- Lock policy (dev-env#176) -----------------------------------------------
+
+# Which PRs need a lock. A symlink into the claude-config checkout; only its committed main counts.
+POLICY_LINK="${HOME}/.claude/merge-lock-policy.conf"
+
+# Print the policy text from HEAD of a clean-origin claude-config checkout on main, or fail.
+policy_text() {
+  local target dir top branch origin rel
+  if [[ ! -L "${POLICY_LINK}" ]]; then
+    echo "policy: ${POLICY_LINK} is missing or not a symlink (run install.sh --sync)" >&2
+    return 1
+  fi
+  target="$(readlink "${POLICY_LINK}")" || return 1
+  [[ "${target}" == /* ]] || target="$(dirname "${POLICY_LINK}")/${target}"
+  [[ -f "${target}" ]] || {
+    echo "policy: ${POLICY_LINK} points at a missing file: ${target}" >&2
+    return 1
+  }
+  dir="$(dirname "${target}")"
+  top="$(git -C "${dir}" rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "policy: ${target} is not in a git checkout" >&2
+    return 1
+  }
+  origin="$(git -C "${top}" config --get remote.origin.url 2>/dev/null || true)"
+  case "${origin}" in
+    *[:/]smartwatermelon/claude-config | *[:/]smartwatermelon/claude-config.git) ;;
+    *)
+      echo "policy: ${top} is not a smartwatermelon/claude-config checkout (origin '${origin}')" >&2
+      return 1
+      ;;
+  esac
+  branch="$(git -C "${top}" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  if [[ "${branch}" != "main" ]]; then
+    echo "policy: ${top} is on '${branch:-a detached HEAD}', not main" >&2
+    return 1
+  fi
+  rel="$(git -C "${dir}" ls-files --full-name -- "$(basename "${target}")" 2>/dev/null || true)"
+  [[ -n "${rel}" ]] || {
+    echo "policy: ${target} is not tracked in ${top}" >&2
+    return 1
+  }
+  git -C "${top}" show "HEAD:${rel}" 2>/dev/null || {
+    echo "policy: cannot read HEAD:${rel} in ${top}" >&2
+    return 1
+  }
+}
+
+# policy_decide <owner/name> <author>: print "lock|exempt<TAB>rule N<TAB>matcher". Return 1 on any error.
+policy_decide() {
+  local repo="${1,,}" author="${2,,}" text line lineno=0 matcher outcome extra value hit result=""
+  validate_repo_slug "${repo}" || {
+    echo "policy: invalid repo '${1}'" >&2
+    return 1
+  }
+  [[ -n "${author}" ]] || {
+    echo "policy: PR author unknown" >&2
+    return 1
+  }
+  text="$(policy_text)" || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    lineno=$((lineno + 1))
+    line="${line//$'\r'/}"
+    read -r matcher outcome extra <<<"${line}"
+    [[ -z "${matcher}" || "${matcher}" == \#* ]] && continue
+    if [[ -z "${outcome}" || -n "${extra}" ]] || [[ "${outcome}" != "lock" && "${outcome}" != "exempt" ]]; then
+      echo "policy: line ${lineno}: expected '<matcher> lock|exempt'" >&2
+      return 1
+    fi
+    value="${matcher#*=}"
+    value="${value,,}"
+    hit=0
+    case "${matcher}" in
+      '*') hit=1 ;;
+      repo=?*) [[ "${repo}" == "${value}" ]] && hit=1 ;;
+      owner=?*) [[ "${repo%%/*}" == "${value}" ]] && hit=1 ;;
+      author=?*) [[ "${author}" == "${value}" ]] && hit=1 ;;
+      *)
+        echo "policy: line ${lineno}: unknown matcher '${matcher}'" >&2
+        return 1
+        ;;
+    esac
+    # Keep reading after a hit: a bad line anywhere fails the whole file, never a truncated rule set.
+    if ((hit == 1)) && [[ -z "${result}" ]]; then
+      result="$(printf '%s\trule %d\t%s' "${outcome}" "${lineno}" "${matcher}")"
+    fi
+  done <<<"${text}"
+  [[ -n "${result}" ]] || {
+    echo "policy: no rule matched" >&2
+    return 1
+  }
+  printf '%s\n' "${result}"
 }
 
 # --- Lock operations ---------------------------------------------------------
@@ -886,6 +988,14 @@ case "${SUBCOMMAND}" in
       exit 1
     fi
     ;;
+  policy)
+    # Read-only. pre-merge-review.sh skips the lock only on an exit-0 line starting "exempt".
+    if [[ -z "${REPO_OVERRIDE}" || -z "${AUTHOR_ARG}" ]]; then
+      echo "Usage: $0 policy --repo OWNER/NAME --author LOGIN" >&2
+      exit 1
+    fi
+    policy_decide "${REPO_OVERRIDE}" "${AUTHOR_ARG}" || exit 1
+    ;;
   status)
     if [[ -z "${POSITIONAL[0]:-}" ]]; then
       echo "Usage: $0 status <pr_number> [--repo OWNER/NAME]"
@@ -900,7 +1010,7 @@ case "${SUBCOMMAND}" in
     list_locks
     ;;
   *)
-    echo "Usage: $0 {authorize|tui|check|status|list} [args...] [--repo OWNER/NAME] [--ttl MINUTES]"
+    echo "Usage: $0 {authorize|tui|check|policy|status|list} [args...] [--repo OWNER/NAME] [--ttl MINUTES]"
     echo ""
     echo "Commands:"
     echo "  authorize <pr[,pr...]> <reason>  - Create merge authorization(s)"
@@ -911,6 +1021,7 @@ case "${SUBCOMMAND}" in
     echo "  check <pr>               - Check if PR is authorized (exit 0/1)"
     echo "  status <pr>              - Show detailed authorization status"
     echo "  list                     - List all active authorizations"
+    echo "  policy --repo R --author L - Print lock or exempt for a PR (merge-lock-policy.conf)"
     echo ""
     echo "Locks are keyed on repo + PR number. The repo comes from --repo OWNER/NAME"
     echo "(after the subcommand) or from 'gh repo view' in the current directory."
