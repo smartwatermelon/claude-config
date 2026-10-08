@@ -12,6 +12,10 @@ source "${ROOT}/scripts/gate-route.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
+# Fork lookups go to a stub, and the fork cache to the scratch dir.
+export GATE_REVIEW_DIR="${TMP}/gate"
+GATE_GH="${HERE}/fixtures/gh-fork-stub.sh"
+export GATE_GH
 
 PASS=0
 FAIL=0
@@ -50,31 +54,61 @@ GH="github.com"
 
 RULES="${ROOT}/gate-rules.conf"
 {
-  expect_match "exact repo" "${RULES}" "andrewmrich/beacon-workspace" "andrewmrich" "${V}${TAB}1"
-  expect_match "mixed case repo" "${RULES}" "AndrewMRich/Beacon-Workspace" "andrewmrich" "${V}${TAB}1"
-  expect_match "other repo, author" "${RULES}" "other/beacon-workspace" "andrewmrich" "${P}${TAB}2"
-  expect_match "twistedmelonman" "${RULES}" "twistedmelonman/x" "twistedmelonman" "${V}${TAB}5" "${GH}"
-  expect_match "empty inputs" "${RULES}" "" "" "${V}${TAB}5"
-  expect_match "empty repo, github host" "${RULES}" "" "twistedmelonman" "${V}${TAB}5" "${GH}"
-  # owner= rules: personal orgs are exempt on github.com only.
-  expect_match "owner smartwatermelon" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${E}${TAB}3" "${GH}"
-  expect_match "owner mixed case" "${RULES}" "SmartWatermelon/X" "twistedmelonman" "${E}${TAB}3" "GitHub.com"
-  expect_match "owner nightowlstudiollc" "${RULES}" "nightowlstudiollc/y" "twistedmelonman" "${E}${TAB}4" "${GH}"
+  # Decided 2026-10-08 (dev-env#154).
+  expect_match "beacon-workspace exempt" "${RULES}" "andrewmrich/beacon-workspace" "andrewmrich" "${E}${TAB}1"
+  expect_match "mixed case repo" "${RULES}" "AndrewMRich/Beacon-Workspace" "andrewmrich" "${E}${TAB}1"
+  expect_match "projectinsomnia pangram" "${RULES}" "smartwatermelon/projectinsomnia" "twistedmelonman" "${P}${TAB}2" "${GH}"
+  expect_match "crazy-larry pangram" "${RULES}" "smartwatermelon/crazy-larry" "twistedmelonman" "${P}${TAB}3" "${GH}"
+  expect_match "other repo, author" "${RULES}" "other/beacon-workspace" "andrewmrich" "${P}${TAB}9"
+  expect_match "twistedmelonman exempt" "${RULES}" "twistedmelonman/x" "twistedmelonman" "${E}${TAB}5" "${GH}"
+  expect_match "empty inputs" "${RULES}" "" "" "${V}${TAB}13"
+  expect_match "empty repo, github host" "${RULES}" "" "twistedmelonman" "${V}${TAB}13" "${GH}"
+  # owner= rules: personal owners are exempt on github.com only.
+  expect_match "owner smartwatermelon" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${E}${TAB}4" "${GH}"
+  expect_match "owner mixed case" "${RULES}" "SmartWatermelon/X" "twistedmelonman" "${E}${TAB}4" "GitHub.com"
+  expect_match "nightowlstudiollc pangram" "${RULES}" "nightowlstudiollc/y" "twistedmelonman" "${P}${TAB}12" "${GH}"
+  expect_match "beacon-biosignals owner, author unresolved" "${RULES}" "beacon-biosignals/x" "" "${P}${TAB}10" "${GH}"
   # The known-bad cases: author resolves every unknown owner to twistedmelonman,
   # so only an owner rule can tell these apart, and none may match them.
-  expect_match "fork stays gated" "${RULES}" "twistedmelonman/instapaper-mcp" "twistedmelonman" "${V}${TAB}5" "${GH}"
-  expect_match "third party stays gated" "${RULES}" "anthropics/claude-code" "twistedmelonman" "${V}${TAB}5" "${GH}"
-  expect_match "owner prefix only" "${RULES}" "smartwatermelonx/y" "twistedmelonman" "${V}${TAB}5" "${GH}"
-  expect_match "owner without name" "${RULES}" "smartwatermelon" "twistedmelonman" "${V}${TAB}5" "${GH}"
-  expect_match "owner with extra path" "${RULES}" "smartwatermelon/x/y" "twistedmelonman" "${V}${TAB}5" "${GH}"
+  expect_match "third party stays gated" "${RULES}" "anthropics/claude-code" "twistedmelonman" "${V}${TAB}13" "${GH}"
+  expect_match "owner prefix only" "${RULES}" "smartwatermelonx/y" "twistedmelonman" "${V}${TAB}13" "${GH}"
+  expect_match "owner without name" "${RULES}" "smartwatermelon" "twistedmelonman" "${V}${TAB}13" "${GH}"
+  expect_match "owner with extra path" "${RULES}" "smartwatermelon/x/y" "twistedmelonman" "${V}${TAB}13" "${GH}"
   # Host must be github.com; unknown or other hosts fall through.
-  expect_match "owner, no host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}5"
-  expect_match "owner, other host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}5" "gitlab.com"
-  expect_match "owner, lookalike host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}5" "github.com.evil.example"
+  expect_match "owner, no host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}13"
+  expect_match "owner, other host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}13" "gitlab.com"
+  expect_match "owner, lookalike host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}13" "github.com.evil.example"
+  # fork= rules (the stub answers): a proven fork is exempt, anything else is gated.
+  export GATE_TEST_FORKS="nightowlstudiollc/forked beacon-biosignals/forked andrewmrich/forked anthropics/forked"
+  export GATE_TEST_GH_FAIL="nightowlstudiollc/broken beacon-biosignals/broken"
+  expect_match "NOS fork exempt" "${RULES}" "nightowlstudiollc/forked" "twistedmelonman" "${E}${TAB}6" "${GH}"
+  expect_match "beacon fork exempt" "${RULES}" "beacon-biosignals/forked" "andrewmrich" "${E}${TAB}7" "${GH}"
+  expect_match "andrewmrich fork exempt" "${RULES}" "andrewmrich/forked" "andrewmrich" "${E}${TAB}8" "${GH}"
+  expect_match "third-party fork gated" "${RULES}" "anthropics/forked" "twistedmelonman" "${V}${TAB}13" "${GH}"
+  expect_match "NOS fork lookup fails: gated" "${RULES}" "nightowlstudiollc/broken" "twistedmelonman" "${P}${TAB}12" "${GH}"
+  expect_match "beacon fork lookup fails: gated" "${RULES}" "beacon-biosignals/broken" "andrewmrich" "${P}${TAB}9" "${GH}"
+  expect_match "NOS non-fork gated" "${RULES}" "nightowlstudiollc/site" "twistedmelonman" "${P}${TAB}12" "${GH}"
+  expect_match "fork rule needs github.com" "${RULES}" "nightowlstudiollc/forked" "twistedmelonman" "${V}${TAB}13" "gitlab.com"
+  unset GATE_TEST_FORKS GATE_TEST_GH_FAIL
   # Earlier rules still win.
-  expect_match "beacon author before owner" "${RULES}" "beacon-biosignals/x" "andrewmrich" "${P}${TAB}2" "${GH}"
-  expect_match "workspace repo before owner" "${RULES}" "andrewmrich/beacon-workspace" "andrewmrich" "${V}${TAB}1" "${GH}"
+  expect_match "workspace repo before author" "${RULES}" "andrewmrich/beacon-workspace" "andrewmrich" "${E}${TAB}1" "${GH}"
 }
+
+# Fail-closed invariant: an unknown fork answer skips a fork= rule, so no rule
+# after the first fork= rule may be exempt.
+_load_rules "${RULES}"
+seen_fork=0
+for i in "${!RULE_KIND[@]}"; do
+  [[ "${RULE_KIND[i]}" == "fork" ]] && seen_fork=1
+  if ((seen_fork)) && [[ "${RULE_KIND[i]}" != "fork" && "${RULE_OUTCOME[i]}" == "exempt" ]]; then
+    bad "rule $((i + 1)) is exempt below a fork= rule"
+  fi
+done
+ok
+
+# A fork= value with a slash is a parse error, like owner=.
+printf 'fork=a/b exempt\n* visual\n' >"${TMP}/slashfork.conf"
+expect_load_fail "fork with slash" "${TMP}/slashfork.conf" "slashfork.conf:1"
 
 # Reason strings
 _load_rules "${ROOT}/gate-rules.conf"
@@ -125,7 +159,7 @@ check "arrays reset on error" "${dump//$'\n'/;}" "declare -a RULE_KIND=();declar
 _load_rules "${ROOT}/gate-rules.conf"
 out="$(_match_rule "x/y" 2>&1)"
 IFS="${TAB}" read -r o_outcome o_rule _ <<<"${out}"
-check "one-arg match" "${o_outcome}${TAB}${o_rule}" "${V}${TAB}5"
+check "one-arg match" "${o_outcome}${TAB}${o_rule}" "${V}${TAB}13"
 
 echo "passed=${PASS} failed=${FAIL}"
 [[ ${FAIL} -eq 0 ]]

@@ -345,7 +345,7 @@ _verify_segment() {
 
   # Route first (#698): exempt text passes in any form. An unresolvable destination denies in here.
   _destination_for_segment "${seg}" "${kind}" "${surface}"
-  _dest_exempt && return 0
+  _dest_exempt "${cap_kind}" && return 0
 
   # An inline string cannot be hashed from the command line at all.
   if printf '%s\n' "${seg}" | grep -qE "[[:space:]](${inline_flags})([[:space:]]|=)"; then
@@ -369,12 +369,12 @@ _dest_exempt() {
   [[ -z "${DEST_REPO:-}" ]] || dest+=(--repo "${DEST_REPO}")
   [[ -z "${DEST_DIR:-}" ]] || dest+=(--dir "${DEST_DIR}")
   ((${#dest[@]} > 0)) || return 1
-  route="$("${GATE}" route "${dest[@]}" 2>/dev/null)" || return 1
+  route="$("${GATE}" route --kind "$1" "${dest[@]}" 2>/dev/null)" || return 1
   outcome="${route%%$'\t'*}"
   [[ "${outcome}" == "exempt" ]] || return 1
   if [[ "${DEST_ALSO_CWD:-0}" -eq 1 ]]; then
     [[ -n "${DEST_DIR:-}" ]] || return 1
-    route="$("${GATE}" route --dir "${DEST_DIR}" 2>/dev/null)" || return 1
+    route="$("${GATE}" route --kind "$1" --dir "${DEST_DIR}" 2>/dev/null)" || return 1
     outcome="${route%%$'\t'*}"
     [[ "${outcome}" == "exempt" ]] || return 1
   fi
@@ -724,7 +724,7 @@ _verify_api_segment() {
     _deny "GraphQL mutation carries its body inline; use gh pr/issue comment --body-file" "${surface}"
   fi
   # As in _verify_segment: an exempt destination passes in any form (#698).
-  _dest_exempt && return 0
+  _dest_exempt "${cap_kind}" && return 0
   matches="$(printf '%s\n' "${seg}" | grep -oE -- "${_api_body_re}" || true)"
   while IFS= read -r m; do
     [[ -n "${m}" ]] || continue

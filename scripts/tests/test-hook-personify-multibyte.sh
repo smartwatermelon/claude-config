@@ -30,6 +30,9 @@ export GIT_CEILING_DIRECTORIES="${TMP}"
 export XDG_CONFIG_HOME="${TMP}/xdg"
 mkdir -p "${XDG_CONFIG_HOME}/personify/checks"
 export GATE_REVIEW_DIR="${TMP}/gate"
+# Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
+GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
+export GATE_GH
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
 export GATE_RULES_FILE="${TMP}/rules.conf"
 printf '* visual\n' >"${GATE_RULES_FILE}"

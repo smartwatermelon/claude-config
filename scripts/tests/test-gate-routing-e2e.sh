@@ -2,11 +2,7 @@
 # End to end: stage -> approve -> hook, across the destinations the shipped
 # gate-rules.conf routes differently.
 #
-#   andrewmrich/beacon-workspace  rule 1    visual   (banner, no record needed)
-#   beacon-biosignals/x           rule 2    pangram  (blocks until a record exists)
-#   smartwatermelon/z             rule 3    exempt   (passes unapproved)
-#   twistedmelonman/y             rule 5    visual   (banner, no record needed)
-#   anthropics/claude-code        rule 5    visual   (blocks unapproved)
+#   Exempt: beacon-workspace, smartwatermelon, twistedmelonman. Pangram: beacon. Visual: third parties.
 #
 # GATE_RULES_FILE points at the repo's real gate-rules.conf, so an edit that
 # changes the routing fails here. The check-records directory is a sandbox:
@@ -39,6 +35,9 @@ export XDG_CONFIG_HOME="${TMP}/xdg"
 mkdir -p "${XDG_CONFIG_HOME}/personify/checks"
 export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-/Users/andrewrich/Developer/dotfiles/bash/gh-wrapper.sh}"
 export GATE_REVIEW_DIR="${TMP}/gate"
+# Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
+GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
+export GATE_GH
 # A stub length_check.py that passes everything: CI has no personify checkout, and test-*-length.sh use the real one.
 _stub_personify() { # <config dir> <install dir>
   mkdir -p "$1/plugins" "$2/scripts"
@@ -95,6 +94,8 @@ PERSONAL="${TMP}/personal"
 _mkrepo "${WORKSPACE}" andrewmrich/beacon-workspace
 _mkrepo "${EMPLOYER}" beacon-biosignals/x
 _mkrepo "${PERSONAL}" twistedmelonman/y
+VISUAL="${TMP}/visual"
+_mkrepo "${VISUAL}" someone-else/y
 
 _rec_for() {
   local sha
@@ -131,49 +132,43 @@ _hook() {
   rc=$?
 }
 
-# --- workspace: rule 1, visual ---------------------------------------------
-printf 'docs: workspace note\n' >"${TMP}/ws.txt"
-if _approve "${WORKSPACE}" ws; then
-  _ok "workspace: stage and approve without a record"
-else
-  _no "workspace: stage and approve without a record"
-fi
-line="$(cat "${TMP}/ws.line" 2>/dev/null || true)"
-if [[ "${line}" == "# ws: NOT PANGRAM REVIEWED (rule 1: "* ]]; then
-  _ok "workspace: review shows the rule 1 banner"
-else
-  _no "workspace: review shows the rule 1 banner: ${line}"
-fi
-WS_APPROVED="$(cat "${TMP}/ws.path" 2>/dev/null || true)"
-_hook "${WORKSPACE}" "git -C ${WORKSPACE} commit -F ${WS_APPROVED}"
+# --- workspace and personal: exempt (2026-10-08) ---------------------------
+printf 'docs: workspace note nobody approved\n' >"${TMP}/ws.txt"
+_hook "${WORKSPACE}" "git -C ${WORKSPACE} commit -F ${TMP}/ws.txt"
 if ((rc == 0)); then
-  _ok "workspace: hook passes with no record"
+  _ok "workspace: commit passes unapproved"
 else
-  _no "workspace: hook passes with no record (rc=${rc}): ${err}"
+  _no "workspace: commit passes unapproved (rc=${rc}): ${err}"
+fi
+_hook "${PERSONAL}" "git -C ${PERSONAL} commit -F ${TMP}/ws.txt"
+if ((rc == 0)); then
+  _ok "twistedmelonman: commit passes unapproved"
+else
+  _no "twistedmelonman: commit passes unapproved (rc=${rc}): ${err}"
 fi
 
-# --- personal: rule 3, visual ----------------------------------------------
-printf 'fix(y): personal change\n' >"${TMP}/pers.txt"
-if _approve "${PERSONAL}" pers; then
-  _ok "personal: stage and approve without a record"
+# --- visual destination: rule 13 --------------------------------------------
+printf 'fix(y): third-party change\n' >"${TMP}/pers.txt"
+if _approve "${VISUAL}" pers; then
+  _ok "visual: stage and approve without a record"
 else
-  _no "personal: stage and approve without a record"
+  _no "visual: stage and approve without a record"
 fi
 line="$(cat "${TMP}/pers.line" 2>/dev/null || true)"
-if [[ "${line}" == "# pers: NOT PANGRAM REVIEWED (rule 5: "* ]]; then
-  _ok "personal: review shows the rule 5 banner"
+if [[ "${line}" == "# pers: NOT PANGRAM REVIEWED (rule 13: "* ]]; then
+  _ok "visual: review shows the rule 13 banner"
 else
-  _no "personal: review shows the rule 5 banner: ${line}"
+  _no "visual: review shows the rule 13 banner: ${line}"
 fi
 PERS_APPROVED="$(cat "${TMP}/pers.path" 2>/dev/null || true)"
-_hook "${PERSONAL}" "git -C ${PERSONAL} commit -F ${PERS_APPROVED}"
+_hook "${VISUAL}" "git -C ${VISUAL} commit -F ${PERS_APPROVED}"
 if ((rc == 0)); then
-  _ok "personal: hook passes with no record"
+  _ok "visual: hook passes with no record"
 else
-  _no "personal: hook passes with no record (rc=${rc}): ${err}"
+  _no "visual: hook passes with no record (rc=${rc}): ${err}"
 fi
 
-# --- employer: rule 2, pangram ---------------------------------------------
+# --- employer: rule 9, pangram ---------------------------------------------
 printf 'fix(x): employer change\n' >"${TMP}/emp.txt"
 if (cd "${EMPLOYER}" && _cmd_stage --kind commit emp "${TMP}/emp.txt") >/dev/null 2>&1; then
   _no "employer: stage refuses without a record"
@@ -259,11 +254,11 @@ if ((rc == 2)); then
 else
   _no "third party: PR with -R from an org checkout blocks unapproved (rc=${rc}): ${err}"
 fi
-_hook "${PERSONAL}" "git -C ${PERSONAL} commit -F ${UNAPPROVED}"
+_hook "${VISUAL}" "git -C ${VISUAL} commit -F ${UNAPPROVED}"
 if ((rc == 2)); then
-  _ok "twistedmelonman: commit blocks unapproved"
+  _ok "visual: commit blocks unapproved"
 else
-  _no "twistedmelonman: commit blocks unapproved (rc=${rc}): ${err}"
+  _no "visual: commit blocks unapproved (rc=${rc}): ${err}"
 fi
 
 echo ""

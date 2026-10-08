@@ -22,6 +22,9 @@ mkdir -p "${HOME}"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_CEILING_DIRECTORIES="${TMP}"
 export GATE_RULES_FILE="${ROOT}/gate-rules.conf"
+# Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
+GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
+export GATE_GH
 export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-/Users/andrewrich/Developer/dotfiles/bash/gh-wrapper.sh}"
 
 PASS=0
@@ -106,21 +109,21 @@ run_cli() {
 mkrepo ws "git@github.com:andrewmrich/beacon-workspace.git"
 run_cli --dir "${TMP}/ws"
 val="$(f12 "${OUT}")"
-check "beacon-workspace" "${val}" "visual${TAB}1"
+check "beacon-workspace" "${val}" "exempt${TAB}1"
 check "beacon-workspace rc/stderr" "${RC}:${ERR}" "0:"
 
 mkrepo bb "git@github-beacon:beacon-biosignals/x.git"
 run_cli --dir "${TMP}/bb"
 val="$(f12 "${OUT}")"
-check "beacon-biosignals" "${val}" "pangram${TAB}2"
+check "beacon-biosignals" "${val}" "pangram${TAB}9"
 
 mkrepo tm "https://github.com/twistedmelonman/y"
 run_cli --dir "${TMP}/tm"
 val="$(f12 "${OUT}")"
-check "twistedmelonman" "${val}" "visual${TAB}5"
+check "twistedmelonman" "${val}" "exempt${TAB}5"
 
 # owner= rules through the CLI. Every github.com spelling of a personal org
-# is exempt; forks, third parties and other hosts fall through to visual.
+# is exempt; third parties and other hosts fall through to visual.
 i=0
 for url in \
   "git@github.com:smartwatermelon/x.git" \
@@ -131,19 +134,18 @@ for url in \
   mkrepo "swm${i}" "${url}"
   run_cli --dir "${TMP}/swm${i}"
   val="$(f12 "${OUT}")"
-  check "owner via ${url}" "${val}" "exempt${TAB}3"
+  check "owner via ${url}" "${val}" "exempt${TAB}4"
 done
 mkrepo nos "git@github.com:nightowlstudiollc/site.git"
 run_cli --dir "${TMP}/nos"
 val="$(f12 "${OUT}")"
-check "owner nightowlstudiollc" "${val}" "exempt${TAB}4"
+check "owner nightowlstudiollc" "${val}" "pangram${TAB}12"
 while IFS='|' read -r name url; do
   mkrepo "${name}" "${url}"
   run_cli --dir "${TMP}/${name}"
   val="$(f12 "${OUT}")"
-  check "gated: ${url}" "${val}" "visual${TAB}5"
+  check "gated: ${url}" "${val}" "visual${TAB}13"
 done <<'URLS'
-fork|git@github.com:twistedmelonman/Instapaper-MCP.git
 third|https://github.com/anthropics/claude-code.git
 gitlab|git@gitlab.com:smartwatermelon/x.git
 lookalike|https://github.com.evil.example/smartwatermelon/x
@@ -154,28 +156,28 @@ URLS
 # --repo is gh's owner/name, which names a github.com repository.
 run_cli --repo smartwatermelon/x --dir /nonexistent
 val="$(f12 "${OUT}")"
-check "--repo owner exempt" "${val}" "exempt${TAB}3"
+check "--repo owner exempt" "${val}" "exempt${TAB}4"
 run_cli --repo SmartWatermelon/X
 val="$(f12 "${OUT}")"
-check "--repo owner mixed case" "${val}" "exempt${TAB}3"
+check "--repo owner mixed case" "${val}" "exempt${TAB}4"
 run_cli --repo anthropics/claude-code --dir "${TMP}/swm1"
 val="$(f12 "${OUT}")"
-check "--repo third party over personal dir" "${val}" "visual${TAB}5"
+check "--repo third party over personal dir" "${val}" "visual${TAB}13"
 
 run_cli --repo beacon-biosignals/x --dir /nonexistent
 val="$(f12 "${OUT}")"
-check "--repo wins over missing dir" "${val}" "pangram${TAB}2"
+check "--repo wins over missing dir" "${val}" "pangram${TAB}9"
 run_cli --repo Beacon-Biosignals/X --dir "${TMP}/tm"
 val="$(f12 "${OUT}")"
-check "--repo wins over remote" "${val}" "pangram${TAB}2"
+check "--repo wins over remote" "${val}" "pangram${TAB}9"
 
-# Unresolvable repo: rule 3, exit 0, one stderr line per problem.
+# Unresolvable repo: the default rule, exit 0, one stderr line per problem.
 mkdir -p "${TMP}/plain"
 mkrepo noorigin ""
 for d in "${TMP}/plain" "${TMP}/noorigin"; do
   run_cli --dir "${d}"
   val="$(f12 "${OUT}")"
-  check "unresolved ${d##*/}" "${val}:${RC}" "visual${TAB}5:0"
+  check "unresolved ${d##*/}" "${val}:${RC}" "visual${TAB}13:0"
   if [[ "${ERR}" == *"gate-route: repo unresolved"* ]]; then ok; else bad "unresolved ${d##*/}: stderr '${ERR}'"; fi
 done
 
@@ -184,7 +186,7 @@ OUT="$(cd "${TMP}/plain" && "${SCRIPT}" 2>"${TMP}/err")"
 RC=$?
 ERR="$(cat "${TMP}/err")"
 val="$(f12 "${OUT}")"
-check "no args" "${val}:${RC}" "visual${TAB}5:0"
+check "no args" "${val}:${RC}" "visual${TAB}13:0"
 check "no args stderr" "${ERR}" "gate-route: repo unresolved
 gate-route: author unresolved"
 

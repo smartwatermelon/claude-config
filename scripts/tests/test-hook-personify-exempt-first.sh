@@ -25,6 +25,9 @@ mkdir -p "${XDG_CONFIG_HOME}/personify/checks"
 # No gh wrapper: the author is unresolved, and these rules need none.
 export GH_WRAPPER_LIB="${TMP}/no-wrapper.sh"
 export GATE_REVIEW_DIR="${TMP}/gate"
+# Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
+GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
+export GATE_GH
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved/k1"
 export GATE_RULES_FILE="${TMP}/rules.conf"
 cat >"${GATE_RULES_FILE}" <<'RULES'
