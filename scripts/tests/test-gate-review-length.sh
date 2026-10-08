@@ -33,6 +33,9 @@ mkdir -p "${XDG_CONFIG_HOME}/personify/checks"
 export GATE_RULES_FILE="${TMP}/rules.conf"
 printf 'repo=acme/pang pangram\nrepo=acme/ex exempt\n* visual\n' >"${GATE_RULES_FILE}"
 export GATE_REVIEW_DIR="${TMP}/gate"
+# Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
+GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
+export GATE_GH
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
 
 # personify, installed where installed_plugins.json says.

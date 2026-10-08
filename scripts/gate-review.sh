@@ -274,7 +274,7 @@ _cmd_measure() {
   [[ -n "${kind}" ]] || _die "measure: --kind is required, one of: ${LENGTH_KINDS}"
   _valid_kind "${kind}" || _die "measure: unknown --kind '${kind}'; one of: ${LENGTH_KINDS}"
   if ((flagged == 1)); then
-    if ! route="$(_route_line "${repo}" "${dir}")"; then
+    if ! route="$(_route_line "${repo}" "${dir}" "${kind}")"; then
       echo "gate-review: measure: gate-route failed, so nothing was measured" >&2
       return 2
     fi
@@ -384,7 +384,7 @@ _cmd_stage() {
   # informs; the publish-time hook recomputes the outcome from the real
   # command. A router error (rules file missing or bad) refuses to stage.
   here="$(pwd)"
-  route="$("${ROUTE_SCRIPT}" --dir "${here}")" || _die "gate-route failed; nothing staged"
+  route="$(_route_line "" "${here}" "${kind}")" || _die "gate-route failed; nothing staged"
   IFS=$'\t' read -r outcome rule reason <<<"${route}"
   # Before the record check, so over-cap text never costs a Pangram call.
   if [[ "${outcome}" != "exempt" ]]; then
@@ -1036,19 +1036,31 @@ _prune_expired() {
   return 0
 }
 
-# _route_line <repo> <dir>: one router call. check, measure and route share it, so they cannot disagree.
+# _route_line <repo> <dir> [kind]: one router call. check, measure, route and stage share it.
+
+# A gh-posted kind with no repo is posted by gh from the checkout, which a fork sends upstream: --publish.
 _route_line() {
   local -a route_args=()
   [[ -z "$1" ]] || route_args+=(--repo "$1")
   [[ -z "$2" ]] || route_args+=(--dir "$2")
+  case "${3:-}" in
+    pr | issue | pr-comment | line-comment) [[ -n "$1" ]] || route_args+=(--publish) ;;
+    *) ;;
+  esac
   "${ROUTE_SCRIPT}" "${route_args[@]}"
 }
 
-# route [--repo R] [--dir D]: the route alone, no text (#698). No flag: visual / rule 3, as in check.
+# route [--kind K] [--repo R] [--dir D]: the route alone, no text (#698). No flag: visual / rule 3, as in check.
 _cmd_route() {
-  local repo="" dir="" flagged=0
+  local repo="" dir="" flagged=0 kind=""
   while (($# > 0)); do
     case "$1" in
+      --kind)
+        (($# >= 2)) || _die "route: --kind needs a value"
+        kind="$2"
+        _valid_kind "${kind}" || _die "route: unknown --kind '${kind}'; one of: ${LENGTH_KINDS}"
+        shift 2
+        ;;
       --repo)
         (($# >= 2)) || _die "route: --repo needs a value"
         repo="$2"
@@ -1068,7 +1080,7 @@ _cmd_route() {
     printf 'visual\t3\tdestination unresolved\n'
     return 0
   fi
-  _route_line "${repo}" "${dir}" || return 1
+  _route_line "${repo}" "${dir}" "${kind}" || return 1
 }
 
 # Accept if the bytes match ANY approval. A match is not consumed: re-posting
@@ -1122,7 +1134,7 @@ _cmd_check() {
   else
     # The router's own stderr passes through: a rules error names its file
     # and line, and an unresolved repo or author is worth seeing.
-    route="$(_route_line "${repo}" "${dir}")" || return 1
+    route="$(_route_line "${repo}" "${dir}" "${kind}")" || return 1
     IFS=$'\t' read -r outcome rule reason <<<"${route}"
   fi
   # exempt skips both the check and the visual review.
@@ -1242,5 +1254,5 @@ case "${1:-}" in
   route) shift; _cmd_route "$@" ;;
   personify-path) _personify_path ;;
   suspended) _cmd_suspended ;;
-  *) _die "usage: gate-review.sh {stage --kind <kind> <name> <file>|open|hash <file>|check [--kind <kind>] <file> [--repo owner/name] [--dir path]|measure --kind <kind> [--title T] [--repo owner/name] [--dir path] <body|route [--repo owner/name] [--dir path]|hint <file>|personify-path|suspended}" ;;
+  *) _die "usage: gate-review.sh {stage --kind <kind> <name> <file>|open|hash <file>|check [--kind <kind>] <file> [--repo owner/name] [--dir path]|measure --kind <kind> [--title T] [--repo owner/name] [--dir path] <body|route [--kind <kind>] [--repo owner/name] [--dir path]|hint <file>|personify-path|suspended}" ;;
 esac

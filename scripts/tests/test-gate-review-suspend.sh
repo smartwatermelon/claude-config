@@ -19,6 +19,9 @@ TMP="$(mktemp -d)"
 trap 'chmod -R u+rw "${TMP}" 2>/dev/null; rm -rf "${TMP}"' EXIT
 
 export GATE_REVIEW_DIR="${TMP}/gate"
+# Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
+GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
+export GATE_GH
 mkdir -p "${GATE_REVIEW_DIR}"
 SUSP="${GATE_REVIEW_DIR}/SUSPENDED"
 

@@ -30,6 +30,9 @@ export XDG_CONFIG_HOME="${TMP}/xdg"
 mkdir -p "${XDG_CONFIG_HOME}/personify/checks"
 export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-/Users/andrewrich/Developer/dotfiles/bash/gh-wrapper.sh}"
 export GATE_REVIEW_DIR="${TMP}/gate"
+# Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
+GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
+export GATE_GH
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved/k1"
 # The three production rules, copied so a later edit to the real file cannot
 # change what this test exercises.
