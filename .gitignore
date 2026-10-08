@@ -90,3 +90,8 @@ sessions/
 # Claude Code local state and the generated .claude/ scaffold.
 # Share a file by negating it: .claude/* then !.claude/<path>
 .claude/
+
+# Private daily-brief profile (morning-andrew / evening-andrew). The live copy
+# lives at ~/.config/daily-brief/PROFILE.md, outside this repo; this catches a
+# copy saved next to PROFILE.example.md by mistake. See #585.
+skills/**/PROFILE.md
