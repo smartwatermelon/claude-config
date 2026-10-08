@@ -601,6 +601,8 @@ FIXTURES="${BATS_TEST_DIRNAME}/fixtures/incident-91ef0da0"
   # At 10M that set is every agent except the 19.4M fix-findings runaway.
   for f in agent-a360be39-security-reviewer agent-aa023f3a-build-2 \
     agent-a962c964-adversarial agent-a6447e0d-build-1-killed; do
+    # The guard fails open on a missing file, so a renamed fixture would pass.
+    [ -f "${FIXTURES}/${f}.jsonl" ]
     run bash -c "\"${HOOK}\" <<<'$(_subagent_input "${FIXTURES}/${f}.jsonl")'"
     [ "${status}" -eq 0 ]
   done
@@ -610,6 +612,7 @@ FIXTURES="${BATS_TEST_DIRNAME}/fixtures/incident-91ef0da0"
   # Each fixture repeats its first entry verbatim. If dedup regressed, every
   # fixture total would inflate and the cheapest agent (1.7M) would cross a
   # 2M ceiling. It must not.
+  [ -f "${FIXTURES}/agent-a6447e0d-build-1-killed.jsonl" ]
   run bash -c "env BUDGET_SUBAGENT_TOKENS=2000000 \"${HOOK}\" <<<'$(_subagent_input "${FIXTURES}/agent-a6447e0d-build-1-killed.jsonl")'"
   [ "${status}" -eq 0 ]
 }
