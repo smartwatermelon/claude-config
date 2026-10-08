@@ -27,7 +27,8 @@ sections, bold for item titles, bullets for lists).
 Personal and workplace facts live in a private profile, not in this file. Read the first
 of these that exists, and only that one:
 
-1. `$DAILY_BRIEF_PROFILE`, when set and readable.
+1. `$DAILY_BRIEF_PROFILE`, when set. Set but not a readable file → say so in one
+   line and stop; do not fall back to the next path.
 2. `~/.config/daily-brief/PROFILE.md`.
 
 `/evening-andrew` reads the same profile. Fields and setup: `skills/morning-andrew/PROFILE.example.md` in the

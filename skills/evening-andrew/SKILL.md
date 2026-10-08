@@ -32,7 +32,8 @@ markdown only where it carries structure.
 Personal and workplace facts live in a private profile, not in this file. Read the first
 of these that exists, and only that one:
 
-1. `$DAILY_BRIEF_PROFILE`, when set and readable.
+1. `$DAILY_BRIEF_PROFILE`, when set. Set but not a readable file → say so in one
+   line and stop; do not fall back to the next path.
 2. `~/.config/daily-brief/PROFILE.md`.
 
 `/morning-andrew` reads the same profile. Fields and setup:
@@ -299,7 +300,8 @@ Register: something Andrew can read aloud at the morning huddle without editing.
 - **From the profile**: Slack member ID, issue tracker, title, timezone, hours, huddle
   time. Use them as written there.
 - **Public, kept literal**: the GitHub org `beacon-biosignals` and work account
-  `andrewmrich` in the commands above. The profile repeats them; it wins on a conflict.
+  `andrewmrich` in the commands above. They are not read from the profile; to change
+  them, edit this file.
 
 ## Ground rules
 

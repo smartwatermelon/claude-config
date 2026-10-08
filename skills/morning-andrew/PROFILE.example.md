@@ -8,7 +8,8 @@ colleague names, chat member IDs, private trackers.
 
 The skills read the first file that exists, in this order, and only that file:
 
-1. `$DAILY_BRIEF_PROFILE`, when the variable is set and names a readable file.
+1. `$DAILY_BRIEF_PROFILE`, when the variable is set. If it does not name a readable
+   file, the skill stops with an error rather than falling back.
 2. `~/.config/daily-brief/PROFILE.md`.
 
 Neither path is inside this repo. `skills/**/PROFILE.md` is also gitignored, so a
