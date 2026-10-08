@@ -7,15 +7,15 @@ description: >
   question about the day, a schedule, or what got done is not a request for the summary —
   answer it directly instead. Gathers: Claude Code transcripts (Beacon projects only),
   GitHub (beacon-biosignals org, andrewmrich account), Asana, Slack, Google Calendar,
-  andrewmrich/beacon-workspace issues.
+  and the work issue tracker named in the private profile.
 ---
 
 # Evening Summary (Andrew)
 
 ## Context
 
-Andrew Rich, <job title> (<job title>) at Beacon Biosignals. Works 8am–5pm
-Pacific, Monday–Friday. Daily Slack huddle is at 8am PT. This summary records what got
+Read the profile first (see Profile). It gives name, employer, title, timezone, hours,
+huddle time, GitHub org and account, Slack member ID, and issue tracker. This summary records what got
 done today, so the next huddle does not start from memory. The next `/morning-andrew`
 reads the saved note and shows its Done and Blocked sections as "Yesterday (for huddle)".
 
@@ -26,6 +26,23 @@ markdown only where it carries structure.
 **Scope: Beacon work only.** Personal repos (`claude-config`, `dotfiles`, `personify`,
 `huddle-transcribe`, and anything under `smartwatermelon`, `nightowlstudiollc`, or
 `twistedmelonman`) are excluded, even when they appear in Beacon transcripts.
+
+## Profile
+
+Personal and workplace facts live in a private profile, not in this file. Read the first
+of these that exists, and only that one:
+
+1. `$DAILY_BRIEF_PROFILE`, when set. Set but not a readable file → say so in one
+   line and stop; do not fall back to the next path.
+2. `~/.config/daily-brief/PROFILE.md`.
+
+`/morning-andrew` reads the same profile. Fields and setup:
+`skills/morning-andrew/PROFILE.example.md` in the claude-config repo. Never copy profile values into this repo, a
+commit, or a PR.
+
+No profile found → say so in one line, name the two paths, and stop. Do not guess the
+account, org, Slack ID, or tracker. A field missing from a profile that exists → skip the
+source that needs it and note the gap in one line.
 
 ## Time window
 
@@ -71,16 +88,17 @@ Collect, for the window:
 **3. Asana** — tasks assigned to Andrew completed today; stories by Andrew today
 (comments, due-date moves, status changes). Read a task's stories before stating its status.
 
-**4. Slack** — `from:<@U00000000> on:<YYYY-MM-DD>` (PT date). Exclude social
+**4. Slack** — `from:<@SLACK_MEMBER_ID> on:<YYYY-MM-DD>` (PT date), with the profile's
+Slack member ID. No member ID in the profile → skip this source. Exclude social
 channels such as `#random`, `#pet-pics`, and `#gripes`. Keep work threads only. Read-only.
 
 **5. Calendar** — meetings attended today; tomorrow's first meeting (for Next).
 
-**6. beacon-workspace issues** — filed or closed today:
+**6. Work issue tracker** — the profile's issue tracker (`owner/name`), filed or closed today:
 
 ```bash
 GH_TOKEN=$(/opt/homebrew/bin/gh auth token --user andrewmrich) /opt/homebrew/bin/gh issue list \
-  --repo andrewmrich/beacon-workspace --state all --search "updated:>=<date>" \
+  --repo <issue tracker> --state all --search "updated:>=<date>" \
   --json number,title,url,state,createdAt,closedAt
 ```
 
@@ -120,7 +138,7 @@ title. No bare PR numbers, issue numbers, task GIDs, or SHAs. Nothing in a secti
 omit the section.
 
 ```
-- **[Index moved to RDS](url)** — applied; PR awaiting <manager> review
+- **[Index moved to RDS](url)** — applied; PR awaiting review from Sam
 ```
 
 ### KB note
@@ -275,14 +293,15 @@ Same as `/morning-andrew`. Observe. Don't command. Don't apologize. Don't pad. D
 - "index moved to RDS; PR awaiting review" not "great progress on the index today!"
 - Nothing blocked → omit the section.
 
-Register: something Andrew can read aloud at the 8am huddle without editing.
+Register: something Andrew can read aloud at the morning huddle without editing.
 
 ## Standing context
 
-- **Timezone**: Pacific (America/Los_Angeles)
-- **Org**: Beacon Biosignals — GitHub org `beacon-biosignals`, work account `andrewmrich`
-- **Slack user**: `U00000000`
-- **Issue tracker**: `andrewmrich/beacon-workspace`
+- **From the profile**: Slack member ID, issue tracker, title, timezone, hours, huddle
+  time. Use them as written there.
+- **Public, kept literal**: the GitHub org `beacon-biosignals` and work account
+  `andrewmrich` in the commands above. They are not read from the profile; to change
+  them, edit this file.
 
 ## Ground rules
 

@@ -5,7 +5,7 @@ description: >
   Andrew explicitly invokes /morning-andrew or asks to run the morning brief. A question about
   schedule or calendar is not a request for the brief — answer it directly instead.
   Always gathers: Google Calendar, Asana tasks, GitHub PRs (beacon-biosignals org,
-  andrewmrich account), Slack mentions/DMs, Gmail, new-version notices for documents a skill depends on, and the last /evening-andrew KB note. Daily Slack huddle is at 8am PT —
+  andrewmrich account), Slack mentions/DMs, Gmail, new-version notices for documents a skill depends on, and the last /evening-andrew KB note. A daily huddle (time in the private profile) —
   brief may run before or after it; surface everything relevant regardless.
 ---
 
@@ -13,13 +13,30 @@ description: >
 
 ## Context
 
-Andrew Rich, <job title> (<job title>) at Beacon Biosignals. Works 8am–5pm
-Pacific, Monday–Friday. Daily Slack huddle is at 8am PT — brief may run before or after
-it. Surface everything relevant; don't assume huddle has happened.
+Read the profile first (see Profile). It gives name, employer, title, timezone, hours,
+huddle time, GitHub org and account, and the rest of Standing context. The daily huddle
+may run before or after the brief. Surface everything relevant; don't assume the huddle
+has happened.
 
 Brief is inline text in the chat response. No HTML artifact. No SVG terrain. No font
 embedding. No render check. Use markdown only where it carries structure (headers for
 sections, bold for item titles, bullets for lists).
+
+## Profile
+
+Personal and workplace facts live in a private profile, not in this file. Read the first
+of these that exists, and only that one:
+
+1. `$DAILY_BRIEF_PROFILE`, when set. Set but not a readable file → say so in one
+   line and stop; do not fall back to the next path.
+2. `~/.config/daily-brief/PROFILE.md`.
+
+`/evening-andrew` reads the same profile. Fields and setup: `skills/morning-andrew/PROFILE.example.md` in the
+claude-config repo. Never copy profile values into this repo, a commit, or a PR.
+
+No profile found → say so in one line, name the two paths, and stop. Do not guess the
+account, org, or timezone. A field missing from a profile that exists → skip the step that
+needs it and note the gap in one line.
 
 ## Gather
 
@@ -28,22 +45,23 @@ Runs take a few minutes. Let Andrew know upfront.
 Pull from all eight sources in parallel. A missing connection is skipped silently; the
 brief adapts. Do not suggest connector cards — just note any gap in one line if material.
 
-GitHub: authenticate as `andrewmrich` (work account). Query beacon-biosignals org.
+GitHub: authenticate as the profile's work account. Query the profile's GitHub org.
 
 **0. Today's huddle transcript** — if a file dated today exists in the transcripts folder
 (see Standing context), read it plus its `.meta.json`. It is the authority for the "drop
 anything covered in the huddle" rule below. Read-only: the brief never writes notes, never
 updates INDEX.md, and never runs `--mark-reviewed`.
 
-**1. Calendar** — today 00:00 → 23:59 PT. Tomorrow 00:00 → 23:59 PT for prep context only.
+**1. Calendar** — today 00:00 → 23:59 in the profile timezone. Tomorrow 00:00 → 23:59
+for prep context only.
 
 **2. Asana** — tasks assigned to Andrew, incomplete, due today or overdue. Also flag any
 due within 3 days that have no recent activity.
 
-**3. GitHub PRs** — two queries against beacon-biosignals org:
+**3. GitHub PRs** — two queries against the profile's GitHub org:
 
-- PRs opened by andrewmrich that are open (review requested, changes requested, or idle)
-- PRs where review is requested from andrewmrich and still open
+- PRs opened by the work account that are open (review requested, changes requested, or idle)
+- PRs where review is requested from the work account and still open
 
 **4. Slack** — mentions and DMs from the past 48h ending in an open question or ask
 Andrew hasn't replied to or reacted to. Skip anything that was the huddle standup itself.
@@ -197,13 +215,9 @@ semantic payload only, zero ceremony.
 
 ## Standing context
 
-- **Timezone**: Pacific (America/Los_Angeles)
-- **Hours**: 8am–5pm PT, M–F
-- **Org**: Beacon Biosignals — GitHub org `beacon-biosignals`, work account `andrewmrich`
-- **Role**: <job title>, <job title>
-- **Manager**: uncertain as of 2026-09-23. <leader> is the new <leadership role>; unconfirmed whether Andrew reports to her or to <manager>.
-- **Active workstream**: <active workstream>; Asana tasks in scope
-- **Huddle**: daily Slack huddle at 8am PT, transcribed locally by `huddle-transcribe`
+- **From the profile**: timezone, hours, employer, GitHub org and work account, title,
+  manager, active workstream, huddle time. Use them as written there.
+- **Huddle transcripts**: the huddle is transcribed locally by `huddle-transcribe`
   (MacWhisper) into the `transcripts/` folder of the KB (`OUTPUT_DIR` in
   `~/.config/huddle-transcribe/config`) within minutes of ending. Brief may run before
   or after it.

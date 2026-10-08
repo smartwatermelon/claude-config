@@ -107,7 +107,7 @@ disable what they don't need rather than forking the config:
 
 | Machine | Purpose | Deviates from default by |
 |---|---|---|
-| Beacon Biosignals work laptop (`arich@...`, provisioned 2026-07-12) | <job title> work: Python/Bash, infra CLIs, web-based tools, ssh. No app/mobile dev. | `frontend-mobile-development` and `react-native-3d` disabled — no Android/iOS/Expo/React Native work happens on this machine. |
+| Beacon Biosignals work laptop (`arich@...`, provisioned 2026-07-12) | Infrastructure work: Python/Bash, infra CLIs, web-based tools, ssh. No app/mobile dev. | `frontend-mobile-development` and `react-native-3d` disabled — no Android/iOS/Expo/React Native work happens on this machine. |
 
 When setting up a new machine: check this table first. If the new machine's
 purpose matches an existing entry, replicate its deviations; if it's closer
