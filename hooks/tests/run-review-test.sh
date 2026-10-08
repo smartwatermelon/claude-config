@@ -17,7 +17,7 @@
 #   7. REVIEW_LOG env var must override the hardcoded production log path in run-review.sh
 #   8. Empty reviewer output (exit 0, no stdout) must not block the commit
 #   9. Chunked-mode timeout verdicts are skips, not warnings; all-timeout batch is fail-closed (#200)
-#   10. sync/* branches skip review regardless of diff size
+#   10. sync/* branches are reviewed like any other branch
 #   11. "VERDICT: Revise" is treated as a synonym for FAIL
 #   12/13. adversarial-reviewer only blocks on SEVERITY: BLOCKING, matching code-reviewer (issue #199)
 #   14. Empty/template-only commit message does not abort the script under pipefail (issue #148)
@@ -760,29 +760,26 @@ assert_contains \
   "${log_content9}"
 
 # =========================================================
-# TEST 10: sync/* branches skip review regardless of diff size
+# TEST 10: sync/* branches are reviewed like any other branch
 #
-# Sync commits aggregate content already reviewed in the source repo.
-# Running the size cap against them produces false blocks, so `sync/*`
-# branches must exit 0 without invoking the reviewer.
+# No exemption for the branch name (#691): a BLOCKING verdict must block.
 # =========================================================
 echo ""
-echo "=== Test 10: sync/* branch skips review even when diff > skipThreshold ==="
+echo "=== Test 10: sync/* branch is reviewed, not skipped ==="
 
 setup_repo
 cd "${REPO_DIR}"
 git checkout -q -b "sync/2026-04-23-test"
-# Stage a diff well above the default 2500-line skipThreshold so the
-# test would hit the "BLOCKING: Diff too large" path if the sync-skip
-# logic regressed.
-for i in $(seq 1 3000); do echo "line_${i}_content" >>bigfile.sh; done
-git add bigfile.sh
 cd - >/dev/null
+stage_small_change
 
 MOCK10_DIR="${TMPDIR_TEST}/mock10"
-# Mock should never be invoked — if run-review.sh calls it, the sync skip
-# broke and the test's "skipped: sync branch" assertion will also fail.
-make_mock_claude "${MOCK10_DIR}" 1 "MOCK SHOULD NOT RUN"
+make_mock_claude "${MOCK10_DIR}" 0 "VERDICT: FAIL
+
+ISSUE: Hardcoded secret
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: Remove the hardcoded credential."
 
 TEST10_LOG="${TMPDIR_TEST}/test10-review.log"
 rm -f "${TEST10_LOG}"
@@ -794,14 +791,14 @@ REVIEW_LOG="${TEST10_LOG}" CLAUDE_CLI="${MOCK10_DIR}/claude" \
 cd - >/dev/null
 
 assert_eq \
-  "sync branch exits 0 (review skipped)" \
-  "0" \
+  "sync branch with a BLOCKING finding blocks the commit (exit 1)" \
+  "1" \
   "${exit_t10}"
 
 log_content10="$(cat "${TEST10_LOG}" 2>/dev/null || echo "")"
 
-assert_contains \
-  "log notes sync-branch skip reason" \
+assert_not_contains \
+  "log does not claim a sync-branch skip" \
   "skipped: sync branch" \
   "${log_content10}"
 
