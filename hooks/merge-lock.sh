@@ -417,7 +417,9 @@ policy_text() {
   }
   origin="$(git -C "${top}" config --get remote.origin.url 2>/dev/null || true)"
   case "${origin}" in
-    *[:/]smartwatermelon/claude-config | *[:/]smartwatermelon/claude-config.git) ;;
+    git@github.com:smartwatermelon/claude-config | git@github.com:smartwatermelon/claude-config.git) ;;
+    https://github.com/smartwatermelon/claude-config | https://github.com/smartwatermelon/claude-config.git) ;;
+    ssh://git@github.com/smartwatermelon/claude-config | ssh://git@github.com/smartwatermelon/claude-config.git) ;;
     *)
       echo "policy: ${top} is not a smartwatermelon/claude-config checkout (origin '${origin}')" >&2
       return 1
@@ -426,6 +428,11 @@ policy_text() {
   branch="$(git -C "${top}" symbolic-ref --short -q HEAD 2>/dev/null || true)"
   if [[ "${branch}" != "main" ]]; then
     echo "policy: ${top} is on '${branch:-a detached HEAD}', not main" >&2
+    return 1
+  fi
+  # A local commit on main that never reached origin must not count.
+  if ! git -C "${top}" merge-base --is-ancestor HEAD refs/remotes/origin/main 2>/dev/null; then
+    echo "policy: ${top} main has commits that are not on origin/main" >&2
     return 1
   fi
   rel="$(git -C "${dir}" ls-files --full-name -- "$(basename "${target}")" 2>/dev/null || true)"

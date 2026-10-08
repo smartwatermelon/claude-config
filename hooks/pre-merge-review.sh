@@ -772,9 +772,6 @@ fi
 
 if [[ "${LOCK_POLICY}" == "exempt" ]]; then
   log_success "Merge lock not required for ${_canon_repo}#${PR_NUMBER} by ${_pr_author} (${LOCK_POLICY_WHY//$'\t'/: }); CI and review still apply"
-  # Recorded beside the ledger, which holds human grants only. merge-audit.sh does not read this yet.
-  printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "${_canon_repo}" "${PR_NUMBER}" "${_pr_author}" "${LOCK_POLICY_WHY//$'\t'/ }" \
-    >>"${HOME}/.claude/merge-locks/exempt.tsv" 2>/dev/null || true
 elif [[ -x "${MERGE_LOCK}" ]]; then
   if ! "${MERGE_LOCK}" check "${PR_NUMBER}" "${LOCK_REPO_FLAG[@]}" >/dev/null 2>&1; then
     echo "" >&2
@@ -1293,6 +1290,11 @@ fi
 if echo "${VERDICT_LINE}" | grep -qE "SAFE_TO_MERGE"; then
   # Authorization was already verified at the top of this script (early check).
   log_success "PR review analysis passed - safe to merge"
+  # A policy-exempt merge is logged only once review passed. Beside the ledger, which keeps human grants only.
+  if [[ "${LOCK_POLICY}" == "exempt" ]]; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "${_canon_repo}" "${PR_NUMBER}" "${_pr_author}" "${LOCK_POLICY_WHY//$'\t'/ }" \
+      >>"${HOME}/.claude/merge-locks/exempt.tsv" 2>/dev/null || true
+  fi
   # Create GitHub issues for any non-blocking concerns found during review.
   # Guard: if the merge fails and Claude retries within the same authorization
   # window (30-min TTL), skip issue creation to prevent duplicates.

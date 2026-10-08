@@ -24,6 +24,7 @@ setup() {
   cp "${ROOT}/merge-lock-policy.conf" "${CC}/merge-lock-policy.conf"
   git -C "${CC}" add merge-lock-policy.conf
   git -C "${CC}" -c user.name=t -c user.email=t@t commit -q -m policy
+  git -C "${CC}" update-ref refs/remotes/origin/main HEAD
   ln -s "${CC}/merge-lock-policy.conf" "${HOME}/.claude/merge-lock-policy.conf"
 }
 
@@ -131,9 +132,30 @@ policy() {
   [[ "${status}" -ne 0 ]]
 }
 
+@test "a local commit on main that is not on origin/main is refused" {
+  printf '* exempt\n' >"${CC}/merge-lock-policy.conf"
+  git -C "${CC}" -c user.name=t -c user.email=t@t commit -q -am local
+  policy smartwatermelon/claude-config twistedmelonman
+  [[ "${status}" -ne 0 ]]
+  [[ "${output}" != exempt* ]]
+}
+
+@test "an origin on another host is refused" {
+  git -C "${CC}" remote set-url origin git@evil.example:smartwatermelon/claude-config.git
+  policy smartwatermelon/dev-env twistedmelonman
+  [[ "${status}" -ne 0 ]]
+}
+
+@test "an https origin is accepted" {
+  git -C "${CC}" remote set-url origin https://github.com/smartwatermelon/claude-config.git
+  policy smartwatermelon/dev-env twistedmelonman
+  [[ "${output}" == exempt$'\t'* ]]
+}
+
 @test "a bad line anywhere fails the whole policy" {
   printf 'repo=smartwatermelon/dev-env exempt\nowner=x maybe\n' >"${CC}/merge-lock-policy.conf"
   git -C "${CC}" -c user.name=t -c user.email=t@t commit -q -am bad
+  git -C "${CC}" update-ref refs/remotes/origin/main HEAD
   policy smartwatermelon/dev-env twistedmelonman
   [[ "${status}" -ne 0 ]]
 }
@@ -190,12 +212,14 @@ EOF
   [[ "${output}" == *"Merge lock not required"* ]]
   [[ -f "${TMP_HOME}/claude-ran" ]]
   [[ "${status}" -eq 0 ]]
+  grep -q $'\tsmartwatermelon/dev-env\t7\ttwistedmelonman\t' "${HOME}/.claude/merge-locks/exempt.tsv"
 }
 
-@test "exempt repo is still blocked by a BLOCK_MERGE review" {
+@test "exempt repo is still blocked by a BLOCK_MERGE review, and nothing is logged" {
   _pre_merge smartwatermelon/dev-env twistedmelonman BLOCK_MERGE
   [[ -f "${TMP_HOME}/claude-ran" ]]
   [[ "${status}" -ne 0 ]]
+  [[ ! -s "${HOME}/.claude/merge-locks/exempt.tsv" ]]
 }
 
 @test "andrewmrich-authored PR in an exempt repo still needs the lock" {
