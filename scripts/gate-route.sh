@@ -160,7 +160,9 @@ _is_fork() {
   file="${dir}/${repo#*/}"
   if [[ -f "${file}" ]]; then
     now="$(date +%s)"
-    mtime="$(stat -f %m "${file}" 2>/dev/null || stat -c %Y "${file}" 2>/dev/null || echo 0)"
+    # GNU first, as in gate-review.sh: GNU `stat -f %m` fails but still prints filesystem info.
+    mtime="$(stat -c %Y "${file}" 2>/dev/null || stat -f %m "${file}" 2>/dev/null || echo 0)"
+    [[ "${mtime}" =~ ^[0-9]+$ ]] || mtime=0
     if ((now - mtime < ttl)); then
       ans="$(cat "${file}" 2>/dev/null || true)"
     fi
