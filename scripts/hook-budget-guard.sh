@@ -105,38 +105,10 @@ fi
 # one session without editing this file, and so the bats suite can drive
 # small values instead of synthesizing 5M-token fixtures.
 #
-# Defaults are set from measurement, deliberately below what a runaway
-# session actually spends so they fire DURING it rather than after:
-#
-#   subagent 2.3M -- derived, not guessed. Measured across 447 real subagent
-#                   transcripts on 2026-09-02: a well-behaved agent (finished
-#                   within 5 min, under the prior 5M ceiling, ran >=15s so
-#                   startup does not dominate the rate; n=281) averages
-#                   416,286 tokens/min. Five minutes of that is 2.08M; +10%
-#                   buffer gives 2.3M.
-#
-#                   WHY A RATE, NOT A TOTAL: averaging the totals of agents
-#                   that happened to finish quickly lets a swarm of 20-second
-#                   lookups drag the mean down, throttling exactly the agents
-#                   the cap should permit.
-#
-#                   This is the token expression of a 5-minute lifetime, so
-#                   the two limits describe one constraint instead of one
-#                   silently dominating. Confirmed against the same corpus:
-#                   of the 93 agents this ceiling blocks, 85 (91%) also ran
-#                   over 5 minutes -- both limits catch the same population.
-#
-#                   The filter is not doing the work; varying it (30-300s,
-#                   <2M cap, no runaway cap) moves the answer by under 4%.
-#                   For scale, the cheapest of all 447 agents spent 32,996
-#                   tokens, so a ceiling in the tens of thousands sits below
-#                   the observed floor and would block every agent measured.
-#
-#   session 25M  -- trips at roughly 16:10, about an hour before the
-#                   expensive half of the session. The 10M soft-warn lands
-#                   earlier still, as a nudge with no block.
-BUDGET_SUBAGENT_TOKENS="${BUDGET_SUBAGENT_TOKENS:-2300000}"
-BUDGET_SESSION_TOKENS="${BUDGET_SESSION_TOKENS:-25000000}"
+# Subagent 10M: tail of 326 agents measured 2026-10-08; see CUSTOM_AGENTS.md.
+BUDGET_SUBAGENT_TOKENS="${BUDGET_SUBAGENT_TOKENS:-10000000}"
+# Session 30M: Andrew's call on 2026-10-08, to cut handoffs; not measured.
+BUDGET_SESSION_TOKENS="${BUDGET_SESSION_TOKENS:-30000000}"
 BUDGET_SESSION_WARN_TOKENS="${BUDGET_SESSION_WARN_TOKENS:-10000000}"
 
 # Sum cache_read + cache_creation + input + output over a transcript.
@@ -225,8 +197,8 @@ _fmt_m() {
 case "${event}" in
   SubagentStop)
     # Per-subagent ceiling. This is the check that would have mattered most
-    # in 91ef0da0: it fires on the 19.2M agent and stays silent on the three
-    # agents under 3.1M.
+    # in 91ef0da0: it fires on the 19.2M agent and stays silent on the four
+    # agents at 3.7M and below.
     agent_transcript=$(printf '%s\n' "${input}" | jq -r '.agent_transcript_path // empty' 2>/dev/null) || agent_transcript=""
     agent_type=$(printf '%s\n' "${input}" | jq -r '.agent_type // "unknown"' 2>/dev/null) || agent_type="unknown"
     [[ -n "${agent_transcript}" ]] || exit 0
@@ -237,30 +209,25 @@ case "${event}" in
     _spent_h=$(_fmt_m "${spent}")
     _ceil_h=$(_fmt_m "${BUDGET_SUBAGENT_TOKENS}")
 
-    # Blocking a SubagentStop does not roll back what the agent already did,
-    # and must not imply it did. The agent's work stands; what is being
-    # refused is the parent silently accepting an unbounded bill and
-    # dispatching the next one. So the message is addressed to the PARENT's
-    # next decision, and it names the specific 91ef0da0 failure the parent
-    # is most likely repeating -- re-dispatching a fresh cold agent to
-    # continue the same work, which pays the ~40K-token instruction re-read
-    # entry cost again and starts a new unbounded budget.
+    # Exit 2 sends this to the SUBAGENT, and its reply replaces its report.
+    # So it must repeat the report; the release valve lets the repeat end.
     {
       printf '🛑 SUBAGENT BUDGET EXCEEDED\n\n'
-      printf 'Agent type: %s\n' "${agent_type}"
-      printf 'This agent spent %s tokens (ceiling %s).\n\n' \
+      printf 'You (agent type %s) spent %s tokens; the ceiling is %s.\n\n' \
+        "${agent_type}" "${_spent_h}" "${_ceil_h}"
+      printf 'Do not do any more work and do not call any tools.\n\n'
+      printf 'Your previous message was your final report. Your next message\n'
+      printf 'replaces it, and it is the only thing the parent will see. So\n'
+      printf 'reply with your previous message repeated word for word, in full.\n'
+      printf 'Do not summarize it. Then append this paragraph:\n\n'
+      printf 'Budget: this agent spent %s tokens against a %s ceiling. Its\n' \
         "${_spent_h}" "${_ceil_h}"
-      printf 'Its work is done and still stands. Do NOT re-dispatch a fresh\n'
-      printf 'agent to continue it -- a cold agent re-reads its whole\n'
-      printf 'instruction set (~40K tokens in the measured case) before doing\n'
-      printf 'anything, then starts its own unbounded budget.\n\n'
-      printf 'Before spending more, answer these in your next message:\n'
-      printf '  1. What did this agent actually land? Verify it, do not assume.\n'
-      printf '  2. Is the REMAINING work smaller than what was just done?\n'
-      printf '     If not, the task was mis-scoped -- say so and stop.\n'
-      printf '  3. Report the spend to the user and let them choose.\n\n'
-      printf 'Raise the ceiling for this session only if the user asks:\n'
-      printf '  BUDGET_SUBAGENT_TOKENS=%s\n' "$((BUDGET_SUBAGENT_TOKENS * 2))"
+      printf 'work stands; verify what it landed rather than assuming. Do NOT\n'
+      printf 're-dispatch a fresh agent to continue it: a cold agent re-reads\n'
+      printf 'its whole instruction set before doing anything. Report the\n'
+      printf 'spend to the user and let them choose. A higher ceiling for one\n'
+      printf 'session needs the user to ask: BUDGET_SUBAGENT_TOKENS=%s\n' \
+        "$((BUDGET_SUBAGENT_TOKENS * 2))"
     } >&2
     exit 2
     ;;

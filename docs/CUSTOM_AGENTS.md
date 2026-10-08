@@ -164,25 +164,33 @@ than a generic one.
 
 ## Subagent Lifetime Budget
 
-A subagent is expected to finish within **5 minutes or 2.3M tokens, whichever
-comes first**. An agent that cannot is a signal that the task's scope is too
-large: break it into smaller pieces rather than raising the limit.
+Scope a subagent's task so it can finish in about **5 minutes**. An agent that
+cannot is a signal that the task's scope is too large: break it into smaller
+pieces rather than raising the limit. This is guidance for writing the
+dispatch, not an enforced limit.
 
-The token half is enforced by `scripts/hook-budget-guard.sh` on `SubagentStop`
-(`BUDGET_SUBAGENT_TOKENS`, default 2300000). Primary agents must not raise it
-without affirmative approval from Andrew — it is not a default that can be
-waived unilaterally.
+The enforced limit is a token ceiling of **10M per subagent**, checked by
+`scripts/hook-budget-guard.sh` on `SubagentStop` (`BUDGET_SUBAGENT_TOKENS`,
+default 10000000). Primary agents must not raise it without affirmative
+approval from Andrew — it is not a default that can be waived unilaterally.
 
-### Where 2.3M comes from
+When the ceiling trips, the guard tells the subagent to repeat its final
+report word for word and append a `Budget:` paragraph for the parent. The
+report survives; the parent learns the spend.
 
-Measured across 447 real subagent transcripts (2026-09-02). A well-behaved
-agent averages **416,286 tokens/min**; five minutes of that is 2.08M, plus a
-10% buffer gives 2.3M. It is the token expression of the five-minute limit,
-not an independent number — of the 93 agents this ceiling blocks, 85 (91%)
-also ran over five minutes.
+### Where 10M comes from
 
-For scale: the cheapest of all 447 agents spent **32,996 tokens**. A ceiling
-in the tens of thousands sits below the observed floor.
+Measured across 326 subagent transcripts (2026-10-08): p50 1.38M, p75 2.96M,
+p95 6.85M, p99 15.8M. Normal PR-building work lands at 3–7M; runaways were
+13–29M. 10M trips on 9 of 326 agents (2.8%) and still catches the 19.2M agent
+from the incident that motivated the guard.
+
+The previous default, 2.3M (2026-09-02), was five minutes at a measured mean
+rate of 416,286 tokens/min. It sat near the median, tripped on 31% of agents,
+and each trip lost the agent's report.
+
+For scale: the cheapest agent in the 2026-09-02 corpus spent **32,996
+tokens**. A ceiling in the tens of thousands sits below the observed floor.
 
 ### What actually drives the cost
 
