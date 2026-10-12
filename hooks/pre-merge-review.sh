@@ -288,7 +288,7 @@ summarize_oversized_file() {
 
 # Build the diff context that goes into the analysis prompt.
 #
-# Reads PR_DIFF, COMMENTED_FILES and REQUIRED_CHECKS; sets TARGETED_DIFF.
+# Reads PR_DIFF, COMMENTED_FILES and CI_STATE; sets TARGETED_DIFF.
 #
 # The gate counts BYTES as well as lines. A generated single-line JSON file of
 # 1.2 MB is one diff line, so a line-only gate sent a 1,758,974-byte prompt
@@ -317,16 +317,9 @@ build_targeted_diff() {
   # Large diff - build smart targeted context
   log_info "Diff is large (${diff_lines} lines, ${diff_bytes} bytes), building smart targeted context..."
 
-  # Check if CI passed, judged on the REQUIRED checks only — a red advisory
-  # check should not cost us diff-filtering headroom on a large PR.
-  #
-  # This tests for the ABSENCE of a failing/pending required check rather than
-  # the presence of a passing one. The previous form matched a single SUCCESS
-  # anywhere in the list, so a PR with one green check and four red ones read
-  # as "CI passed".
+  # Required checks only. Never grep display text: placeholders hold no failure word and read as a pass (#687).
   local ci_passed=false
-  if [[ -n "${REQUIRED_CHECKS}" ]] \
-    && ! echo "${REQUIRED_CHECKS}" | grep -qE "(FAILURE|NEUTRAL|CANCELLED|TIMED_OUT|pending|IN_PROGRESS|QUEUED)"; then
+  if [[ "${CI_STATE:-}" == "pass" ]]; then
     ci_passed=true
     log_info "Required CI checks passed - enabling smart data file filtering"
   fi
@@ -592,18 +585,51 @@ classify_status_checks() {
     # substring matching, which would classify "lint" as required whenever
     # "lint-functions" was.
     def is_required: . as $n | any($req[]; . == $n);
-    (. // [])
-    | map(select((nm | is_required) == ($want == "required")))
-    | if length == 0 then
-        (if $want == "required" then
-          "(none — no required status checks on this branch)"
-        else
-          "(none)"
-        end)
+    (. // []) as $r
+    | ($r | map(select((nm | is_required) == ($want == "required")))) as $sel
+    | if $want == "required" then
+        # A required check absent from the rollup is MISSING, never "no required checks" (#687).
+        [$req[] | . as $n | select(any($r[]; nm == $n) | not)] as $missing
+        | if ($req | length) == 0 and ($sel | length) == 0 then
+            "(none — branch protection requires no status checks on this branch; CI has NOT been verified as passing)"
+          else
+            ($sel[] | "- \(nm): \(st) (\(cc))"),
+            ($missing[] | "- \(.): MISSING (required, but not reported in the status-check rollup)")
+          end
+      elif ($sel | length) == 0 then
+        "(none)"
       else
-        .[] | "- \(nm): \(st) (\(cc))"
+        $sel[] | "- \(nm): \(st) (\(cc))"
       end
   ' <<<"${rollup_json}" 2>/dev/null
+}
+
+# Prints pass|fail|none_required|unreadable (#687). Args: PR JSON, required JSON array, "true" if protection was read.
+compute_ci_state() {
+  # Pass = SUCCESS/SKIPPED (NEUTRAL is blocked below). No rollup key = the FORBIDDEN retry ran.
+  local pr_json="$1" required_json="$2" known="$3"
+  jq -r --argjson req "${required_json}" --arg known "${known}" '
+    def nm: (.name // .context // "unnamed");
+    def ok: ((.status // "COMPLETED") == "COMPLETED")
+      and (((.conclusion // .state // "") | ascii_upcase) as $c
+        | ($c == "SUCCESS" or $c == "SKIPPED"));
+    if (has("statusCheckRollup") | not) or .statusCheckRollup == null then
+      "unreadable"
+    else
+      .statusCheckRollup as $r
+      | if $known == "true" then
+          if ($req | length) == 0 then "none_required"
+          elif ($r | length) == 0 then "unreadable"
+          elif all($req[] as $n | ($r | map(select(nm == $n))) as $m
+            | (($m | length) > 0 and all($m[]; ok)); .) then "pass"
+          else "fail"
+          end
+        elif ($r | length) == 0 then "unreadable"
+        elif all($r[]; ok) then "pass"
+        else "fail"
+        end
+    end
+  ' <<<"${pr_json}" 2>/dev/null || echo "unreadable"
 }
 
 # --- End Required Check Classification Functions
@@ -694,10 +720,43 @@ else
   NONREQUIRED_CHECKS="(required set could not be determined — all checks listed above are treated as blocking)"
 fi
 
+CI_STATE=$(compute_ci_state "${PR_JSON}" "${REQUIRED_CONTEXTS}" "${REQUIRED_SET_KNOWN}")
 if [[ -z "${REQUIRED_CHECKS}" ]]; then
-  log_warn "Could not parse status checks"
-  REQUIRED_CHECKS="Status checks unavailable"
+  CI_STATE=unreadable
 fi
+
+# Unreadable CI gets an accurate line in log and prompt; old placeholders read as nothing-to-fail (#687).
+case "${CI_STATE}" in
+  pass)
+    log_info "CI status: every required check passed"
+    ;;
+  fail)
+    log_warn "CI status: at least one required check is missing, pending, or not passing"
+    ;;
+  none_required)
+    log_info "CI status: branch protection on ${BASE_REF} requires no status checks (not counted as a CI pass)"
+    ;;
+  *)
+    if [[ -z "${REQUIRED_CHECKS}" ]]; then
+      _ci_why="the status checks could not be parsed"
+    elif ! jq -e 'has("statusCheckRollup")' <<<"${PR_JSON}" >/dev/null 2>&1; then
+      _ci_why="the token could not read the status-check rollup (statusCheckRollup not accessible)"
+    else
+      _ci_why="no status checks were reported (not started, or not visible to this token)"
+    fi
+    if [[ "${REQUIRED_SET_KNOWN}" != "true" ]]; then
+      _ci_need="the required set could not be read either"
+    elif [[ "${REQUIRED_CONTEXTS}" == "[]" ]]; then
+      _ci_need="branch protection requires no status checks"
+    else
+      _ci_req_names=$(jq -r 'join(", ")' <<<"${REQUIRED_CONTEXTS}")
+      _ci_need="required on ${BASE_REF}: ${_ci_req_names}"
+    fi
+    REQUIRED_CHECKS="CI status unreadable: ${_ci_why}; ${_ci_need}. CI has NOT been verified as passing."
+    NONREQUIRED_CHECKS="(CI status unreadable — see the required section above)"
+    log_warn "${REQUIRED_CHECKS}"
+    ;;
+esac
 
 log_info "PR #${PR_NUMBER}: ${PR_TITLE}"
 log_info "Review decision: ${REVIEW_DECISION}"
@@ -1103,6 +1162,8 @@ CRITICAL RULES:
       configuration decision, not a call to make during a merge review.
   - If a section says the required set could not be determined, treat EVERY
     listed check as required (fail-closed).
+  - "CI status unreadable" or a check marked MISSING means CI has NOT been
+    verified. It is not passing CI and not "no required checks".
 - **SEER EXCEPTION**: "Seer Code Review" check is NON-BLOCKING regardless of
   conclusion (SUCCESS/FAILURE/NEUTRAL/PENDING). Seer runs on Sentry
   infrastructure (flaky/rate-limited) and reports findings via NEUTRAL

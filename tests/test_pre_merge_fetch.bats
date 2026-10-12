@@ -86,7 +86,8 @@ count=\$(cat "${count_file}" 2>/dev/null || echo 0)
 count=\$((count + 1))
 echo "\${count}" >"${count_file}"
 if [ "\${count}" -eq 1 ]; then
-  printf 'statusCheckRollup not accessible by personal access token\n' >&2
+  # Measured gh stderr from a fine-grained PAT on a private repo (#687).
+  printf 'GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup.nodes.0.commit.statusCheckRollup)\n' >&2
   exit 1
 fi
 printf '%s\n' '${valid_json}'
