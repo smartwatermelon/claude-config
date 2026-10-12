@@ -26,6 +26,7 @@ readonly NOVERIFY="--no""-verify"
 readonly WT_ADD="worktree ""add"
 readonly MERGE_EP="repos/o/r/pulls/1/""merge"
 readonly ML_AUTH="merge-lock.sh ""authorize"
+readonly GH_AUTH="gh ""auth"
 
 # make_input <json-key> <value>
 make_input() {
@@ -86,6 +87,10 @@ check hook-block-api-merge.sh \
 check hook-block-merge-lock-authorize.sh \
   "merge-lock-authorize: blocks with exit 2" \
   command "${ML_AUTH} 123 ok"
+
+check hook-block-gh-auth.sh \
+  "gh-auth: blocks with exit 2" \
+  command "${GH_AUTH} token"
 
 check hook-block-merge-locks-write.sh \
   "merge-locks-write: blocks with exit 2" \

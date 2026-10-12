@@ -46,6 +46,7 @@ REQUIRED_HOOKS=(
   hook-check-commit-message.py
   hook-block-merge-lock-authorize.sh
   hook-block-api-merge.sh
+  hook-block-gh-auth.sh
   hook-block-git-worktree.sh
 )
 
