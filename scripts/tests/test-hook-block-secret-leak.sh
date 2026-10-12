@@ -123,8 +123,7 @@ check "echo ${D}PATH is not a secret" 0 "echo \"${D}PATH\""
 check "echo ${D}PYTHONPATH" 0 "echo \"${D}PYTHONPATH\""
 check 'KEYBOARD-style name is not a secret' 0 "echo \"${D}KEYBOARD_LAYOUT_NAME\""
 
-# The documented workaround for the dead token this session. A future regex
-# edit that breaks this would silently kill gh.
+# Allowed: prints no secret. The gh wrapper closes its keyring path (claude-wrapper#124).
 check 'env -u GH_TOKEN gh pr list (the workaround)' 0 'env -u GH_TOKEN gh pr list'
 check 'set with arguments is not a dump' 0 'set -euo pipefail'
 check 'set +x is not a dump' 0 'set +x'

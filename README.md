@@ -152,6 +152,7 @@ Automated code review and safety hooks are configured in `hooks/` and `scripts/`
 - **hooks/merge-lock.sh** — merge authorization lock (30-min TTL, keyed on repo + PR number)
 - **scripts/hook-block-all.sh** — dispatches all PreToolUse hook-block scripts
 - **scripts/hook-block-api-merge.sh** — blocks REST/GraphQL merge bypasses
+- **scripts/hook-block-gh-auth.sh** — blocks `gh auth` subcommands that reach gh's keyring token
 - **scripts/hook-block-no-verify.sh** — blocks `--no-verify` flag usage
 - **scripts/hook-block-main-commit.sh** — blocks commits directly to main
 - **scripts/hook-session-start.sh** — injects session context on startup
