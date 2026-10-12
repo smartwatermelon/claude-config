@@ -33,7 +33,7 @@ for v in token switch login logout refresh git-credential setup-git; do
 done
 # `status` is read-only unless -t/--show-token (or a cluster such as -at) prints the token.
 if [[ -z "${verb}" ]] \
-  && grep -qE "${AUTH}status([[:space:]][^;&|]*)?[[:space:]](-[A-Za-z]*t|--show-token)(=|${END})" <<<"${joined}"; then
+  && grep -qE "${AUTH}status([[:space:]][^;&|]*)?[[:space:]](-[A-Za-z]*t[A-Za-z]*|--show-token)(=|${END})" <<<"${joined}"; then
   verb="status --show-token"
 fi
 

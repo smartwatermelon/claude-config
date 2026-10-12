@@ -52,6 +52,7 @@ check "auth status --show-token" 2 "${A} status --show-token"
 check "auth status -t" 2 "${A} status -t"
 check "auth status -h host -t" 2 "${A} status -h github.com -t"
 check "auth status -at (flag cluster)" 2 "${A} status -at"
+check "auth status -ta (flag cluster)" 2 "${A} status -ta"
 check "auth setup-git" 2 "${A} setup-git"
 
 echo "--- must BLOCK: other command positions and spellings"
