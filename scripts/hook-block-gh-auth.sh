@@ -16,7 +16,7 @@ GF='(-[^[:space:]]+[[:space:]]+([^-][^|;&[:space:]]*[[:space:]]+)?)*'
 GH_PATH="[\"']?[^[:space:];&|()\`\"']*/gh[\"']?"
 GH_PREFIX='(command|env|exec|nohup|sudo|time|xargs)[[:space:]]+(-[^[:space:]]*[[:space:]]+([^-/[:space:]][^[:space:]]*[[:space:]]+)?|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
 GH_INDIRECT="(${GH_PREFIX}(${GH_PATH}|gh)|${GH_PATH}|\\\\gh)"
-GH_ANY="(gh|${GH_INDIRECT})"
+GH_ANY="([\"']?gh[\"']?|${GH_INDIRECT})"
 AUTH="${CP}${ASSIGN}${GH_ANY}[[:space:]]+${GF}auth[[:space:]]+"
 
 joined="${cmd//$'\\\n'/ }"
@@ -24,15 +24,16 @@ joined="${cmd//$'\\\n'/ }"
 END='([[:space:];&|)`]|$)'
 
 verb=""
-for v in token switch login logout refresh git-credential; do
-  if printf '%s\n' "${joined}" | grep -qE "${AUTH}${v}${END}"; then
+# Here-strings, not a pipe: pipefail then cannot turn a SIGPIPE into a skipped block.
+for v in token switch login logout refresh git-credential setup-git; do
+  if grep -qE "${AUTH}${v}${END}" <<<"${joined}"; then
     verb="${v}"
     break
   fi
 done
-# `status` is read-only unless -t/--show-token prints the token.
+# `status` is read-only unless -t/--show-token (or a cluster such as -at) prints the token.
 if [[ -z "${verb}" ]] \
-  && printf '%s\n' "${joined}" | grep -qE "${AUTH}status([[:space:]][^;&|]*)?[[:space:]](-t|--show-token)(=|${END})"; then
+  && grep -qE "${AUTH}status([[:space:]][^;&|]*)?[[:space:]](-[A-Za-z]*t|--show-token)(=|${END})" <<<"${joined}"; then
   verb="status --show-token"
 fi
 
