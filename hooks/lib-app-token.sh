@@ -2,9 +2,10 @@
 # Mints a GitHub App token so pre-merge-review.sh can read private-repo CI (#687). Secrets stay out of argv/logs/disk.
 
 # App identity: the one place to change. Use the key attachment; a pasted PEM field is flattened.
-PRE_MERGE_APP_OP_ITEM="${PRE_MERGE_APP_OP_ITEM:-op://Automation/DIGEST_APP}"
+# A dedicated read-only App (Checks, Statuses, PRs, Metadata; no Contents), so a leaked key exposes no code.
+PRE_MERGE_APP_OP_ITEM="${PRE_MERGE_APP_OP_ITEM:-op://Automation/CHECKS_APP}"
 PRE_MERGE_APP_CLIENT_ID_FIELD="${PRE_MERGE_APP_CLIENT_ID_FIELD:-client_id}"
-PRE_MERGE_APP_KEY_FILE="${PRE_MERGE_APP_KEY_FILE:-dependabot-digest-swm.2026-10-01.private-key.pem}"
+PRE_MERGE_APP_KEY_FILE="${PRE_MERGE_APP_KEY_FILE:-check-status-smartwatermelon.2026-10-12.private-key.pem}"
 
 # Test seams: tests point these at mocks so they never reach 1Password or GitHub.
 PRE_MERGE_OP_BIN="${PRE_MERGE_OP_BIN:-op}"
