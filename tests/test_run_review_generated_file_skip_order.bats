@@ -25,6 +25,9 @@ SCRIPT="${BATS_TEST_DIRNAME}/../hooks/run-review.sh"
 setup() {
   TMPDIR_TEST="$(mktemp -d)"
   export TMPDIR_TEST
+  # Real HOME here: keep the real Keychain key and spend ledger out of the test.
+  export REVIEW_API_KEY_DISABLE=1
+  export REVIEW_API_USAGE_LOG="${TMPDIR_TEST}/usage.jsonl"
   git -C "${TMPDIR_TEST}" init -q
   git -C "${TMPDIR_TEST}" checkout -q -b test-branch
   git -C "${TMPDIR_TEST}" config user.email "test@test.com"
@@ -226,7 +229,7 @@ _run_review() {
 
 @test "artifacts mixed with one shell script are still reviewed" {
   _write_big_file "run.log" 200
-  printf '#!/usr/bin/env bash\nrm -rf "$1"\n' >"${TMPDIR_TEST}/cleanup.sh"
+  printf '%s\n' '#!/usr/bin/env bash' "rm -rf \"\$1\"" >"${TMPDIR_TEST}/cleanup.sh"
   git -C "${TMPDIR_TEST}" add run.log cleanup.sh
 
   run _run_review

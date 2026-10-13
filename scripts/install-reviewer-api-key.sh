@@ -9,6 +9,8 @@ set -euo pipefail
 # In Automation so the service account can read it, which also works over SSH.
 OP_REF="${REVIEWER_KEY_OP_REF:-op://Automation/CLAUDE_CODE_REVIEWER/CLAUDE_CODE_REVIEWER}"
 SERVICE="${REVIEWER_KEY_SERVICE:-claude-reviewer-api-key}"
+# Same account fallback as run-review.sh, so both name the same item.
+ACCOUNT="${USER:-$(id -un)}"
 KEYCHAIN="${REVIEWER_KEY_KEYCHAIN:-${HOME}/Library/Keychains/login.keychain-db}"
 BACKUP_DIR="${REVIEWER_KEY_BACKUP_DIR:-${HOME}/.local/state/keychain-backups}"
 # Test seams: tests point these at mocks so they never reach 1Password.
@@ -50,14 +52,14 @@ printf 'Backup: %s\n' "${backup}"
 
 # 3. Write via `security -i` stdin: no argv exposure, no 128-char -w prompt truncation. -U updates.
 printf 'add-generic-password -U -a %s -s %s -w %s %s\n' \
-  "${USER}" "${SERVICE}" "${key}" "${KEYCHAIN}" \
+  "${ACCOUNT}" "${SERVICE}" "${key}" "${KEYCHAIN}" \
   | "${SECURITY_BIN}" -i >/dev/null \
   || die "security add-generic-password failed; backup at ${backup}"
 
 # 4. Verify.
-stored=$("${SECURITY_BIN}" find-generic-password -a "${USER}" -s "${SERVICE}" -w "${KEYCHAIN}") \
+stored=$("${SECURITY_BIN}" find-generic-password -a "${ACCOUNT}" -s "${SERVICE}" -w "${KEYCHAIN}") \
   || die "item not found after write; backup at ${backup}"
 [[ "${stored}" == "${key}" ]] \
   || die "stored value differs from 1Password (stored length ${#stored}, expected ${#key}); backup at ${backup}"
 
-printf 'Stored %s (account %s, length %d) in %s\n' "${SERVICE}" "${USER}" "${#stored}" "${KEYCHAIN}"
+printf 'Stored %s (account %s, length %d) in %s\n' "${SERVICE}" "${ACCOUNT}" "${#stored}" "${KEYCHAIN}"
