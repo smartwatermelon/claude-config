@@ -68,7 +68,7 @@ _load_gate() {
   done
   _load_fn "${LIB}" is_security_critical
   export COMMENTED_FILES=""
-  export REQUIRED_CHECKS=""
+  export CI_STATE=""
   TARGETED_DIFF=""
 }
 
@@ -176,7 +176,7 @@ _byte_count() {
 
 @test "huge one-line file: elided even with green CI (no CI-trust shortcut)" {
   _load_gate
-  REQUIRED_CHECKS="tests: SUCCESS"
+  CI_STATE=pass
   _set_pr_diff data/era5.json 480423
   build_targeted_diff
   grep -q "ELIDED: diff too large to include" <<<"${TARGETED_DIFF}"

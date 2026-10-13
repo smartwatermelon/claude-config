@@ -138,12 +138,67 @@ assert_contains "claude-review-haiku is non-required" "${cc_other}" "haiku"
 
 echo
 echo "=== empty and degenerate inputs ==="
+# Empty rollup with "x" required: x is MISSING, not "no required checks" (#687).
 empty_req=$(classify_status_checks '[]' '["x"]' required)
-assert_contains "empty rollup yields the no-required-checks note" \
-  "${empty_req}" "none"
+assert_not_contains "empty rollup with a required check is not 'no required checks'" \
+  "${empty_req}" "no required status checks"
+assert_contains "empty rollup lists the required check as MISSING" \
+  "${empty_req}" "- x: MISSING"
 none_req=$(classify_status_checks "${CC_ROLLUP}" '[]' required)
-assert_contains "protected branch with contexts:[] blocks on nothing" \
-  "${none_req}" "none"
+assert_contains "protected branch with contexts:[] says protection requires none" \
+  "${none_req}" "branch protection requires no status checks"
+
+echo
+echo "=== compute_ci_state: only a verified pass is a pass (#687) ==="
+if declare -F compute_ci_state >/dev/null; then
+  # assert_state <desc> <expected> <rollup JSON|"absent"> <required> <known>; exact match.
+  assert_state() {
+    local desc="$1" want="$2" rollup="$3" req="$4" known="$5" pr got
+    if [[ "${rollup}" == "absent" ]]; then
+      pr='{"number":1}'
+    else
+      pr="{\"number\":1,\"statusCheckRollup\":${rollup}}"
+    fi
+    got=$(compute_ci_state "${pr}" "${req}" "${known}")
+    if [[ "${got}" == "${want}" ]]; then
+      printf 'PASS: %s\n' "${desc}"
+      pass=$((pass + 1))
+    else
+      printf 'FAIL: %s\n      expected: %s\n      got: %s\n' "${desc}" "${want}" "${got}"
+      fail=$((fail + 1))
+    fi
+  }
+  green='[{"name":"x","status":"COMPLETED","conclusion":"SUCCESS"}]'
+  assert_state "required check green -> pass" pass "${green}" '["x"]' true
+  # gh omits an unrequested key, so the fallback fetch has no rollup at all.
+  assert_state "rollup key absent (FORBIDDEN fallback) -> unreadable" \
+    unreadable absent '["x"]' true
+  assert_state "rollup key absent, none required -> unreadable" \
+    unreadable absent '[]' true
+  assert_state "empty rollup with a required check -> unreadable" \
+    unreadable '[]' '["x"]' true
+  assert_state "empty rollup with the required set unknown -> unreadable" \
+    unreadable '[]' '[]' false
+  assert_state "zero required contexts -> none_required" \
+    none_required "${green}" '[]' true
+  assert_state "required check missing from a non-empty rollup -> fail" \
+    fail "${green}" '["x","y"]' true
+  assert_state "StatusContext ERROR -> fail" \
+    fail '[{"context":"x","state":"ERROR"}]' '["x"]' true
+  assert_state "NEUTRAL -> fail (the hook treats NEUTRAL as unresolved)" \
+    fail '[{"name":"x","status":"COMPLETED","conclusion":"NEUTRAL"}]' '["x"]' true
+  assert_state "SKIPPED -> pass (GitHub counts skipped as successful)" \
+    pass '[{"name":"x","status":"COMPLETED","conclusion":"SKIPPED"}]' '["x"]' true
+  assert_state "in-progress -> fail" \
+    fail '[{"name":"x","status":"IN_PROGRESS","conclusion":""}]' '["x"]' true
+  assert_state "required set unknown, every check green -> pass" \
+    pass "${green}" '[]' false
+  assert_state "required set unknown, one check red -> fail" \
+    fail '[{"name":"a","status":"COMPLETED","conclusion":"SUCCESS"},{"name":"b","status":"COMPLETED","conclusion":"FAILURE"}]' '[]' false
+else
+  printf 'FAIL: compute_ci_state not defined in the classification section\n'
+  fail=$((fail + 1))
+fi
 
 echo
 echo "=== control: the classifier is actually running ==="
