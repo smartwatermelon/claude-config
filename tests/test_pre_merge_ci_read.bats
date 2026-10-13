@@ -111,8 +111,10 @@ EOF
 }
 
 _run_hook() {
-  run env HOME="${MOCK_DIR}/home" PATH="${MOCK_DIR}:${PATH}" \
-    CLAUDE_CLI="${MOCK_DIR}/claude" \
+  # The App token path (tests/test_pre_merge_app_token.bats) is off here: these
+  # cases test the default-credentials read, and must never reach 1Password.
+  run env -u OP_SERVICE_ACCOUNT_TOKEN HOME="${MOCK_DIR}/home" PATH="${MOCK_DIR}:${PATH}" \
+    CLAUDE_CLI="${MOCK_DIR}/claude" PRE_MERGE_APP_DISABLE=1 \
     bash "${SCRIPT}" pr merge 31 --squash --delete-branch
   [[ -f "${MOCK_DIR}/prompt.txt" ]] || {
     echo "hook never reached the analysis; output: ${output}" >&2

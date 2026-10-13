@@ -439,6 +439,15 @@ _LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib-review-issues.sh
 source "${_LIB_DIR}/lib-review-issues.sh"
 
+# App token lib (#687). Guarded: until install.sh links it, a hard source would abort every merge.
+_APP_LIB_LOADED=false
+if [[ -r "${_LIB_DIR}/lib-app-token.sh" ]]; then
+  # shellcheck source-path=SCRIPTDIR
+  # shellcheck source=lib-app-token.sh
+  source "${_LIB_DIR}/lib-app-token.sh"
+  _APP_LIB_LOADED=true
+fi
+
 # --- Preflight ---
 if [[ ! -x "${CLAUDE_CLI}" ]]; then
   log_error "Claude CLI not found at: ${CLAUDE_CLI}"
@@ -549,6 +558,79 @@ if [[ -n "${PR_NUMBER}" ]]; then
 else
   PR_JSON=$(_fetch_pr_json) || exit 1
   PR_NUMBER=$(echo "${PR_JSON}" | jq -r '.number')
+fi
+
+# CI rollup in gh's shape via REST (gh pr view needs Actions read). Args: gh, owner, repo, PR. Partial or error: fails.
+_app_rest_rollup() {
+  local gh_bin="$1" owner="$2" repo="$3" pr="$4" sha runs statuses
+  sha=$("${gh_bin}" api "repos/${owner}/${repo}/pulls/${pr}" --jq '.head.sha' 2>/dev/null) || return 1
+  [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] || return 1
+  runs=$("${gh_bin}" api "repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100" 2>/dev/null) || return 1
+  statuses=$("${gh_bin}" api "repos/${owner}/${repo}/commits/${sha}/status?per_page=100" 2>/dev/null) || return 1
+  jq -cen --argjson cr "${runs}" --argjson st "${statuses}" '
+    if ($cr.check_runs | type) != "array" or ($st.statuses | type) != "array"
+      or ($cr.total_count // 0) > ($cr.check_runs | length)
+      or ($st.total_count // 0) > ($st.statuses | length) then null
+    else
+      [ ($cr.check_runs[] | {__typename: "CheckRun", name, status: (.status | ascii_upcase)}
+          + (if .conclusion then {conclusion: (.conclusion | ascii_upcase)} else {} end)),
+        ($st.statuses[] | {__typename: "StatusContext", context, state: (.state | ascii_upcase)}) ]
+    end' 2>/dev/null
+}
+
+# When the default read lacks the rollup, re-read CI with an App token. Any failure keeps PR_JSON (fail closed).
+_reread_with_app_token() {
+  local reason
+  if [[ "${PRE_MERGE_APP_DISABLE:-0}" == "1" ]]; then
+    reason="disabled by PRE_MERGE_APP_DISABLE"
+  elif [[ "${_APP_LIB_LOADED}" != "true" ]]; then
+    reason="lib-app-token.sh not installed (re-run install.sh)"
+  fi
+  if [[ -n "${reason:-}" ]]; then
+    log_warn "App token unavailable: ${reason}; using default gh credentials"
+    return 0
+  fi
+
+  local url owner repo
+  url=$(jq -r '.url // empty' <<<"${PR_JSON}" 2>/dev/null || true)
+  if [[ "${url}" =~ ^https://github\.com/([^/]+)/([^/]+)/pull/[0-9]+$ ]]; then
+    owner="${BASH_REMATCH[1]}"
+    repo="${BASH_REMATCH[2]}"
+  else
+    log_warn "App token unavailable: cannot tell owner/repo from the PR URL; using default gh credentials"
+    return 0
+  fi
+
+  local real_gh
+  if ! real_gh=$(app_token_find_real_gh); then
+    log_warn "App token unavailable: no real gh binary found on PATH; using default gh credentials"
+    return 0
+  fi
+
+  local reason_file tok
+  reason_file=$(mktemp)
+  if ! tok=$(app_token_mint "${owner}" "${repo}" 2>"${reason_file}") || [[ -z "${tok}" ]]; then
+    reason=$(head -n 1 "${reason_file}")
+    rm -f "${reason_file}"
+    log_warn "App token unavailable: ${reason:-minting failed}; using default gh credentials"
+    return 0
+  fi
+  rm -f "${reason_file}"
+
+  local rollup
+  if rollup=$(GH_TOKEN="${tok}" _app_rest_rollup "${real_gh}" "${owner}" "${repo}" "${PR_NUMBER}"); then
+    tok=""
+    PR_JSON=$(jq -c --argjson r "${rollup}" '. + {statusCheckRollup: $r}' <<<"${PR_JSON}")
+    log_info "CI read via GitHub App token"
+    return 0
+  fi
+  tok=""
+  log_warn "App token minted, but the rollup read failed; using default gh credentials"
+  return 0
+}
+
+if ! jq -e 'has("statusCheckRollup")' <<<"${PR_JSON}" >/dev/null 2>&1; then
+  _reread_with_app_token
 fi
 
 PR_TITLE=$(echo "${PR_JSON}" | jq -r '.title')
