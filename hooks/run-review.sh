@@ -7,8 +7,8 @@ unset CDPATH
 # =========================================================
 #
 # Called by commit-msg hook to perform actual code review
-# before allowing commits. Uses installed Claude CLI with
-# Max subscription (no API charges).
+# before allowing commits. Uses installed Claude CLI; auth is
+# chosen per run by run_claude_cli below.
 #
 # USAGE:
 #   git diff --cached | ~/.claude/hooks/run-review.sh
@@ -157,6 +157,122 @@ if [[ "${REVIEW_MODE}" == "codebase" ]]; then
   TIMEOUT_SECONDS=$(git config --get --type=int review.codebaseTimeout 2>/dev/null || echo "300")
 fi
 
+# --- Reviewer authentication ---
+# Max API credit needs ANTHROPIC_API_KEY. Child env only: exported, it bills interactive use too.
+REVIEW_SECURITY_BIN="${REVIEW_SECURITY_BIN:-security}"
+REVIEW_API_KEY_SERVICE="${REVIEW_API_KEY_SERVICE:-claude-reviewer-api-key}"
+# Spend ledger, one JSON line per CLI run. Per-user, unlike REVIEW_LOG: the credit is per-user.
+REVIEW_API_USAGE_LOG="${REVIEW_API_USAGE_LOG:-${HOME}/.claude/logs/reviewer-api-usage.jsonl}"
+
+# Read once at top level: CLI runs are in subshells, which can't fill a cache. Not exported.
+REVIEW_API_KEY=""
+if [[ "${REVIEW_API_KEY_DISABLE:-}" != "1" ]]; then
+  _review_key_account="${USER:-}"
+  [[ -n "${_review_key_account}" ]] || _review_key_account=$(id -un 2>/dev/null) || _review_key_account=""
+  # timeout: a locked GUI keychain can raise an unlock dialog. Missing/slow/locked = subscription, silently.
+  REVIEW_API_KEY=$(timeout 10 "${REVIEW_SECURITY_BIN}" find-generic-password \
+    -a "${_review_key_account}" -s "${REVIEW_API_KEY_SERVICE}" -w 2>/dev/null) || REVIEW_API_KEY=""
+  unset _review_key_account
+  # Same shape check as the installer; anything else counts as absent.
+  [[ "${REVIEW_API_KEY}" =~ ^sk-ant-[A-Za-z0-9_-]+$ ]] || REVIEW_API_KEY=""
+fi
+
+# Printed on every keyed run; reviewers use no connectors. Dropped by exact match, other stderr kept.
+_REVIEW_KEY_STDERR_NOISE='claude.ai connectors are disabled because ANTHROPIC_API_KEY'
+
+# Append one ledger line. Never fails: bookkeeping must not fail a review.
+_review_usage_log() {
+  local auth="$1" rc="$2" out_file="$3" cost repo
+  cost=$(jq -r '.total_cost_usd // empty' <"${out_file}" 2>/dev/null) || cost=""
+  [[ "${cost}" =~ ^[0-9.eE+-]+$ ]] || cost="null"
+  repo=$(git rev-parse --show-toplevel 2>/dev/null || pwd -P) || repo=""
+  repo="${repo##*/}"
+  {
+    mkdir -p "${REVIEW_API_USAGE_LOG%/*}" \
+      && jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg repo "${repo}" \
+        --arg auth "${auth}" --argjson exit "${rc}" --argjson cost "${cost}" \
+        '{ts:$ts, repo:$repo, auth:$auth, exit:$exit, total_cost_usd:$cost}' \
+        >>"${REVIEW_API_USAGE_LOG}"
+  } 2>/dev/null || true
+}
+
+# Copy an attempt's stderr to ours, minus the keyed-run connector notice.
+_review_emit_stderr() {
+  [[ -s "$1" ]] || return 0
+  grep -vF "${_REVIEW_KEY_STDERR_NOISE}" "$1" >&2 || true
+}
+
+# run_claude_cli <secs> <args...>: `timeout N env -u CLAUDECODE claude <args>`, same stdin/stdout/stderr/exit.
+run_claude_cli() {
+  local secs="$1"
+  shift
+  local in out err rc=0
+  in=$(mktemp) || return 1
+  out=$(mktemp) || {
+    rm -f "${in}"
+    return 1
+  }
+  err=$(mktemp) || {
+    rm -f "${in}" "${out}"
+    return 1
+  }
+  # Saved so a failed keyed run can be replayed on the subscription.
+  cat >"${in}"
+
+  if [[ -z "${REVIEW_API_KEY}" ]]; then
+    # No key: exactly the command this replaced, inherited env included.
+    timeout "${secs}" env -u CLAUDECODE "${CLAUDE_CLI}" "$@" <"${in}" >"${out}" 2>"${err}" || rc=$?
+    _review_emit_stderr "${err}"
+    cat "${out}"
+    _review_usage_log subscription "${rc}" "${out}"
+    rm -f "${in}" "${out}" "${err}"
+    return "${rc}"
+  fi
+
+  # `export` is a builtin: the key reaches the child by env, never argv (ps).
+  (
+    export ANTHROPIC_API_KEY="${REVIEW_API_KEY}"
+    exec timeout "${secs}" env -u CLAUDECODE "${CLAUDE_CLI}" "$@"
+  ) <"${in}" >"${out}" 2>"${err}" || rc=$?
+  _review_usage_log api "${rc}" "${out}"
+
+  # Bad key probe 2026-10-13: exit 1, is_error true. Timeout (124) is not retried: it isn't auth.
+  local failed=0
+  if ((rc == 124)); then
+    failed=0
+  elif ((rc != 0)); then
+    failed=1
+  elif jq -e '.is_error == true' <"${out}" >/dev/null 2>&1; then
+    failed=1
+  fi
+
+  # Only the final attempt's stdout is printed, so the caller parses one JSON document.
+  if ((failed == 0)); then
+    _review_emit_stderr "${err}"
+    cat "${out}"
+    rm -f "${in}" "${out}" "${err}"
+    return "${rc}"
+  fi
+
+  # API errors are in `.result`; stderr covers crashes. The CLI never echoes the key.
+  local why
+  why=$(jq -r '.result // empty' <"${out}" 2>/dev/null) || why=""
+  [[ -n "${why}" ]] || why=$(grep -vF "${_REVIEW_KEY_STDERR_NOISE}" "${err}" 2>/dev/null) || why=""
+  why=$(printf '%s' "${why}" | tr '\n' ' ' | cut -c1-300)
+  printf '[review] API-key run failed (exit %s): %s; retrying on subscription\n' \
+    "${rc}" "${why:-no error output}" >&2
+
+  # -u ANTHROPIC_API_KEY: the retry uses the subscription even if the caller exported a key.
+  rc=0
+  timeout "${secs}" env -u CLAUDECODE -u ANTHROPIC_API_KEY "${CLAUDE_CLI}" "$@" \
+    <"${in}" >"${out}" 2>"${err}" || rc=$?
+  _review_emit_stderr "${err}"
+  cat "${out}"
+  _review_usage_log subscription-fallback "${rc}" "${out}"
+  rm -f "${in}" "${out}" "${err}"
+  return "${rc}"
+}
+
 # --- Model selection ---
 # Priority: git config review.model > mode-based default > CLI default
 # Commit mode wants a fast Haiku, but only Haiku 5.5 or newer: Haiku 4.5 made
@@ -180,7 +296,7 @@ resolve_haiku_alias() {
     fi
   fi
   id=$(echo "reply ok" \
-    | timeout 60 env -u CLAUDECODE "${CLAUDE_CLI}" -p --model haiku --output-format json \
+    | run_claude_cli 60 -p --model haiku --output-format json \
       --tools "" --no-session-persistence 2>/dev/null \
     | jq -r '.modelUsage // {} | keys[] | select(startswith("claude-haiku-"))' 2>/dev/null \
     | head -1) || id=""
@@ -1766,7 +1882,7 @@ invoke_agent() {
   if [[ -n "${INVOKE_AGENT_READONLY:-}" ]]; then
     tool_args=(--tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" --strict-mcp-config)
   fi
-  agent_output=$(echo "${prompt}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "${agent_name}" -p "${model_args[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" "${tool_args[@]}" --no-session-persistence 2>"${_agent_err}") || exit_code=$?
+  agent_output=$(echo "${prompt}" | run_claude_cli "${TIMEOUT_SECONDS}" --agent "${agent_name}" -p "${model_args[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" "${tool_args[@]}" --no-session-persistence 2>"${_agent_err}") || exit_code=$?
   _slow_notice_stop
   if [[ -s "${_agent_err}" ]]; then
     cat "${_agent_err}" >&2
@@ -3359,7 +3475,7 @@ no factual claim about external state (style, structure, maintainability)."
   # --output-format json + --json-schema, as in invoke_agent (claude-config#443).
   # Tool use and structured output compose: the reviewer reads files across
   # several turns, then emits the conforming object at the end.
-  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | timeout "${TIMEOUT_SECONDS}" env -u CLAUDECODE "${CLAUDE_CLI}" --agent "adversarial-reviewer" -p "${ADVERSARIAL_MODEL_ARGS[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" --allowedTools "Read,Grep,Glob" --no-session-persistence 2>"${_codebase_err}") || codebase_exit=$?
+  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | run_claude_cli "${TIMEOUT_SECONDS}" --agent "adversarial-reviewer" -p "${ADVERSARIAL_MODEL_ARGS[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" --allowedTools "Read,Grep,Glob" --no-session-persistence 2>"${_codebase_err}") || codebase_exit=$?
   if [[ -s "${_codebase_err}" ]]; then
     cat "${_codebase_err}" >&2
   fi
