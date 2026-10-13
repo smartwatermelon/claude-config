@@ -61,11 +61,13 @@ At the beginning of every **interactive session** (not focused analysis tasks in
 **Required output** — two lines, then the first action:
 
 ```
-📅 [date] · [branch] · [absolute cwd]
+📅 [date, with time zone] · [branch] · [absolute cwd]
 ✅ Protocols read. Applicable: [list]
 ```
 
 Run `date` before reporting it. Never state a date you did not check.
+
+**Time zone.** The zone `date` prints is the calendar for the whole session. Tool output is often UTC: ISO timestamps ending in `Z`, cron schedules, Slack `ts` epochs, CI logs. Convert every date and time to local before stating it, and name the day by its local date. **Why:** a backup run at `2026-10-11T00:52Z` was reported as "the Oct 11 Sunday run"; in Pacific it started Saturday evening, and a Slack epoch was misread as 07:00 when it was 09:00.
 
 **CWD discipline** (a standing rule, not a per-session recital):
 
