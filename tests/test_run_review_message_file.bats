@@ -23,6 +23,9 @@ SCRIPT="${BATS_TEST_DIRNAME}/../hooks/run-review.sh"
 setup() {
   TMPDIR_TEST="$(mktemp -d)"
   export TMPDIR_TEST
+  # Real HOME here: keep the real Keychain key and spend ledger out of the test.
+  export REVIEW_API_KEY_DISABLE=1
+  export REVIEW_API_USAGE_LOG="${TMPDIR_TEST}/usage.jsonl"
   git -C "${TMPDIR_TEST}" init -q
   git -C "${TMPDIR_TEST}" checkout -q -b test-branch
   git -C "${TMPDIR_TEST}" config user.email "test@test.com"

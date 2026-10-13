@@ -20,6 +20,9 @@ SCRIPT="${BATS_TEST_DIRNAME}/../hooks/run-review.sh"
 setup() {
   NOTAREPO="$(mktemp -d)"
   export NOTAREPO
+  # Real HOME here: keep the real Keychain key and spend ledger out of the test.
+  export REVIEW_API_KEY_DISABLE=1
+  export REVIEW_API_USAGE_LOG="${NOTAREPO}/usage.jsonl"
 
   # run-review.sh checks for the claude CLI before it checks for a repo. With
   # no CLI at ${HOME}/.local/bin/claude (a CI runner) it exits early for that
