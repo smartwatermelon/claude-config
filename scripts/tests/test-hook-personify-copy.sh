@@ -179,6 +179,8 @@ _case "git add && git commit in one call: blocked" 2 "another git command" "${SI
   "git add index.html && git commit -m x"
 _case "git commit -am: blocked" 2 "(-a)" "${SITE}" "git commit -am x"
 _case "git commit --all: blocked" 2 "(--all)" "${SITE}" "git commit --all -m x"
+_case "git commit --al (abbreviated --all): blocked" 2 "(--al)" "${SITE}" "git commit --al -m x"
+_case "git commit --onl (abbreviated --only): blocked" 2 "(--onl)" "${SITE}" "git commit --onl -m x"
 _case "git commit with a path: blocked" 2 "path 'index.html'" "${SITE}" "git commit -m x index.html"
 _case "git commit -- path: blocked" 2 "pathspec after --" "${SITE}" "git commit -m x -- index.html"
 _case "-F value and 2>&1 are not paths" 0 "" "${SITE}" "git commit -F /dev/null 2>&1"

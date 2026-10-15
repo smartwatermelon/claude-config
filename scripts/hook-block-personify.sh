@@ -407,7 +407,7 @@ _verify_copy() {
 
 # Deny flags and pathspecs that make git commit something other than the index.
 _commit_args_ok() {
-  local tag raw dec after=0 want=0 i c cluster words
+  local seg="$1" tag raw dec after=0 want=0 i c cluster words opt long
   local bad="this repo has copy paths, and this commit stages files itself"
   local fix="stage with git add in its own call, then run git commit with no -a, -i, -o, -p or paths"
   words="$(_words "${seg}")"
@@ -422,6 +422,13 @@ _commit_args_ok() {
       continue
     fi
     [[ "${tag}" == "OK" ]] || dec="${raw}"
+    # git takes any unambiguous prefix of a long option, so --al is --all.
+    opt="${dec%%=*}"
+    if [[ "${opt}" == --?* ]]; then
+      for long in --all --include --only --patch --interactive --pathspec-from-file; do
+        [[ "${long}" == "${opt}"* ]] && _deny_copy "${bad} (${dec}); ${fix}" "public-facing copy"
+      done
+    fi
     case "${dec}" in
       --all | --include | --only | --patch | --interactive | --pathspec-from-file*)
         _deny_copy "${bad} (${dec}); ${fix}" "public-facing copy"
