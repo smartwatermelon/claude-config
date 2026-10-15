@@ -484,6 +484,21 @@ prose
 EOF
 gh pr create --title t \\
   --body x")" 2
+# An arithmetic shift is not a heredoc (#603). Read as one, it opened a body
+# that never closed, and the continued body flag was never joined.
+_case "${PERSONIFY}" "arithmetic << on an earlier line, then a continued body" \
+  "$(_b64 "x=\$((1<<2))
+gh pr create --title t \\
+  --body x")" 2
+_case "${PERSONIFY}" "(( <<= )) on an earlier line, then a continued body" \
+  "$(_b64 "((x<<=1))
+gh pr create --title t \\
+  --body x")" 2
+_case "${PERSONIFY}" "prose: a heredoc after an arithmetic shift still opens" \
+  "$(_b64 "x=\$((1<<2)); cat <<EOF >/tmp/body.md
+gh pr create --title t \\
+  --body x
+EOF")" 0
 _case "${PERSONIFY}" "escaped backslash at line end is not a continuation" \
   "$(_b64 "git commit -F ${APPROVED_TEXT} \\\\
   -m x")" 0

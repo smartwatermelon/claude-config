@@ -103,9 +103,8 @@ _optval="(\"[^\"]*\"[[:space:]]+|'[^']*'[[:space:]]+|[^-][^|;&${bt}[:space:]]*[[
 # next line, up to a line that is exactly WORD (leading tabs removed for
 # `<<-`). Several on one line are read in order. Same caveat as below: a
 # character scanner, not a parser, so `$(...)` nesting and the like are
-# approximated. One known miss: a shift inside arithmetic (`$((1<<2))`) reads
-# as a heredoc operator, and no line ever closes it, so continuations after
-# that line are not joined.
+# approximated. A `<<` inside `((...))` or `$((...))` is a shift, not a
+# heredoc (#603); `ar` counts the open `((`.
 #
 # Every awk scanner in this file runs under LC_ALL=C. macOS /usr/bin/awk
 # (version 20200816) counts and cuts strings by byte, but in a UTF-8 locale its
@@ -119,7 +118,7 @@ _optval="(\"[^\"]*\"[[:space:]]+|'[^']*'[[:space:]]+|[^-][^|;&${bt}[:space:]]*[[
 _join_continuations() {
   LC_ALL=C awk '
     function flush() { print buf; buf = "" }
-    BEGIN { q = 0; hd = 0; np = 0; buf = ""; joined = 0 }
+    BEGIN { q = 0; hd = 0; np = 0; ar = 0; buf = ""; joined = 0 }
     {
       line = $0
       if (hd) {
@@ -150,7 +149,9 @@ _join_continuations() {
         if (c == "\"") { q = 2; buf = buf c; i++; continue }
         nx = substr(line, i + 1, 1)
         if (c == "$" && nx == "\047") { q = 3; buf = buf "$\047"; i += 2; continue }
-        if (c == "<" && nx == "<" && prev != "<" && substr(line, i + 2, 1) != "<") {
+        if (c == "(" && nx == "(") { ar++; buf = buf "(("; i += 2; continue }
+        if (c == ")" && nx == ")" && ar > 0) { ar--; buf = buf "))"; i += 2; continue }
+        if (ar == 0 && c == "<" && nx == "<" && prev != "<" && substr(line, i + 2, 1) != "<") {
           rest = substr(line, i + 2); strip = 0
           if (substr(rest, 1, 1) == "-") { strip = 1; rest = substr(rest, 2) }
           sub(/^[ \t]+/, "", rest)
@@ -223,7 +224,7 @@ _segments() {
 _quoted_segments() {
   printf '%s\n' "${2-${_scan}}" | LC_ALL=C awk -v all="${1:-0}" '
     function emit() { if (flag || all) print seg; seg = ""; flag = 0 }
-    BEGIN { q = 0; hd = 0; np = 0; seg = ""; flag = 0 }
+    BEGIN { q = 0; hd = 0; np = 0; ar = 0; seg = ""; flag = 0 }
     {
       line = $0
       if (hd) {
@@ -259,7 +260,9 @@ _quoted_segments() {
         if (c == "\047") { q = 1; seg = seg c; i++; continue }
         if (c == "\"") { q = 2; seg = seg c; i++; continue }
         if (c == "$" && nx == "\047") { q = 3; seg = seg "$\047"; i += 2; continue }
-        if (c == "<" && nx == "<" && prev != "<" && substr(line, i + 2, 1) != "<") {
+        if (c == "(" && nx == "(") { ar++; seg = seg "(("; i += 2; continue }
+        if (c == ")" && nx == ")" && ar > 0) { ar--; seg = seg "))"; i += 2; continue }
+        if (ar == 0 && c == "<" && nx == "<" && prev != "<" && substr(line, i + 2, 1) != "<") {
           rest = substr(line, i + 2); strip = 0
           if (substr(rest, 1, 1) == "-") { strip = 1; rest = substr(rest, 2) }
           sub(/^[ \t]+/, "", rest)
@@ -674,6 +677,7 @@ _destination_for_segment() {
   base="${CD_DIR:-${hook_cwd}}"
   DEST_DIR="${base}"
   DEST_REPO=""
+  DEST_ALSO_CWD=0
   case "${kind}" in
     commit)
       # Only the words before `commit` are git global options; `commit -C <sha>`
