@@ -145,6 +145,21 @@ _NAMES_ONLY = (
 )
 
 
+def _unquoted_heredoc_bodies(cmd):
+    """Body text of each unquoted heredoc: the lines after the opener's line, up
+    to the terminator line (leading tabs allowed, for `<<-`) or the end of the
+    command. An unterminated body runs to the end, so it fails closed."""
+    bodies = []
+    for m in re.finditer(rf"<<-?\s*(?![\"'])({_HEREDOC_ID})", cmd):
+        nl = cmd.find("\n", m.end())
+        if nl < 0:
+            continue
+        rest = cmd[nl + 1 :]
+        end = re.search(rf"^\t*{re.escape(m.group(1))}$", rest, re.MULTILINE)
+        bodies.append(rest[: end.start()] if end else rest)
+    return bodies
+
+
 def find_expansion_forms(cmd, secrets):
     """Prong 2: the command will expand a secret when the shell runs it."""
     findings = []
@@ -189,9 +204,10 @@ def find_expansion_forms(cmd, secrets):
         # `<<'EOF'` and `<<"EOF"` disable expansion entirely -- the body reaches
         # the file verbatim -- so a quoted delimiter is NOT flagged. That is what
         # makes writing a script that references a secret var possible at all.
-        if re.search(rf"<<-?\s*(?![\"']){_HEREDOC_ID}", cmd) and re.search(
-            rf"\$\{{?{esc}\b(?!:?\+)", cmd
-        ):
+        # Only the BODY is searched (#536): a secret used before or after an
+        # unrelated unquoted heredoc is not expanded by it.
+        expands = rf"\$\{{?{esc}\b(?!:?\+)"
+        if any(re.search(expands, b) for b in _unquoted_heredoc_bodies(cmd)):
             findings.append(
                 (name, "unquoted heredoc expands this variable into output")
             )
