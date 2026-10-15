@@ -543,6 +543,7 @@ _destination_for_segment() {
   base="${CD_DIR:-${hook_cwd}}"
   DEST_DIR="${base}"
   DEST_REPO=""
+  DEST_ALSO_CWD=0
   case "${kind}" in
     commit)
       # Only the words before `commit` are git global options; `commit -C <sha>`
