@@ -65,7 +65,6 @@ _info() { echo "$*"; }
 _ok() { echo "$*"; }
 _warn() { echo "$*"; }
 _err() { echo "$*"; }
-# shellcheck source=/dev/null
 source "$1"
 EOF
   run env REPO_DIR="${FAKE_REPO}" DRY_RUN=false REPAIR_ONLY=false \
