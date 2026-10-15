@@ -1014,50 +1014,70 @@ if [[ -n "${_CHANGES_REQUESTED}" ]]; then
   exit 1
 fi
 
-# --- Check for NEUTRAL CI status (blocking) ---
-# Some checks set status to "neutral" when there are unresolved comments.
-# This is a hard block - don't proceed to AI analysis.
-#
-# Exclusions (NEUTRAL on these is NOT a block):
-# - "Pages changed" / "Header rules" / "Redirect rules" — Netlify informational
-#   checks that return NEUTRAL when nothing changed. Informational only.
-# - "Seer Code Review" (and any "Seer*" check) — Sentry's Seer reports findings
-#   via NEUTRAL conclusion, but it runs on Sentry infrastructure (flaky/rate-
-#   limited). Treated as non-blocking advisory: Seer's inline comments still
-#   flow through to the AI analysis below via the inline comments fetcher,
-#   so any findings are surfaced as advisory input — just not as a hard block.
-NEUTRAL_CHECKS=$(echo "${PR_JSON}" | jq -r '
-  .statusCheckRollup // []
-  | .[]
-  | select(
-      .conclusion == "NEUTRAL"
-      and (.name | startswith("Pages changed") | not)
-      and (.name | startswith("Header rules") | not)
-      and (.name | startswith("Redirect rules") | not)
-      and (.name | startswith("Seer") | not)
-    )
-  | "- \(.name): \(.conclusion)"
-' 2>&1) || true
+# --- Check for NEUTRAL CI status ---
+# NEUTRAL blocks only on a required check; on others it is advisory (#726).
+
+# Netlify info checks and Seer never block. Kept: the fail-closed path has no required split.
+
+# Args: PR JSON, required JSON array, "required" or "other". Empty set + "other" = all.
+select_neutral_checks() {
+  local pr_json="$1" required_json="$2" want="$3"
+  jq -r --argjson req "${required_json}" --arg want "${want}" '
+    def nm: (.name // .context // "unnamed");
+    def is_required: . as $n | any($req[]; . == $n);
+    .statusCheckRollup // []
+    | .[]
+    | select(
+        (.conclusion // "") == "NEUTRAL"
+        and (nm | startswith("Pages changed") | not)
+        and (nm | startswith("Header rules") | not)
+        and (nm | startswith("Redirect rules") | not)
+        and (nm | startswith("Seer") | not)
+        and ((nm | is_required) == ($want == "required"))
+      )
+    | "- \(nm): NEUTRAL" + (if (.detailsUrl // "") != "" then " (\(.detailsUrl))" else "" end)
+  ' <<<"${pr_json}"
+}
+
+# A jq failure here must block, not read as "no NEUTRAL checks".
+_neutral_err="could not select NEUTRAL checks: the rollup or the required set did not parse"
+NEUTRAL_ADVISORY=""
+if [[ "${REQUIRED_SET_KNOWN}" == "true" ]]; then
+  NEUTRAL_CHECKS=$(select_neutral_checks "${PR_JSON}" "${REQUIRED_CONTEXTS}" required) ||
+    NEUTRAL_CHECKS="- (${_neutral_err})"
+  NEUTRAL_ADVISORY=$(select_neutral_checks "${PR_JSON}" "${REQUIRED_CONTEXTS}" other) ||
+    NEUTRAL_CHECKS="- (${_neutral_err})"
+  _neutral_scope="Required CI checks with NEUTRAL status"
+else
+  # Required set unreadable: every NEUTRAL blocks (fail closed, #687).
+  NEUTRAL_CHECKS=$(select_neutral_checks "${PR_JSON}" '[]' other) ||
+    NEUTRAL_CHECKS="- (${_neutral_err})"
+  _neutral_scope="CI checks with NEUTRAL status (required set could not be read — treating every check as required)"
+fi
+
+if [[ -n "${NEUTRAL_ADVISORY}" ]]; then
+  log_warn "NEUTRAL on non-required checks (advisory, not blocking):"
+  echo "${NEUTRAL_ADVISORY}" >&2
+  _neutral_names=$(sed -e 's/^- //' -e 's/: NEUTRAL.*$//' <<<"${NEUTRAL_ADVISORY}" | paste -sd ',' - | sed 's/,/, /g')
+  NONREQUIRED_CHECKS="${NONREQUIRED_CHECKS}
+Advisory: NEUTRAL on non-required checks did not block this merge: ${_neutral_names}. State it in your summary line. It is not grounds for BLOCK_MERGE, and it is not a reviewer concern: do not output a NON_BLOCKING_ISSUE block for it."
+fi
 
 if [[ -n "${NEUTRAL_CHECKS}" ]]; then
-  # Reached only when a non-Netlify, non-Seer check is NEUTRAL. Seer is
-  # explicitly excluded by the filter above (treated as advisory), so its
-  # findings are never the trigger for this branch.
   echo "" >&2
-  log_error "CI checks with NEUTRAL status (indicates unresolved issues):"
+  log_error "${_neutral_scope}:"
   echo "${NEUTRAL_CHECKS}" >&2
   echo "" >&2
-  log_error "NEUTRAL status means the check found issues that need attention."
+  log_error "NEUTRAL is neither a pass nor a failure. Read the check run (link above) to see what it means."
   log_error "Common causes:"
-  log_error "  - Non-Seer review bots: Inline comments on code requiring resolution"
-  log_error "  - Coverage / quality gates: Threshold not met (soft-failing as NEUTRAL)"
-  log_error "  - Other reviewers: Requested changes not yet addressed"
+  log_error "  - Non-Seer review bots: inline comments on code requiring resolution"
+  log_error "  - A quality gate or analyzer that soft-fails as NEUTRAL"
+  log_error "  - The check could not run its analysis (for example, CodeQL \"configurations not found\")"
   echo "" >&2
   log_error "Actions:"
-  log_error "  1. View PR comments: gh pr view ${PR_NUMBER} --comments"
-  log_error "  2. Check inline code comments on GitHub"
-  log_error "  3. Address all review findings"
-  log_error "  4. Push fixes and wait for checks to pass"
+  log_error "  1. Open the check run and read its summary"
+  log_error "  2. View PR comments: gh pr view ${PR_NUMBER} --comments"
+  log_error "  3. Address any findings, push fixes, and wait for checks to pass"
   echo "" >&2
   echo "   💡 TIP: If you've already resolved these issues and the comments are outdated," >&2
   echo "      add a new PR comment explaining what was fixed, then attempt the merge again." >&2
