@@ -2,7 +2,7 @@
 # End to end: stage -> approve -> hook, across the destinations the shipped
 # gate-rules.conf routes differently.
 #
-#   Exempt: beacon-workspace, smartwatermelon, twistedmelonman. Pangram: beacon. Visual: third parties.
+#   Exempt: beacon-workspace, smartwatermelon, twistedmelonman, private repos. Pangram: beacon. Visual: public third parties.
 #
 # GATE_RULES_FILE points at the repo's real gate-rules.conf, so an edit that
 # changes the routing fails here. The check-records directory is a sandbox:

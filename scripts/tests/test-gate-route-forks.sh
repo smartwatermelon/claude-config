@@ -25,10 +25,10 @@ mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
 GATE_GH="${HERE}/fixtures/gh-fork-stub.sh"
 export GATE_GH
 export GATE_RULES_FILE="${SCRIPTS}/../gate-rules.conf"
-export GATE_TEST_FORKS="nightowlstudiollc/forked twistedmelonman/forkx beacon-biosignals/forked"
+export GATE_TEST_FORKS="nightowlstudiollc/forked twistedmelonman/forkx beacon-biosignals/forked someone/privfork"
 export GATE_TEST_GH_FAIL="nightowlstudiollc/broken smartwatermelon/offline"
 # Private repos (dev-env#206). nightowlstudiollc/broken is listed but its lookups fail.
-export GATE_TEST_PRIVATE="nightowlstudiollc/kebab-tax beacon-biosignals/secret nightowlstudiollc/broken"
+export GATE_TEST_PRIVATE="nightowlstudiollc/kebab-tax beacon-biosignals/secret nightowlstudiollc/broken someone/privfork"
 export GATE_TEST_GH_LOG="${TMP}/gh.log"
 # A length checker that passes everything, as in test-hook-personify-route.sh.
 mkdir -p "${CLAUDE_CONFIG_DIR}/plugins" "${TMP}/personify/scripts"
@@ -67,6 +67,7 @@ _mkrepo "${TMP}/swmup" smartwatermelon/superpowers obra/superpowers
 _mkrepo "${TMP}/offline" smartwatermelon/offline
 _mkrepo "${TMP}/kebab" nightowlstudiollc/kebab-tax
 _mkrepo "${TMP}/bbsecret" beacon-biosignals/secret
+_mkrepo "${TMP}/privfork" someone/privfork
 TXT="${TMP}/msg.txt"
 printf 'fix(x): text nobody approved\n' >"${TXT}"
 
@@ -101,6 +102,9 @@ _case "private NOS checkout, no -R: exempt" 0 "" "${TMP}/kebab" \
   "gh pr create --title t --body-file ${TXT}"
 _case "-R private NOS repo from a smartwatermelon checkout: exempt" 0 "" "${TMP}/swm" \
   "gh pr create -R nightowlstudiollc/kebab-tax --title t --body-file ${TXT}"
+_case "private third-party fork: commit exempt" 0 "" "${TMP}/privfork" "git commit -F ${TXT}"
+_case "private third-party fork checkout, no -R: gated (may post to the parent)" 2 "no visual approval" \
+  "${TMP}/privfork" "gh pr create --title t --body-file ${TXT}"
 
 # --- gh text posted from a checkout -----------------------------------------
 _case "upstream PR from a fork checkout, no -R: gated" 2 "no visual approval" "${TMP}/tmfork" \
