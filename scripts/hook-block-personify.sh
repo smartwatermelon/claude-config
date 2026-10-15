@@ -345,6 +345,8 @@ _verify_segment() {
 
   # Route first (#698): exempt text passes in any form. An unresolvable destination denies in here.
   _destination_for_segment "${seg}" "${kind}" "${surface}"
+  # Copy is checked before the exemption: the message's route says nothing about the page.
+  [[ "${kind}" != "commit" ]] || _verify_copy "${seg}"
   _dest_exempt "${cap_kind}" && return 0
 
   # An inline string cannot be hashed from the command line at all.
@@ -359,6 +361,131 @@ _verify_segment() {
   fi
 
   _verify_path "${path}" "${surface}" "${cap_kind}"
+}
+
+# Public-facing copy (dev-env#206). gate-copy.py reads DEST_DIR's index, so _verify_copy denies what stages more.
+_self="${BASH_SOURCE[0]}"
+if [[ -L "${_self}" ]]; then
+  _target="$(readlink "${_self}")"
+  [[ "${_target}" == /* ]] || _target="$(dirname "${_self}")/${_target}"
+  _self="${_target}"
+fi
+# Resolved through the deployed symlink, so a new gate-copy.py is found before
+# install.sh --sync links it into ~/.claude/scripts.
+COPY_SCRIPT="$(cd "$(dirname "${_self}")" && pwd)/gate-copy.py"
+COPY_OUT="${GATE_REVIEW_DIR:-${HOME}/.claude/gate-review}/copy"
+unset _self _target
+_index_git_re="(^|[^[:alnum:]_.-])${_path}git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(add|rm|mv|stage|apply|restore|reset|checkout|switch|update-index|read-tree|stash|merge|cherry-pick|revert|rebase|am|pull|commit)([[:space:]]|$)"
+
+_verify_copy() {
+  local seg="$1" surface="public-facing copy" out rc=0 n
+  [[ -f "${COPY_SCRIPT}" ]] || _deny_copy "gate-copy.py missing at ${COPY_SCRIPT}; cannot check staged copy" "${surface}"
+  out="$(python3 "${COPY_SCRIPT}" extract --dir "${DEST_DIR}" --out-dir "${COPY_OUT}" 2>&1)" || rc=$?
+  case "${rc}" in
+    3) return 0 ;;
+    0) ;;
+    *) _deny_copy "${out:-gate-copy.py exited ${rc} with no message}" "${surface}" ;;
+  esac
+  n="$(printf '%s\n' "${_scan_flat}" | { grep -oE -- "${_index_git_re}" || true; } | wc -l | tr -d ' ')"
+  if ((n > 1)); then
+    _deny_copy "this repo has copy paths, and the call runs another git command that can change what is staged (git add, rm, mv, restore, a second commit, ...). This hook reads the index before the call runs. Run that command in its own call, then commit." "${surface}"
+  fi
+  _commit_args_ok "${seg}"
+  [[ -n "${out}" ]] || return 0
+  local err reason="" line
+  if err="$("${GATE}" check "${out}" --kind copy --dir "${DEST_DIR}" 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  while IFS= read -r line; do
+    case "${line}" in
+      gate-review:* | gate-route:*) reason="${line}" ;;
+      *) ;;
+    esac
+  done <<<"${err}"
+  _deny_copy "${reason:-the extract does not match anything approved}" "${surface}" "${out}"
+}
+
+# Deny flags and pathspecs that make git commit something other than the index.
+_commit_args_ok() {
+  local tag raw dec after=0 want=0 i c cluster words
+  local bad="this repo has copy paths, and this commit stages files itself"
+  local fix="stage with git add in its own call, then run git commit with no -a, -i, -o, -p or paths"
+  words="$(_words "${seg}")"
+  while IFS=$'\037' read -r tag raw dec; do
+    [[ -n "${raw}" ]] || continue
+    if ((after == 0)); then
+      [[ "${dec}" == "commit" ]] && after=1
+      continue
+    fi
+    if ((want)); then
+      want=0
+      continue
+    fi
+    [[ "${tag}" == "OK" ]] || dec="${raw}"
+    case "${dec}" in
+      --all | --include | --only | --patch | --interactive | --pathspec-from-file*)
+        _deny_copy "${bad} (${dec}); ${fix}" "public-facing copy"
+        ;;
+      --) _deny_copy "${bad} (a pathspec after --); ${fix}" "public-facing copy" ;;
+      --file | --message | --reuse-message | --reedit-message | --author | --date | --fixup | --squash | --template | --cleanup | --trailer)
+        want=1
+        ;;
+      --*) ;;
+      -?*)
+        cluster="${dec:1}"
+        for ((i = 0; i < ${#cluster}; i++)); do
+          c="${cluster:i:1}"
+          case "${c}" in
+            a | i | o | p) _deny_copy "${bad} (-${c}); ${fix}" "public-facing copy" ;;
+            F | m | C | c | t)
+              ((i == ${#cluster} - 1)) && want=1
+              break
+              ;;
+            # -S and -u take an optional value attached; the rest is that value.
+            S | u) break ;;
+            *) ;;
+          esac
+        done
+        ;;
+      # Redirections, heredocs and closing brackets are not git arguments.
+      [0-9]*'>'* | [0-9]*'<'* | '>'* | '<'* | ')'* | '}'*) ;;
+      *) _deny_copy "${bad} (path '${dec}'); ${fix}" "public-facing copy" ;;
+    esac
+  done <<<"${words}"
+  return 0
+}
+
+_deny_copy() {
+  local reason="$1" surface="$2" extract="${3:-}" hint label
+  {
+    echo '🛑 BLOCKED: this commit changes public-facing copy that has not been approved.'
+    echo ''
+    echo "  surface: ${surface}"
+    echo "  repo:    ${DEST_DIR}"
+    echo "  reason:  ${reason}"
+    if [[ -n "${extract}" ]]; then
+      hint="$("${GATE}" hint "${extract}" 2>/dev/null)" || hint="python3 <personify>/scripts/pangram_check.py < ${extract}"
+      label="${extract##*/}"
+      label="copy-${label:0:12}"
+      echo "  extract: ${extract}"
+      echo ''
+      echo 'The extract is the added or changed text of the staged copy files'
+      echo '(the whole text of a new file). Approve it like commit text:'
+      echo ''
+      echo "  1. ${hint}"
+      echo "  2. ${GATE} stage --kind copy ${label} ${extract}"
+      echo "  3. ${GATE} open"
+      echo '     Run 2 and 3 from the same directory.'
+      echo '  4. Andrew reads it and types APPROVED in the STATUS line.'
+      echo '  5. Re-run the same git commit. The hook rebuilds the extract from the'
+      echo '     index; the same staged text gives the same bytes and passes.'
+      echo ''
+      echo 'The text approved is the extract, not the files. If Andrew edits it in'
+      echo 'the editor, apply his edits to the source files, git add them, and start'
+      echo 'again from step 1: the new staged text gives a new extract.'
+    fi
+  } >&2
+  exit 2
 }
 
 # Is DEST_* exempt? With DEST_ALSO_CWD the checkout must be exempt too. Any failure returns 1: full checks.
