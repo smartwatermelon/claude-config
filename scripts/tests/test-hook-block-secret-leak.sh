@@ -187,6 +187,11 @@ check 'secret in a <<- body with a tab-indented terminator' 2 \
   "cat <<-EOF
 	${D}{GH_TOKEN}
 	EOF"
+check 'a tab-indented line does not end a plain <<EOF body' 2 \
+  "cat <<EOF
+	EOF
+${D}GH_TOKEN
+EOF"
 check 'secret in an unterminated heredoc body' 2 \
   "cat <<EOF
 ${D}GH_TOKEN"
