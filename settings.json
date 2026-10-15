@@ -201,7 +201,7 @@
     "command": "~/.claude/scripts/status-line.sh",
     "type": "command"
   },
-  "theme": "dark",
+  "theme": "auto",
   "tui": "fullscreen",
   "useAutoModeDuringPlan": false,
   "verbose": false,

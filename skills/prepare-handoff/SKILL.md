@@ -142,6 +142,17 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
      only in a client-scoped store, copy the fact into this document. This is
      the one case where restating content is correct; "read my memory for the
      locked principles" is not a pointer the next agent can follow.
+
+     **Point at the process, not at one of its inputs.** When an entry tells
+     the next agent how to do a step (draft PR text, gate a commit, run a
+     check), name the process the project's rules require (the skill to
+     invoke, the script to run) and where that rule lives. Do not name a file
+     the process happens to read. "Read `VOICE.md` before drafting any PR
+     body" was followed exactly and still failed: VOICE.md holds voice only,
+     while the length caps and structure rules live in the personify skill,
+     so the next session drafted a 760-character body that listed local
+     checks. Write "invoke the personify skill before drafting (rule:
+     `infra/CLAUDE.local.md`)", and the skill loads VOICE.md itself.
    - **Issue tracker** — if the project uses a tracker for this kind of work,
      the open items for this workstream, by number and one-line title, plus
      the query that lists them. Where the project's `CLAUDE.md` requires
