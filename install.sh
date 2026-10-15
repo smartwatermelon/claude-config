@@ -77,6 +77,30 @@ if [[ "${DRY_RUN}" == true ]]; then
   _info "Dry-run mode — no changes will be made"
 fi
 
+# ── Version ──────────────────────────────────────────────
+# Tagged on each merge to main (dev-env#72); -dirty marks local edits.
+INSTALL_VERSION="$(git -C "${REPO_DIR}" describe --tags --match 'v[0-9]*' --dirty --always 2>/dev/null || echo unknown)"
+VERSION_STATE="${XDG_STATE_HOME:-${HOME}/.local/state}/claude-config/version"
+
+# An EXIT trap, so every exit path below reports the version it left behind.
+_report_version() {
+  local rc=$?
+  if ((rc != 0)); then
+    _err "claude-config: install of ${INSTALL_VERSION} failed (exit ${rc})"
+  elif [[ "${DRY_RUN}" == true ]]; then
+    _info "claude-config: dry run of ${INSTALL_VERSION}; nothing installed"
+  elif [[ "${REPAIR_ONLY}" == true ]]; then
+    _ok "claude-config: repaired links for ${INSTALL_VERSION}; no new files installed"
+  else
+    if ! { mkdir -p "${VERSION_STATE%/*}" && printf '%s\n' "${INSTALL_VERSION}" >"${VERSION_STATE}"; }; then
+      _warn "could not record the version in ${VERSION_STATE}"
+    fi
+    _ok "claude-config: installed ${INSTALL_VERSION}"
+  fi
+}
+_info "claude-config: installing ${INSTALL_VERSION}"
+trap _report_version EXIT
+
 # ============================================================================
 # 1. PRE-FLIGHT CHECKS
 # ============================================================================

@@ -1,0 +1,13 @@
+name: Auto Tag
+on:
+  push:
+    branches: [main]
+permissions: {}
+jobs:
+  auto-tag:
+    # Job-level grant, so nothing else in this file gets write access.
+    permissions:
+      contents: write # push the version tag
+    uses: smartwatermelon/github-workflows/.github/workflows/auto-tag.yml@auto-tag-v1
+    # with:
+    #   floor: 1.0.0  # lowest version to tag; the default
