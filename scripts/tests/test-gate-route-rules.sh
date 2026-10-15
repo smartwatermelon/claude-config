@@ -92,7 +92,7 @@ RULES="${ROOT}/gate-rules.conf"
   expect_match "NOS non-fork gated" "${RULES}" "nightowlstudiollc/site" "twistedmelonman" "${P}${TAB}13" "${GH}"
   expect_match "fork rule needs github.com" "${RULES}" "nightowlstudiollc/forked" "twistedmelonman" "${V}${TAB}14" "gitlab.com"
   unset GATE_TEST_FORKS GATE_TEST_GH_FAIL
-  # visibility=private (dev-env#206): private is exempt, but Beacon rules come first. Unknown is gated.
+  # private=nightowlstudiollc (dev-env#206): own owners only; Beacon rules come first. Unknown is gated.
   export GATE_TEST_PRIVATE="beacon-biosignals/secret nightowlstudiollc/kebab-tax andrewmrich/secret anthropics/secret smartwatermelon/secret nightowlstudiollc/broken"
   export GATE_TEST_GH_FAIL="nightowlstudiollc/broken"
   expect_match "private beacon repo, andrewmrich: gated" "${RULES}" "beacon-biosignals/secret" "andrewmrich" "${P}${TAB}9" "${GH}"
@@ -102,9 +102,9 @@ RULES="${ROOT}/gate-rules.conf"
   expect_match "andrewmrich text in a private NOS repo: gated" "${RULES}" "nightowlstudiollc/kebab-tax" "andrewmrich" "${P}${TAB}9" "${GH}"
   expect_match "private NOS repo: exempt" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${E}${TAB}12" "${GH}"
   expect_match "private NOS repo, mixed case: exempt" "${RULES}" "NightOwlStudioLLC/Kebab-Tax" "twistedmelonman" "${E}${TAB}12" "${GH}"
-  expect_match "private third-party repo: exempt" "${RULES}" "anthropics/secret" "twistedmelonman" "${E}${TAB}12" "${GH}"
+  expect_match "private third-party repo: gated (falls to *)" "${RULES}" "anthropics/secret" "twistedmelonman" "${V}${TAB}14" "${GH}"
   expect_match "public NOS repo: gated" "${RULES}" "nightowlstudiollc/tnjcleaning" "twistedmelonman" "${P}${TAB}13" "${GH}"
-  expect_match "NOS visibility lookup fails: gated" "${RULES}" "nightowlstudiollc/broken" "twistedmelonman" "${P}${TAB}13" "${GH}"
+  expect_match "NOS private lookup fails: gated" "${RULES}" "nightowlstudiollc/broken" "twistedmelonman" "${P}${TAB}13" "${GH}"
   expect_match "public third-party repo: gated" "${RULES}" "anthropics/claude-code" "twistedmelonman" "${V}${TAB}14" "${GH}"
   expect_match "public smartwatermelon repo: exempt as before" "${RULES}" "smartwatermelon/plain" "twistedmelonman" "${E}${TAB}4" "${GH}"
   expect_match "private repo on another host: gated" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${V}${TAB}14" "gitlab.com"
@@ -114,42 +114,44 @@ RULES="${ROOT}/gate-rules.conf"
   expect_match "workspace repo before author" "${RULES}" "andrewmrich/beacon-workspace" "andrewmrich" "${E}${TAB}1" "${GH}"
 }
 
-# Fail-closed invariant: an unknown answer skips a fork= or visibility= rule,
+# Fail-closed invariant: an unknown answer skips a fork= or private= rule,
 # so no other rule after the first of them may be exempt.
 _load_rules "${RULES}"
 seen_lookup=0
 for i in "${!RULE_KIND[@]}"; do
   case "${RULE_KIND[i]}" in
-    fork | visibility) seen_lookup=1 ;;
+    fork | private) seen_lookup=1 ;;
     *)
       if ((seen_lookup)) && [[ "${RULE_OUTCOME[i]}" == "exempt" ]]; then
-        bad "rule $((i + 1)) is exempt below a fork= or visibility= rule"
+        bad "rule $((i + 1)) is exempt below a fork= or private= rule"
       fi
       ;;
   esac
 done
 ok
-# The Beacon rules must come before visibility=private, or a private Beacon
+# The Beacon rules must come before every private= rule, or a private Beacon
 # repo would be exempt.
 vis=0 beacon_last=0
 for i in "${!RULE_KIND[@]}"; do
   case "${RULE_KIND[i]}:${RULE_VALUE[i]}" in
-    visibility:private) ((vis == 0)) && vis=$((i + 1)) ;;
+    private:*) ((vis == 0)) && vis=$((i + 1)) ;;
     author:andrewmrich | owner:beacon-biosignals | owner:andrewmrich) beacon_last=$((i + 1)) ;;
     *) ;;
   esac
 done
-if ((vis > 0 && beacon_last > 0 && beacon_last < vis)); then ok; else bad "Beacon rules (last ${beacon_last}) not above visibility=private (${vis})"; fi
+if ((vis > 0 && beacon_last > 0 && beacon_last < vis)); then ok; else bad "Beacon rules (last ${beacon_last}) not above the first private= rule (${vis})"; fi
 
-# visibility= takes only 'private'.
-printf 'visibility=public exempt\n* visual\n' >"${TMP}/vispublic.conf"
-expect_load_fail "visibility=public" "${TMP}/vispublic.conf" "vispublic.conf:1"
-printf 'visibility= exempt\n* visual\n' >"${TMP}/visempty.conf"
-expect_load_fail "visibility empty" "${TMP}/visempty.conf" "visempty.conf:1"
-printf 'visibility=Private exempt\n* visual\n' >"${TMP}/viscase.conf"
-expect_match "visibility value case-insensitive" "${TMP}/viscase.conf" "a/b" "" "${V}${TAB}2" "${GH}"
+# private= takes a login, like fork=: no slash, no empty value, any case.
+printf 'private=a/b exempt\n* visual\n' >"${TMP}/privslash.conf"
+expect_load_fail "private with slash" "${TMP}/privslash.conf" "privslash.conf:1"
+printf 'private= exempt\n* visual\n' >"${TMP}/privempty.conf"
+expect_load_fail "private empty" "${TMP}/privempty.conf" "privempty.conf:1"
+printf 'private=NightOwlStudioLLC exempt\n* visual\n' >"${TMP}/privcase.conf"
+export GATE_TEST_PRIVATE="nightowlstudiollc/kebab-tax"
+expect_match "private login case-insensitive" "${TMP}/privcase.conf" "nightowlstudiollc/kebab-tax" "" "${E}${TAB}1" "${GH}"
+unset GATE_TEST_PRIVATE
 
-# The visibility cache: answers are kept under private-cache, failures are not.
+# The private= cache: answers are kept under private-cache, failures are not.
 export GATE_TEST_PRIVATE="nightowlstudiollc/cached" GATE_TEST_GH_FAIL="nightowlstudiollc/down"
 GATE_TEST_GH_LOG="${TMP}/gh.log"
 export GATE_TEST_GH_LOG

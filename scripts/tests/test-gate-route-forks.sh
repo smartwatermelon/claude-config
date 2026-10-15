@@ -102,7 +102,7 @@ _case "private NOS checkout, no -R: exempt" 0 "" "${TMP}/kebab" \
   "gh pr create --title t --body-file ${TXT}"
 _case "-R private NOS repo from a smartwatermelon checkout: exempt" 0 "" "${TMP}/swm" \
   "gh pr create -R nightowlstudiollc/kebab-tax --title t --body-file ${TXT}"
-_case "private third-party fork: commit exempt" 0 "" "${TMP}/privfork" "git commit -F ${TXT}"
+_case "private third-party fork: commit gated (visual)" 2 "no visual approval" "${TMP}/privfork" "git commit -F ${TXT}"
 _case "private third-party fork checkout, no -R: gated (may post to the parent)" 2 "no visual approval" \
   "${TMP}/privfork" "gh pr create --title t --body-file ${TXT}"
 

@@ -3,14 +3,14 @@
 #
 # Rules file: ${GATE_RULES_FILE:-${HOME}/.claude/gate-rules.conf}
 # One rule per line: "<matcher> <outcome>". First match wins.
-#   matcher: repo=<owner/name> | author=<login> | owner=<login> | fork=<login> | visibility=private | *
+#   matcher: repo=<owner/name> | author=<login> | owner=<login> | fork=<login> | private=<login> | *
 #   outcome: pangram | visual | exempt
 
 # fork=<login>: owner=<login> and GitHub says fork. Unknown never matches, so keep only gated rules below it.
 
-# visibility=private: GitHub says the github.com owner/name is private. Unknown never matches.
+# private=<login>: owner=<login> and GitHub says private. Unknown never matches, as for fork=.
 
-# Below the first fork= or visibility= rule, every other rule must be gated.
+# Below the first fork= or private= rule, every other rule must be gated.
 
 # --publish: gh posts from the --dir checkout. For a fork, unknown, or second remote: origin or `*`, the stricter.
 
@@ -72,15 +72,7 @@ _load_rules_inner() {
         kind="author"
         value="${matcher#author=}"
         ;;
-      visibility=?*)
-        kind="visibility"
-        value="${matcher#visibility=}"
-        if [[ "${value,,}" != "private" ]]; then
-          echo "gate-route: ${file}:${lineno}: visibility value must be 'private': '${matcher}'" >&2
-          return 4
-        fi
-        ;;
-      owner=?* | fork=?*)
+      owner=?* | fork=?* | private=?*)
         kind="${matcher%%=*}"
         value="${matcher#*=}"
         if [[ "${value}" == */* ]]; then
@@ -144,10 +136,11 @@ _match_rule() {
           return 0
         fi
         ;;
-      visibility)
+      private)
         # Only a proven private repo matches; public and unknown both skip the rule.
-        if [[ "${host}" == "github.com" && "${repo}" =~ ^[^/]+/[^/]+$ ]] && _is_private "${repo}"; then
-          printf '%s\t%d\tmatched visibility=%s\n' "${RULE_OUTCOME[i]}" "$((i + 1))" "${RULE_VALUE[i]}"
+        if [[ "${host}" == "github.com" && "${repo}" =~ ^[^/]+/[^/]+$ && "${repo%%/*}" == "${RULE_VALUE[i]}" ]] &&
+          _is_private "${repo}"; then
+          printf '%s\t%d\tmatched private=%s\n' "${RULE_OUTCOME[i]}" "$((i + 1))" "${RULE_VALUE[i]}"
           return 0
         fi
         ;;
