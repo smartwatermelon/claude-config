@@ -1446,8 +1446,6 @@ if echo "${VERDICT_LINE}" | grep -qE "SAFE_TO_MERGE"; then
        END { exit !f }' "${_exempt_log}" 2>/dev/null; then
       _exempt_filed=true
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' "${_exempt_now}" "${_canon_repo}" "${PR_NUMBER}" "${_pr_author}" "${LOCK_POLICY_WHY//$'\t'/ }" \
-      >>"${_exempt_log}" 2>/dev/null || true
   fi
   # Create GitHub issues for any non-blocking concerns found during review.
   # Guard: if the merge fails and Claude retries within the same authorization
@@ -1460,6 +1458,11 @@ if echo "${VERDICT_LINE}" | grep -qE "SAFE_TO_MERGE"; then
     create_nonblocking_issues "${ANALYSIS_TEXT}"
     # Mark so a retry within the same auth window skips issue creation.
     [[ -f "${MERGE_LOCK_FILE}" ]] && printf 'ISSUES_CREATED=1\n' >>"${MERGE_LOCK_FILE}" || true
+  fi
+  # After filing, like ISSUES_CREATED=1: a filing step that aborts leaves no row, so the retry files.
+  if [[ "${LOCK_POLICY}" == "exempt" ]]; then
+    printf '%s\t%s\t%s\t%s\t%s\n' "${_exempt_now}" "${_canon_repo}" "${PR_NUMBER}" "${_pr_author}" "${LOCK_POLICY_WHY//$'\t'/ }" \
+      >>"${_exempt_log}" 2>/dev/null || true
   fi
   exit 0
 elif echo "${VERDICT_LINE}" | grep -qE "BLOCK_MERGE"; then
