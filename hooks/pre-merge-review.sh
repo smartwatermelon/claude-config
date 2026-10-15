@@ -1040,7 +1040,7 @@ select_neutral_checks() {
 }
 
 # A jq failure here must block, not read as "no NEUTRAL checks".
-_neutral_err="could not parse the status-check rollup for NEUTRAL checks"
+_neutral_err="could not select NEUTRAL checks: the rollup or the required set did not parse"
 NEUTRAL_ADVISORY=""
 if [[ "${REQUIRED_SET_KNOWN}" == "true" ]]; then
   NEUTRAL_CHECKS=$(select_neutral_checks "${PR_JSON}" "${REQUIRED_CONTEXTS}" required) ||
