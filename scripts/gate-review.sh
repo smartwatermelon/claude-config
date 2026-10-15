@@ -187,7 +187,10 @@ _check_hint() {
   fi
 }
 
-LENGTH_KINDS="commit pr issue line-comment pr-comment code-comment docstring"
+LENGTH_KINDS="commit pr issue line-comment pr-comment code-comment docstring copy"
+
+# copy: file text from gate-copy.py. No length cap, never routed: always Pangram plus approval (dev-env#206).
+COPY_ROUTE=$'pangram\tcopy\tpublic-facing copy (copy-paths.conf)'
 
 _valid_kind() {
   [[ " ${LENGTH_KINDS} " == *" $1 "* ]]
@@ -202,6 +205,10 @@ LENGTH_OUT=""
 _length_check() {
   local kind="$1" file="$2" dir checker rc=0 errf
   local -a title_arg=()
+  if [[ "${kind}" == "copy" ]]; then
+    LENGTH_OUT=""
+    return 0
+  fi
   (($# < 3)) || title_arg=("--title=$3")
   if ! dir="$(_personify_path 2>&1)"; then
     LENGTH_OUT="${dir}"
@@ -1041,6 +1048,10 @@ _prune_expired() {
 # A gh-posted kind with no repo is posted by gh from the checkout, which a fork sends upstream: --publish.
 _route_line() {
   local -a route_args=()
+  if [[ "${3:-}" == "copy" ]]; then
+    printf '%s\n' "${COPY_ROUTE}"
+    return 0
+  fi
   [[ -z "$1" ]] || route_args+=(--repo "$1")
   [[ -z "$2" ]] || route_args+=(--dir "$2")
   case "${3:-}" in
@@ -1076,7 +1087,7 @@ _cmd_route() {
       *) _die "route: unexpected argument: $1" ;;
     esac
   done
-  if ((flagged == 0)); then
+  if ((flagged == 0)) && [[ "${kind}" != "copy" ]]; then
     printf 'visual\t3\tdestination unresolved\n'
     return 0
   fi
@@ -1128,7 +1139,9 @@ _cmd_check() {
   # future edit that makes the catch-all `* pangram` will NOT reach callers
   # that pass no destination (gh-wrapper.sh until it passes one). Change this
   # when the wrapper does.
-  if ((flagged == 0)); then
+  if [[ "${kind}" == "copy" ]]; then
+    IFS=$'\t' read -r outcome rule reason <<<"${COPY_ROUTE}"
+  elif ((flagged == 0)); then
     outcome="visual"
     rule=3
   else
