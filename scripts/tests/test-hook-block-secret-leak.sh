@@ -171,6 +171,31 @@ check 'quoted heredoc delimiter disables expansion' 0 \
 export GH_TOKEN=\"${D}GH_TOKEN_NOS\"
 EOF"
 
+# The heredoc rule reads only the body (#536): a secret used outside an
+# unrelated unquoted heredoc is not expanded by it.
+check 'secret used before an unrelated unquoted heredoc' 0 \
+  "GH_TOKEN=\"${D}GH_TOKEN\" gh api user
+cat <<EOF
+hello
+EOF"
+check 'secret used after the heredoc terminator' 0 \
+  "cat <<EOF > /tmp/n.txt
+hello
+EOF
+GH_TOKEN=\"${D}GH_TOKEN\" gh api user"
+check 'secret in a <<- body with a tab-indented terminator' 2 \
+  "cat <<-EOF
+	${D}{GH_TOKEN}
+	EOF"
+check 'a tab-indented line does not end a plain <<EOF body' 2 \
+  "cat <<EOF
+	EOF
+${D}GH_TOKEN
+EOF"
+check 'secret in an unterminated heredoc body' 2 \
+  "cat <<EOF
+${D}GH_TOKEN"
+
 echo
 echo "=== ALLOW: fixtures must not false-positive ==="
 # This is the failure mode of a token-pattern regex. These fake tokens are not
