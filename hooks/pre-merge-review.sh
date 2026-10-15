@@ -1434,15 +1434,28 @@ if echo "${VERDICT_LINE}" | grep -qE "SAFE_TO_MERGE"; then
   # Authorization was already verified at the top of this script (early check).
   log_success "PR review analysis passed - safe to merge"
   # A policy-exempt merge is logged only once review passed. Beside the ledger, which keeps human grants only.
+  _exempt_log="${HOME}/.claude/merge-locks/exempt.tsv"
+  _exempt_filed=false
   if [[ "${LOCK_POLICY}" == "exempt" ]]; then
-    printf '%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "${_canon_repo}" "${PR_NUMBER}" "${_pr_author}" "${LOCK_POLICY_WHY//$'\t'/ }" \
-      >>"${HOME}/.claude/merge-locks/exempt.tsv" 2>/dev/null || true
+    # No lock file to mark (#702): a row for this PR in the last 1800s (the lock TTL) means filing ran. Scan before appending.
+    _exempt_window=1800
+    _exempt_now=$(date +%s)
+    if [[ -f "${_exempt_log}" ]] && awk -F'\t' -v r="${_canon_repo}" -v p="${PR_NUMBER}" -v now="${_exempt_now}" \
+      -v win="${_exempt_window}" \
+      '$1 ~ /^[0-9]+$/ && tolower($2) == tolower(r) && $3 == p && now - $1 >= 0 && now - $1 < win { f = 1 }
+       END { exit !f }' "${_exempt_log}" 2>/dev/null; then
+      _exempt_filed=true
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "${_exempt_now}" "${_canon_repo}" "${PR_NUMBER}" "${_pr_author}" "${LOCK_POLICY_WHY//$'\t'/ }" \
+      >>"${_exempt_log}" 2>/dev/null || true
   fi
   # Create GitHub issues for any non-blocking concerns found during review.
   # Guard: if the merge fails and Claude retries within the same authorization
   # window (30-min TTL), skip issue creation to prevent duplicates.
   if [[ -f "${MERGE_LOCK_FILE}" ]] && grep -q "^ISSUES_CREATED=1$" "${MERGE_LOCK_FILE}" 2>/dev/null; then
     log_info "Non-blocking issues already filed for PR #${PR_NUMBER} in this auth window — skipping"
+  elif [[ "${_exempt_filed}" == true ]]; then
+    log_info "Non-blocking issues already filed for ${_canon_repo}#${PR_NUMBER} in this exempt window — skipping"
   else
     create_nonblocking_issues "${ANALYSIS_TEXT}"
     # Mark so a retry within the same auth window skips issue creation.
