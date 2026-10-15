@@ -47,7 +47,7 @@ entries are omitted here.
 | Event / matcher | Script |
 |-----------------|--------|
 | PreToolUse `Bash` | `~/.claude/scripts/hook-block-all.sh` (chain below) |
-| PreToolUse `Write`, `Edit` | `hook-block-merge-locks-write.sh`: blocks writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf` |
+| PreToolUse `Write`, `Edit` | `hook-block-merge-locks-write.sh`: blocks writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf` and `copy-paths.conf` |
 | PreToolUse `EnterWorktree` | `hook-block-enter-worktree.sh` |
 | PostToolUse `Bash\|Read` | `hook-redact-secret-output.py`: redacts env secret values, gitleaks findings, vendor prefixes gitleaks lacks, and the whole stdout of credential-printing commands (`op read`, `security -w`, ...) |
 | Stop, SubagentStop | `hook-budget-guard.sh` |
@@ -55,7 +55,7 @@ entries are omitted here.
 `hook-block-all.sh` runs these in order and stops at the first block:
 
 1. `hook-block-secret-leak.sh` (first on purpose: the others log the full command when they block)
-2. `hook-block-gate-dir-write.sh` (Bash-path writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf`)
+2. `hook-block-gate-dir-write.sh` (Bash-path writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf` and `copy-paths.conf`)
 3. `hook-block-no-verify.sh`
 4. `hook-block-short-no-verify.sh`
 5. `hook-block-main-commit.sh`
@@ -160,6 +160,21 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   literal path and do not resolve symlinks, so the repo copy stays editable
   through a reviewed PR, and a merged change reaches `~/.claude` on the next
   `install.sh --sync`.
+- `copy-paths.conf` (repo root, linked to `~/.claude/copy-paths.conf`, guarded
+  by both write hooks the same way) lists each repo's public-facing copy:
+  `<owner/name> <include|exclude> <glob>`. On every agent `git commit`,
+  `hook-block-personify.sh` runs `scripts/gate-copy.py extract` on the
+  destination checkout. When staged changes touch a listed path, the added or
+  changed text (whole text for a new file; HTML and Markdown stripped, JSON
+  string values only) is written to `~/.claude/gate-review/copy/<sha256>.txt`,
+  and the commit is blocked until `gate-review.sh check --kind copy` passes on
+  it. The `copy` kind never asks `gate-route.sh`: it is always Pangram plus
+  approval, even where the commit message is exempt, and it has no length cap.
+  In a repo with copy paths the hook also blocks `git commit -a/-i/-o/-p`, a
+  pathspec, and any other index-changing git command in the same call, since
+  it reads the index before the call runs. A missing or malformed conf blocks
+  every agent commit; `SUSPENDED` is the escape hatch. In-app JSX strings are
+  phase 2 (dev-env#206).
 
 ### Merge-Lock Subcommands
 

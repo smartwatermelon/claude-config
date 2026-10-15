@@ -715,6 +715,18 @@ _bcase "${DIRWRITE}" "a notes file that only shares the prefix" \
 _bcase "${DIRWRITE}" "the repo copy of the rules file stays editable" \
   'sed -i "" s/a/b/ /Users/andrewrich/Developer/claude-config/gate-rules.conf' 0
 
+# copy-paths.conf decides which files' text needs approval (dev-env#206).
+_bcase "${DIRWRITE}" "redirect over the deployed copy paths file" \
+  'echo x > ~/.claude/copy-paths.conf' 2
+_bcase "${DIRWRITE}" "sed -i the deployed copy paths file" \
+  "sed -i '' /kebab/d ${HOME}/.claude/copy-paths.conf" 2
+_bcase "${DIRWRITE}" "cp over the deployed copy paths file" \
+  'cp /tmp/x ~/.claude/copy-paths.conf' 2
+_bcase "${DIRWRITE}" "rm the deployed copy paths file" \
+  'rm ~/.claude/copy-paths.conf' 2
+_bcase "${DIRWRITE}" "cat the deployed copy paths file (read)" \
+  'cat ~/.claude/copy-paths.conf' 0
+
 echo "=== merge-locks-write (Write/Edit hook): file_path cases ==="
 # This hook reads tool_input.file_path, not a command string, so it gets its
 # own payload builder. A temp HOME with no .claude/ stands in for a fresh
@@ -781,6 +793,10 @@ _wcase "a notes file that only shares the rules-file prefix" \
   "${HOME}/.claude/scripts/gate-rules-notes.md" 0
 _wcase "the repo copy of the rules file stays writable" \
   "/Users/andrewrich/Developer/claude-config/gate-rules.conf" 0
+_wcase "Write the deployed copy paths file" \
+  "${HOME}/.claude/copy-paths.conf" 2
+_wcase "Write the deployed copy paths file, tilde-spelled" \
+  "${_tilde}/.claude/copy-paths.conf" 2
 
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]
