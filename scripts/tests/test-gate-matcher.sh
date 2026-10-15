@@ -581,6 +581,8 @@ _case "${DIRWRITE}" "cp into merge-locks (the measured hole)" \
   "$(_b64 "cp /tmp/x ${HOME}/.claude/merge-locks/fake")" 2
 _case "${DIRWRITE}" "cp into gate-review/approved" \
   "$(_b64 "cp /tmp/x ${HOME}/.claude/gate-review/approved/fake")" 2
+_case "${DIRWRITE}" "forge a private-cache answer" \
+  "$(_b64 "echo true > ${HOME}/.claude/gate-review/private-cache/o/r")" 2
 _case "${DIRWRITE}" "redirect into approved" \
   "$(_b64 "echo text > ${HOME}/.claude/gate-review/approved/fake")" 2
 _case "${DIRWRITE}" "append-redirect into approved" \
@@ -753,6 +755,11 @@ _wcase "Write SUSPENDED, tilde-spelled" \
   "$(printf '%s/.claude/gate-review/SUSPENDED' '~')" 2
 _wcase "Write into gate-review/approved" \
   "${HOME}/.claude/gate-review/approved/x" 2
+# A forged 'true' in a lookup cache would exempt a repo (dev-env#206).
+_wcase "Write into gate-review/fork-cache" \
+  "${HOME}/.claude/gate-review/fork-cache/o/r" 2
+_wcase "Write into gate-review/private-cache" \
+  "${HOME}/.claude/gate-review/private-cache/o/r" 2
 _wcase "Write into a keyed gate-review/approved/<key>/" \
   "${HOME}/.claude/gate-review/approved/dotfiles-main/x" 2
 _wcase "Write into a keyed gate-review/pending/<key>/" \
