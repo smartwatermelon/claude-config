@@ -33,6 +33,7 @@ setup() {
 
   export GH_TOKEN_SWM=tok-swm GH_TOKEN_NOS=tok-nos GH_TOKEN_TWM=tok-twm
   LEDGER="${TMP}/ledger.tsv"
+  EXEMPT="${TMP}/exempt.tsv"
 }
 
 install_audit_stub() {
@@ -102,6 +103,25 @@ ledger() {
   for row in "$@"; do
     read -r ts repo n ttl <<<"${row}"
     printf '%s\t%s\t%s\t%s\tandrewrich\treason\n' "${ts}" "${repo}" "${n}" "${ttl}" >>"${LEDGER}"
+  done
+}
+
+# exempt [ROW...] : write an exempt log; each row is "ts repo pr author".
+# Same shape pre-merge-review.sh appends after a policy-exempt review passes:
+# epoch, owner/repo, PR, author, then policy_decide's "rule N<TAB>matcher"
+# with the tab collapsed to a space. Writes to ${EXEMPT}, set in setup().
+exempt() {
+  exempt_to "${EXEMPT}" "$@"
+}
+
+# exempt_to FILE [ROW...] : as exempt, into FILE.
+exempt_to() {
+  local out="$1" row ts repo n author
+  shift
+  : >"${out}"
+  for row in "$@"; do
+    read -r ts repo n author <<<"${row}"
+    printf '%s\t%s\t%s\t%s\trule 12 *\n' "${ts}" "${repo}" "${n}" "${author}" >>"${out}"
   done
 }
 
@@ -341,6 +361,110 @@ run_audit() {
   [ "${status}" -eq 2 ]
   run "${AUDIT}" --since 2026-13-45
   [ "${status}" -eq 2 ]
+}
+
+# --- Policy-exempt merges (exempt.tsv, claude-config#702) --------------------
+
+@test "a merge logged in exempt.tsv is EXEMPT with its rule, and exits 0" {
+  repos acme acme/widgets
+  pulls acme/widgets 1 "[$(pr 7 "${MERGED}")]"
+  ledger "${START}"
+  exempt "$((MERGED - 30)) acme/widgets 7 twistedmelonman"
+  run_audit --exempt "${EXEMPT}" --all
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *$'EXEMPT\tacme/widgets#7\t'*$'\trule 12 *'* ]]
+  [[ "${output}" != *$'NO_LOCK\t'* ]]
+  [[ "${output}" == *"no_lock=0 "* ]]
+  [[ "${output}" == *"exempt=1"* ]]
+}
+
+@test "EXEMPT rows are hidden without --all but still counted" {
+  repos acme acme/widgets
+  pulls acme/widgets 1 "[$(pr 7 "${MERGED}")]"
+  ledger "${START}"
+  exempt "$((MERGED - 30)) acme/widgets 7 twistedmelonman"
+  run_audit --exempt "${EXEMPT}"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *$'EXEMPT\t'* ]]
+  [[ "${output}" == *"exempt=1"* ]]
+}
+
+@test "exempt.tsv is read from ~/.claude/merge-locks by default" {
+  repos acme acme/widgets
+  pulls acme/widgets 1 "[$(pr 7 "${MERGED}")]"
+  ledger "${START}"
+  mkdir -p "${HOME}/.claude/merge-locks"
+  exempt_to "${HOME}/.claude/merge-locks/exempt.tsv" "$((MERGED - 30)) Acme/Widgets 7 twistedmelonman"
+  run_audit --all
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *$'EXEMPT\tacme/widgets#7'* ]]
+}
+
+@test "a locked merge stays LOCKED when an exempt row also exists" {
+  repos acme acme/widgets
+  pulls acme/widgets 1 "[$(pr 7 "${MERGED}")]"
+  ledger "${START}" "$((MERGED - 300)) acme/widgets 7 1800"
+  exempt "$((MERGED - 30)) acme/widgets 7 twistedmelonman"
+  run_audit --exempt "${EXEMPT}" --all
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *$'LOCKED\tacme/widgets#7'* ]]
+  [[ "${output}" == *"locked=1 "* ]]
+  [[ "${output}" == *"exempt=0"* ]]
+}
+
+@test "known-bad: an unlocked merge with no exempt row is still NO_LOCK" {
+  repos acme acme/widgets
+  pulls acme/widgets 1 "[$(pr 7 "${MERGED}"), $(pr 8 "${MERGED}")]"
+  ledger "${START}"
+  exempt "$((MERGED - 30)) acme/widgets 8 twistedmelonman"
+  run_audit --exempt "${EXEMPT}"
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *$'NO_LOCK\tacme/widgets#7'* ]]
+  [[ "${output}" == *"no_lock=1 "* ]]
+  [[ "${output}" == *"exempt=1"* ]]
+}
+
+@test "known-bad: an exempt row for the same PR number in another repo does not clear it" {
+  repos acme acme/widgets
+  pulls acme/widgets 1 "[$(pr 7 "${MERGED}")]"
+  ledger "${START}"
+  exempt "$((MERGED - 30)) acme/gadgets 7 twistedmelonman"
+  run_audit --exempt "${EXEMPT}"
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *$'NO_LOCK\tacme/widgets#7'* ]]
+}
+
+@test "known-bad: an exempt row from hours before the merge does not clear it" {
+  repos acme acme/widgets
+  pulls acme/widgets 1 "[$(pr 7 "${MERGED}")]"
+  ledger "${START}"
+  # A review that passed at 10:00 whose merge failed does not cover a
+  # 15:00 UI merge of the same PR.
+  exempt "$((MERGED - 18000)) acme/widgets 7 twistedmelonman"
+  run_audit --exempt "${EXEMPT}"
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *$'NO_LOCK\tacme/widgets#7'* ]]
+}
+
+@test "a missing exempt.tsv is not an error and changes nothing" {
+  repos acme acme/widgets
+  pulls acme/widgets 1 "[$(pr 7 "${MERGED}")]"
+  ledger "${START}"
+  run_audit --exempt "${TMP}/no-such-exempt.tsv"
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *$'NO_LOCK\tacme/widgets#7'* ]]
+  [[ "${output}" != *"exempt.tsv"* ]]
+}
+
+@test "a malformed exempt row is skipped with a warning" {
+  repos acme acme/widgets
+  pulls acme/widgets 1 "[$(pr 7 "${MERGED}")]"
+  ledger "${START}"
+  printf 'garbage\tacme/widgets\tseven\tx\trule 1 *\n' >"${EXEMPT}"
+  run_audit --exempt "${EXEMPT}"
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *"malformed exempt row"* ]]
+  [[ "${output}" == *$'NO_LOCK\tacme/widgets#7'* ]]
 }
 
 # --- The ledger merge-lock.sh writes -----------------------------------------

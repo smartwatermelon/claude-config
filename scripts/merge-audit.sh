@@ -10,7 +10,7 @@
 #
 # Usage:
 #   merge-audit.sh --since YYYY-MM-DD [--owner OWNER[=TOKEN_VAR]]...
-#                  [--ledger PATH]... [--all]
+#                  [--ledger PATH]... [--exempt PATH]... [--all]
 #
 #   --since    Required. Merges on or after this UTC date are audited.
 #   --owner    Audit only these owners. Defaults to all three. Each owner is
@@ -20,12 +20,14 @@
 #   --ledger   Ledger file(s) to read. Defaults to
 #              ~/.claude/merge-locks/ledger.tsv. Pass one per machine to audit
 #              authorizations granted on several laptops.
+#   --exempt   Exempt-merge log(s) to read. Defaults to
+#              ~/.claude/merge-locks/exempt.tsv; a missing file is fine.
 #   --all      Also print LOCKED and BOT rows, not just the ones needing
 #              attention.
 #
 # Output: one tab-separated row per merged PR, then a summary.
 #
-#   STATUS  OWNER/REPO#N  MERGED_AT  AUTHOR  URL  TITLE
+#   STATUS  OWNER/REPO#N  MERGED_AT  AUTHOR  URL  TITLE  RULE
 #
 # There is no merged-by column: the PR list endpoint omits it, and it would say
 # twistedmelonman for every merge anyway, agent or human.
@@ -36,13 +38,15 @@
 #                  on a machine whose ledger was not passed.
 #   LOCK_NOT_LIVE  Ledger rows exist for this PR, but none was live at merge
 #                  time.
+#   EXEMPT         In exempt.tsv near merge time. RULE names the policy
+#                  rule (empty on other rows). Listed only with --all.
 #   UNCLASSIFIED   Merged before the ledger started. The ledger cannot speak
 #                  to that time, so this is NOT a clean result.
 #   BOT            Authored by dependabot[bot], with no lock. Auto-merge is
 #                  policy for Dependabot only; listed only with --all. Any
 #                  other bot (claude[bot], for one) gets no exemption.
 #
-# Exit status: 0 only when every non-bot merge is LOCKED; 1 when anything is
+# Exit status: 0 only when every non-bot merge is LOCKED or EXEMPT; 1 when anything is
 # NO_LOCK, LOCK_NOT_LIVE or UNCLASSIFIED (an unknown is not a pass); 2 on a
 # usage error or when any owner or repo could not be read. A partial
 # read exits 2 even if the rows it did get are clean: an audit that silently
@@ -54,11 +58,16 @@
 # LOCKED. The window is [lock - SKEW, lock + TTL + ANALYSIS + SKEW], because
 # pre-merge-review.sh checks the lock before its analysis runs, and the merge
 # lands only after that analysis, which can take up to its 900-second ceiling.
+#
+# EXEMPT window: [row - SKEW, row + EXEMPT_MERGE + SKEW]. The row is written
+# minutes at most before gh merges.
 set -euo pipefail
 unset CDPATH
 
 SKEW_SECONDS=120
 ANALYSIS_SECONDS=900
+# Narrows, not closes: a failed attempt's row covers a UI merge for ~12 min.
+EXEMPT_MERGE_SECONDS=600
 
 declare -A TOKEN_VAR_FOR=(
   [smartwatermelon]=GH_TOKEN_SWM
@@ -68,13 +77,14 @@ declare -A TOKEN_VAR_FOR=(
 DEFAULT_OWNERS=(smartwatermelon nightowlstudiollc twistedmelonman)
 
 usage() {
-  sed -n '12,26p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '12,30p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
 SINCE=""
 OWNERS=()
 LEDGERS=()
+EXEMPT_LOGS=()
 SHOW_ALL=false
 
 while [[ $# -gt 0 ]]; do
@@ -106,6 +116,15 @@ while [[ $# -gt 0 ]]; do
       LEDGERS+=("${1#*=}")
       shift
       ;;
+    --exempt)
+      [[ -n "${2:-}" ]] || usage
+      EXEMPT_LOGS+=("$2")
+      shift 2
+      ;;
+    --exempt=*)
+      EXEMPT_LOGS+=("${1#*=}")
+      shift
+      ;;
     --all)
       SHOW_ALL=true
       shift
@@ -129,6 +148,7 @@ fi
 
 [[ ${#OWNERS[@]} -gt 0 ]] || OWNERS=("${DEFAULT_OWNERS[@]}")
 [[ ${#LEDGERS[@]} -gt 0 ]] || LEDGERS=("${HOME}/.claude/merge-locks/ledger.tsv")
+[[ ${#EXEMPT_LOGS[@]} -gt 0 ]] || EXEMPT_LOGS=("${HOME}/.claude/merge-locks/exempt.tsv")
 
 # --- Ledger ------------------------------------------------------------------
 
@@ -166,7 +186,43 @@ if [[ -z "${LEDGER_START}" ]]; then
   echo "Warning: no ledger start found; every merge will be UNCLASSIFIED." >&2
 fi
 
-# Print the status for one merged PR.
+# --- Exempt log --------------------------------------------------------------
+
+# EXEMPTS[key] holds "ts<TAB>rule" lines. pre-merge-review.sh writes the rows:
+# epoch, owner/repo, PR, author, rule.
+declare -A EXEMPTS=()
+
+for exempt_log in "${EXEMPT_LOGS[@]}"; do
+  # Missing means no exempt merge yet: not an error, no warning.
+  [[ -f "${exempt_log}" ]] || continue
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+    IFS=$'\t' read -r ts repo pr _author rule <<<"${line}"
+    if [[ ! "${ts}" =~ ^[0-9]+$ || ! "${pr}" =~ ^[0-9]+$ || -z "${repo}" ]]; then
+      echo "Warning: skipping malformed exempt row in ${exempt_log}: ${line}" >&2
+      continue
+    fi
+    key="${repo,,}#${pr}"
+    EXEMPTS["${key}"]+="${ts}"$'\t'"${rule:-rule ?}"$'\n'
+  done <"${exempt_log}"
+done
+
+# Print the rule of an exempt row for <key> live at <merged>; return 1 if none.
+exempt_rule() {
+  local entries="${EXEMPTS["${1,,}"]:-}" merged="$2" ts rule
+  [[ -n "${entries}" ]] || return 1
+  while IFS=$'\t' read -r ts rule; do
+    [[ -z "${ts}" ]] && continue
+    if ((merged >= ts - SKEW_SECONDS && merged <= ts + EXEMPT_MERGE_SECONDS + SKEW_SECONDS)); then
+      printf '%s\n' "${rule}"
+      return 0
+    fi
+  done <<<"${entries}"
+  return 1
+}
+
+# Print the status for one merged PR. An EXEMPT status is followed by a tab
+# and the policy rule.
 classify() {
   local key="$1" merged="$2" author="$3"
   local entries="${LOCKS["${key,,}"]:-}"
@@ -180,6 +236,13 @@ classify() {
         return
       fi
     done
+  fi
+  # An exempt row is direct evidence for this PR, so it counts even before the
+  # ledger started.
+  local rule
+  if rule=$(exempt_rule "${key}" "${merged}"); then
+    printf 'EXEMPT\t%s\n' "${rule}"
+    return
   fi
   if [[ -z "${LEDGER_START}" ]] || ((merged < LEDGER_START)); then
     echo UNCLASSIFIED
@@ -199,7 +262,7 @@ classify() {
 # --- GitHub ------------------------------------------------------------------
 
 READ_ERRORS=0
-declare -A COUNT=([LOCKED]=0 [NO_LOCK]=0 [LOCK_NOT_LIVE]=0 [UNCLASSIFIED]=0 [BOT]=0)
+declare -A COUNT=([LOCKED]=0 [EXEMPT]=0 [NO_LOCK]=0 [LOCK_NOT_LIVE]=0 [UNCLASSIFIED]=0 [BOT]=0)
 
 # Print "number<TAB>merged_epoch<TAB>merged_at<TAB>author<TAB>url<TAB>title"
 # for every PR in <repo> merged at or after SINCE_EPOCH.
@@ -273,7 +336,7 @@ audit_owner() {
     return
   fi
 
-  local repo rows number merged merged_at author url title status
+  local repo rows number merged merged_at author url title status rule
   while IFS= read -r repo; do
     [[ -z "${repo}" ]] && continue
     if ! rows=$(merged_prs "${repo}"); then
@@ -284,10 +347,15 @@ audit_owner() {
     while IFS=$'\t' read -r number merged merged_at author url title; do
       [[ -z "${number}" ]] && continue
       status=$(classify "${repo}#${number}" "${merged}" "${author}")
+      rule=""
+      if [[ "${status}" == EXEMPT$'\t'* ]]; then
+        rule="${status#*$'\t'}"
+        status=EXEMPT
+      fi
       COUNT["${status}"]=$((COUNT["${status}"] + 1))
-      if [[ "${SHOW_ALL}" == true || ("${status}" != LOCKED && "${status}" != BOT) ]]; then
-        printf '%s\t%s#%s\t%s\t%s\t%s\t%s\n' "${status}" "${repo}" "${number}" \
-          "${merged_at}" "${author}" "${url}" "${title}"
+      if [[ "${SHOW_ALL}" == true || ("${status}" != LOCKED && "${status}" != EXEMPT && "${status}" != BOT) ]]; then
+        printf '%s\t%s#%s\t%s\t%s\t%s\t%s\t%s\n' "${status}" "${repo}" "${number}" \
+          "${merged_at}" "${author}" "${url}" "${title}" "${rule}"
       fi
     done <<<"${rows}"
   done <<<"${repos}"
@@ -305,9 +373,9 @@ ledger_note="none"
 if [[ -n "${LEDGER_START}" ]]; then
   ledger_note=$(jq -nr --argjson t "${LEDGER_START}" '$t | todateiso8601')
 fi
-printf '# since=%s ledger_start=%s locked=%d no_lock=%d lock_not_live=%d unclassified=%d bot=%d read_errors=%d\n' \
+printf '# since=%s ledger_start=%s locked=%d no_lock=%d lock_not_live=%d unclassified=%d bot=%d exempt=%d read_errors=%d\n' \
   "${SINCE}" "${ledger_note}" "${COUNT[LOCKED]}" "${COUNT[NO_LOCK]}" "${COUNT[LOCK_NOT_LIVE]}" \
-  "${COUNT[UNCLASSIFIED]}" "${COUNT[BOT]}" "${READ_ERRORS}"
+  "${COUNT[UNCLASSIFIED]}" "${COUNT[BOT]}" "${COUNT[EXEMPT]}" "${READ_ERRORS}"
 
 if ((READ_ERRORS > 0)); then
   exit 2
