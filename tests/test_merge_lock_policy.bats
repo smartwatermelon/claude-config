@@ -184,7 +184,8 @@ policy() {
 
 # --- pre-merge-review.sh ----------------------------------------------------
 
-# _pre_merge <repo> <author> <verdict>: run pre-merge-review.sh with the real merge-lock.sh and stub gh/claude.
+# _pre_merge <repo> <author> <verdict> [findings]: run pre-merge-review.sh with the real merge-lock.sh and stub gh/claude.
+# With a 4th arg, the review also reports one non-blocking finding; each `gh issue create` is logged to gh-issues.
 _pre_merge() {
   local bin="${TMP_HOME}/bin"
   mkdir -p "${bin}"
@@ -195,12 +196,21 @@ if [[ "\$1" == "pr" && "\$2" == "view" ]]; then
   printf '%s\n' '{"number":7,"title":"t","state":"OPEN","reviews":[],"comments":[],"reviewDecision":"","statusCheckRollup":[],"baseRefName":"main","url":"https://github.com/$1/pull/7","author":{"login":"$2"}}'
   exit 0
 fi
+if [[ "\$1" == "issue" && "\$2" == "create" ]]; then
+  printf '%s\n' "\$*" >>"${TMP_HOME}/gh-issues"
+  echo "https://github.com/$1/issues/99"
+  exit 0
+fi
 echo "[]"
 EOF
+  local finding=""
+  if [[ -n "${4:-}" ]]; then
+    finding=$'\nNON_BLOCKING_ISSUE:\nTITLE: Consider a guard\nSOURCE: code-reviewer\nLOCATION: a.sh:1\nDETAILS: Add a guard.\nEND_ISSUE'
+  fi
   cat >"${bin}/claude" <<EOF
 #!/usr/bin/env bash
 touch "${TMP_HOME}/claude-ran"
-printf 'VERDICT: %s\n' "$3"
+printf 'VERDICT: %s\n%s\n' "$3" "${finding}"
 EOF
   chmod +x "${bin}/gh" "${bin}/claude"
   run env PATH="${bin}:${PATH}" CLAUDE_CLI="${bin}/claude" "${PRE_MERGE}" pr merge 7 --repo "$1" --squash --delete-branch
@@ -240,4 +250,73 @@ EOF
   _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
   [[ "${status}" -eq 1 ]]
   [[ "${output}" == *"MERGE AUTHORIZATION REQUIRED"* ]]
+}
+
+# --- non-blocking issue dedup for exempt merges (#702) ----------------------
+
+# _issue_count: how many times the stub gh was asked to create an issue.
+_issue_count() {
+  if [[ -f "${TMP_HOME}/gh-issues" ]]; then
+    # The issue body spans lines, so count the call prefix, not lines.
+    grep -c '^issue create ' "${TMP_HOME}/gh-issues" || true
+  else
+    echo 0
+  fi
+}
+
+@test "exempt merge files its non-blocking issue" {
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  [[ "$(_issue_count)" -eq 1 ]]
+  [[ "${output}" != *"already filed"* ]]
+}
+
+@test "known-bad: a retried exempt merge in the window does not file twice" {
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  [[ "$(_issue_count)" -eq 1 ]]
+  [[ "${output}" == *"already filed for smartwatermelon/dev-env#7 in this exempt window"* ]]
+  # The retry is still logged, so merge-audit sees the attempt.
+  [[ "$(grep -c $'\tsmartwatermelon/dev-env\t7\t' "${HOME}/.claude/merge-locks/exempt.tsv")" -eq 2 ]]
+}
+
+@test "an exempt merge after the window files again" {
+  printf '%s\tsmartwatermelon/dev-env\t7\ttwistedmelonman\told\n' "$(($(date +%s) - 7200))" \
+    >"${HOME}/.claude/merge-locks/exempt.tsv"
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  [[ "$(_issue_count)" -eq 1 ]]
+}
+
+@test "a recent exempt row for the same PR number in another repo does not skip filing" {
+  printf '%s\tsmartwatermelon/other\t7\ttwistedmelonman\tx\n' "$(date +%s)" \
+    >"${HOME}/.claude/merge-locks/exempt.tsv"
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  [[ "$(_issue_count)" -eq 1 ]]
+}
+
+@test "known-bad: a recent exempt row matches the repo case-insensitively" {
+  printf '%s\tSmartWatermelon/Dev-Env\t7\ttwistedmelonman\tx\n' "$(date +%s)" \
+    >"${HOME}/.claude/merge-locks/exempt.tsv"
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  [[ "$(_issue_count)" -eq 0 ]]
+}
+
+@test "locked merge: files once, then a retry in the auth window skips" {
+  local lock="${HOME}/.claude/merge-locks/smartwatermelon/claude-config/pr-7.lock"
+  mkdir -p "$(dirname "${lock}")"
+  printf 'TIMESTAMP=%s\n' "$(date +%s)" >"${lock}"
+  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  [[ "$(_issue_count)" -eq 1 ]]
+  grep -q '^ISSUES_CREATED=1$' "${lock}"
+  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  [[ "$(_issue_count)" -eq 1 ]]
+  [[ "${output}" == *"already filed for PR #7 in this auth window"* ]]
+  # A locked merge never writes an exempt row.
+  [[ ! -s "${HOME}/.claude/merge-locks/exempt.tsv" ]]
 }
