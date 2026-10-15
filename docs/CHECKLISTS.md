@@ -170,40 +170,13 @@ merge into Protocol 4; this copy was removed so there is one source of truth.
 "Done" means: PR exists, CI passes, PR review analyzed, all issues resolved.
 "Done" does NOT mean: code written, tests pass locally, committed.
 
-Banned phrases until the PR is merged: "production ready", "ready for review", "all done", "changes are complete". (Canonical wording: CLAUDE.md § Completion Protocol. The staged template below is retained for reference and is being reshaped in follow-up work.)
+Banned phrases until the PR is merged: "production ready", "ready for review", "all done", "changes are complete".
 
-```
-📋 COMPLETION VERIFICATION:
+What to state on completion lives in `~/.claude/CLAUDE.md` (§ Completion Protocol). Use that one.
 
-STAGE 1 - LOCAL REVIEW:
-  [✓] Code reviewed by: [agent]
-  [✓] Verdict: [result]
-  [✓] Issues fixed: [count]
-
-STAGE 2 - COMMIT:
-  [✓] Commit hash: [hash]
-  [✓] Branch: [branch-name]
-  [✓] Message format: [verified]
-
-STAGE 3 - PUSH:
-  [✓] Pushed to: [remote/branch]
-  [✓] Push successful: [Y/N]
-
-STAGE 4 - PR CREATED:
-  [✓] PR number: [#NNN]
-  [✓] URL: [link]
-
-STAGE 5 - CI/CD STATUS:
-  [✓] CI status: [waiting/passed/failed]
-  [✓] If failed: [action taken]
-
-STAGE 6 - PR REVIEW ANALYSIS:
-  [✓] Automated reviews: [analyzed]
-  [✓] Issues found: [count or "none"]
-  [✓] Action needed: [describe or "none"]
-
-ALL STAGES COMPLETE: [YES/NO]
-```
+A six-stage `COMPLETION VERIFICATION` template used to sit here, marked as awaiting a
+reshape. Two completion descriptions drift the same way the two pre-commit blocks did,
+so this copy was removed.
 
 ---
 
