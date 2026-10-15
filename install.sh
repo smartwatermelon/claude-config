@@ -89,6 +89,8 @@ _report_version() {
     _err "claude-config: install of ${INSTALL_VERSION} failed (exit ${rc})"
   elif [[ "${DRY_RUN}" == true ]]; then
     _info "claude-config: dry run of ${INSTALL_VERSION}; nothing installed"
+  elif [[ "${REPAIR_ONLY}" == true ]]; then
+    _ok "claude-config: repaired links for ${INSTALL_VERSION}; no new files installed"
   else
     if ! { mkdir -p "${VERSION_STATE%/*}" && printf '%s\n' "${INSTALL_VERSION}" >"${VERSION_STATE}"; }; then
       _warn "could not record the version in ${VERSION_STATE}"

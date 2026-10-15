@@ -54,12 +54,35 @@ run_install() {
   [[ ! -e "${FAKE_STATE}/claude-config/version" ]]
 }
 
-@test "a successful run reports and records the installed version" {
-  run run_install --repair
+@test "a successful install reports and records the installed version" {
+  # A full --sync cannot pass its smoke tests in this fixture, so run only
+  # the Version block, cut from install.sh by its markers, and exit 0.
+  sed -n '/^# ── Version ──/,/^trap _report_version EXIT$/p' \
+    "${FAKE_REPO}/install.sh" >"${TMPDIR_TEST}/block.sh"
+  grep -q '^trap _report_version EXIT$' "${TMPDIR_TEST}/block.sh"
+  cat >"${TMPDIR_TEST}/runner.sh" <<'EOF'
+_info() { echo "$*"; }
+_ok() { echo "$*"; }
+_warn() { echo "$*"; }
+_err() { echo "$*"; }
+# shellcheck source=/dev/null
+source "$1"
+EOF
+  run env REPO_DIR="${FAKE_REPO}" DRY_RUN=false REPAIR_ONLY=false \
+    HOME="${FAKE_HOME}" XDG_STATE_HOME="${FAKE_STATE}" \
+    bash "${TMPDIR_TEST}/runner.sh" "${TMPDIR_TEST}/block.sh"
   [ "${status}" -eq 0 ]
   [[ "${output}" == *"claude-config: installed v1.2.3"* ]]
   run cat "${FAKE_STATE}/claude-config/version"
   [ "${output}" = "v1.2.3" ]
+}
+
+@test "a repair run does not claim an install or record a version" {
+  run run_install --repair
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"claude-config: repaired links for v1.2.3; no new files installed"* ]]
+  [[ "${output}" != *"claude-config: installed"* ]]
+  [[ ! -e "${FAKE_STATE}/claude-config/version" ]]
 }
 
 @test "commits past the tag and uncommitted changes show in the version" {
