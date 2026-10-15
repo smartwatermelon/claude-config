@@ -3,10 +3,14 @@
 #
 # Rules file: ${GATE_RULES_FILE:-${HOME}/.claude/gate-rules.conf}
 # One rule per line: "<matcher> <outcome>". First match wins.
-#   matcher: repo=<owner/name> | author=<login> | owner=<login> | fork=<login> | *
+#   matcher: repo=<owner/name> | author=<login> | owner=<login> | fork=<login> | visibility=private | *
 #   outcome: pangram | visual | exempt
 
 # fork=<login>: owner=<login> and GitHub says fork. Unknown never matches, so keep only gated rules below it.
+
+# visibility=private: GitHub says the github.com owner/name is private. Unknown never matches.
+
+# Below the first fork= or visibility= rule, every other rule must be gated.
 
 # --publish: gh posts from the --dir checkout. For a fork, unknown, or second remote: origin or `*`, the stricter.
 
@@ -67,6 +71,14 @@ _load_rules_inner() {
       author=?*)
         kind="author"
         value="${matcher#author=}"
+        ;;
+      visibility=?*)
+        kind="visibility"
+        value="${matcher#visibility=}"
+        if [[ "${value,,}" != "private" ]]; then
+          echo "gate-route: ${file}:${lineno}: visibility value must be 'private': '${matcher}'" >&2
+          return 4
+        fi
         ;;
       owner=?* | fork=?*)
         kind="${matcher%%=*}"
@@ -132,6 +144,13 @@ _match_rule() {
           return 0
         fi
         ;;
+      visibility)
+        # Only a proven private repo matches; public and unknown both skip the rule.
+        if [[ "${host}" == "github.com" && "${repo}" =~ ^[^/]+/[^/]+$ ]] && _is_private "${repo}"; then
+          printf '%s\t%d\tmatched visibility=%s\n' "${RULE_OUTCOME[i]}" "$((i + 1))" "${RULE_VALUE[i]}"
+          return 0
+        fi
+        ;;
       any)
         printf '%s\t%d\tno rule matched, default\n' "${RULE_OUTCOME[i]}" "$((i + 1))"
         return 0
@@ -147,16 +166,24 @@ _match_rule() {
 }
 
 # _is_fork <owner/name>: 0 fork, 1 not a fork, 2 unknown. Callers treat 2 as not proven (gated).
+_is_fork() { _repo_flag fork "${GATE_FORK_CACHE_TTL:-604800}" "$1"; }
 
-# Cache: gate-review/fork-cache/, which the write hooks guard. Answers only, 7 days; failures never.
-_is_fork() {
-  local repo="${1,,}" dir file ans="" now mtime ttl="${GATE_FORK_CACHE_TTL:-604800}"
+# _is_private <owner/name>: 0 private, 1 public, 2 unknown. Callers treat 2 as not proven (gated).
+
+# Cached one day, not seven: a repo made public stays exempt until the answer expires.
+_is_private() { _repo_flag private "${GATE_PRIVATE_CACHE_TTL:-86400}" "$1"; }
+
+# _repo_flag <field> <ttl seconds> <owner/name>: GitHub's boolean <field>. 0 true, 1 false, 2 unknown.
+
+# Cache: gate-review/<field>-cache/, which the write hooks guard. Answers only; failures never.
+_repo_flag() {
+  local field="$1" ttl="$2" repo="${3,,}" dir file ans="" now mtime
   [[ "${repo}" =~ ^[a-z0-9._-]+/[a-z0-9._-]+$ ]] || return 2
   case "/${repo}/" in
     */./* | */../*) return 2 ;;
     *) ;;
   esac
-  dir="${GATE_REVIEW_DIR:-${HOME}/.claude/gate-review}/fork-cache/${repo%%/*}"
+  dir="${GATE_REVIEW_DIR:-${HOME}/.claude/gate-review}/${field}-cache/${repo%%/*}"
   file="${dir}/${repo#*/}"
   if [[ -f "${file}" ]]; then
     now="$(date +%s)"
@@ -168,7 +195,7 @@ _is_fork() {
     fi
   fi
   if [[ "${ans}" != "true" && "${ans}" != "false" ]]; then
-    ans="$("${GATE_GH:-gh}" api "repos/${repo}" --jq '.fork' 2>/dev/null </dev/null || true)"
+    ans="$("${GATE_GH:-gh}" api "repos/${repo}" --jq ".${field}" 2>/dev/null </dev/null || true)"
     if [[ "${ans}" == "true" || "${ans}" == "false" ]]; then
       mkdir -p "${dir}" 2>/dev/null && printf '%s\n' "${ans}" >"${file}" 2>/dev/null || true
     fi

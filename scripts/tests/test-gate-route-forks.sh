@@ -27,6 +27,8 @@ export GATE_GH
 export GATE_RULES_FILE="${SCRIPTS}/../gate-rules.conf"
 export GATE_TEST_FORKS="nightowlstudiollc/forked twistedmelonman/forkx beacon-biosignals/forked"
 export GATE_TEST_GH_FAIL="nightowlstudiollc/broken smartwatermelon/offline"
+# Private repos (dev-env#206). nightowlstudiollc/broken is listed but its lookups fail.
+export GATE_TEST_PRIVATE="nightowlstudiollc/kebab-tax beacon-biosignals/secret nightowlstudiollc/broken"
 export GATE_TEST_GH_LOG="${TMP}/gh.log"
 # A length checker that passes everything, as in test-hook-personify-route.sh.
 mkdir -p "${CLAUDE_CONFIG_DIR}/plugins" "${TMP}/personify/scripts"
@@ -63,6 +65,8 @@ _mkrepo "${TMP}/tmfork" twistedmelonman/forkx
 _mkrepo "${TMP}/swm" smartwatermelon/plain
 _mkrepo "${TMP}/swmup" smartwatermelon/superpowers obra/superpowers
 _mkrepo "${TMP}/offline" smartwatermelon/offline
+_mkrepo "${TMP}/kebab" nightowlstudiollc/kebab-tax
+_mkrepo "${TMP}/bbsecret" beacon-biosignals/secret
 TXT="${TMP}/msg.txt"
 printf 'fix(x): text nobody approved\n' >"${TXT}"
 
@@ -89,6 +93,15 @@ _case "crazy-larry: gated (pangram)" 2 "no Pangram check ran" "${TMP}/larry" "gi
 _case "beacon-workspace: exempt, even inline" 0 "" "${TMP}/workspace" "git commit -m 'notes'"
 _case "twistedmelonman fork: exempt" 0 "" "${TMP}/tmfork" "git commit -F ${TXT}"
 
+# --- private repos (dev-env#206) ----------------------------------------------
+_case "private NOS repo: exempt" 0 "" "${TMP}/kebab" "git commit -F ${TXT}"
+_case "private beacon repo: gated (pangram)" 2 "no Pangram check ran" "${TMP}/bbsecret" "git commit -F ${TXT}"
+_case "private NOS repo, lookup fails: gated (pangram)" 2 "no Pangram check ran" "${TMP}/nosbroken" "git commit -F ${TXT}"
+_case "private NOS checkout, no -R: exempt" 0 "" "${TMP}/kebab" \
+  "gh pr create --title t --body-file ${TXT}"
+_case "-R private NOS repo from a smartwatermelon checkout: exempt" 0 "" "${TMP}/swm" \
+  "gh pr create -R nightowlstudiollc/kebab-tax --title t --body-file ${TXT}"
+
 # --- gh text posted from a checkout -----------------------------------------
 _case "upstream PR from a fork checkout, no -R: gated" 2 "no visual approval" "${TMP}/tmfork" \
   "gh pr create --title t --body-file ${TXT}"
@@ -110,7 +123,8 @@ _case "lookup fails, commit is not gh-posted: exempt" 0 "" "${TMP}/offline" "git
 
 # --- the cache --------------------------------------------------------------
 CACHE="${GATE_REVIEW_DIR}/fork-cache"
-if [[ "$(cat "${CACHE}/twistedmelonman/forkx" 2>/dev/null)" == "true" ]]; then
+cached="$(cat "${CACHE}/twistedmelonman/forkx" 2>/dev/null || true)"
+if [[ "${cached}" == "true" ]]; then
   _ok "a fork answer is cached under gate-review/fork-cache"
 else
   _no "a fork answer is cached under gate-review/fork-cache"
@@ -126,7 +140,8 @@ _case "cached: smartwatermelon checkout still exempt" 0 "" "${TMP}/swm" \
 if [[ ! -s "${GATE_TEST_GH_LOG}" ]]; then
   _ok "a cached answer makes no gh call"
 else
-  _no "a cached answer makes no gh call: $(tr '\n' ' ' <"${GATE_TEST_GH_LOG}")"
+  calls="$(tr '\n' ' ' <"${GATE_TEST_GH_LOG}" || true)"
+  _no "a cached answer makes no gh call: ${calls}"
 fi
 printf 'garbage\n' >"${CACHE}/smartwatermelon/plain"
 _case "a bad cache entry is looked up again" 0 "" "${TMP}/swm" \
