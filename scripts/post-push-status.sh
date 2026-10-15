@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
-# post-push-status.sh <pr_number>
-# Output: CI_STATE=<state> + FINDING lines
-# PAT-compatible: uses gh api GraphQL/REST, not gh pr checks.
+# post-push-status.sh <N | OWNER/REPO#N | PR URL>
+# Stdout: RESOLVED_PR, CI_STATE, FINDING lines. Uses gh api (PAT-safe).
 set -euo pipefail
 
-PR_NUMBER="${1:?Usage: post-push-status.sh <pr_number>}"
+PR_ARG="${1:?Usage: post-push-status.sh <N | OWNER/REPO#N | PR URL>}"
+
+# Owner and name are each one path segment: no slashes, no "." or "..".
+# Same rules as validate_repo_slug in hooks/merge-lock.sh.
+validate_repo_slug() {
+  local slug="$1"
+  local owner="${slug%%/*}"
+  local name="${slug#*/}"
+  [[ "${slug}" == */* ]] || return 1
+  [[ "${name}" != */* ]] || return 1
+  [[ "${owner}" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+  [[ "${name}" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1
+  [[ "${owner}" != "." && "${owner}" != ".." ]] || return 1
+  [[ "${name}" != "." && "${name}" != ".." ]] || return 1
+  return 0
+}
 
 # Resolve owner and repo from a git remote URL. Echoes "<owner> <repo>";
 # returns nonzero when the URL carries no owner/repo pair.
@@ -59,39 +73,115 @@ parse_remote_url() {
 
 OWNER="${POSTPUSH_OWNER:-}"
 REPO="${POSTPUSH_REPO:-}"
+# 1 when the caller named the repo, so the PR need not match the local HEAD.
+EXPLICIT_REPO=0
+if [[ -n "${OWNER}" ]] && [[ -n "${REPO}" ]]; then
+  EXPLICIT_REPO=1
+fi
 
-if [[ -z "${OWNER}" ]] || [[ -z "${REPO}" ]]; then
-  REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
-  if [[ -z "${REMOTE_URL}" ]]; then
-    echo "ERROR: no git remote 'origin' found" >&2
+# Same notation as merge-lock's normalize_pr_entry, minus `name#N`:
+# its owner would come from the cwd.
+_pr_ref="${PR_ARG}"
+if [[ "${_pr_ref}" =~ ^https?://github\.com/([^/[:space:]]+/[^/[:space:]]+)/pull/([0-9]+)/?$ ]]; then
+  _pr_ref="${BASH_REMATCH[1]}#${BASH_REMATCH[2]}"
+fi
+_pr_ref="${_pr_ref#\#}"
+if [[ "${_pr_ref}" == *"#"* ]]; then
+  _slug="${_pr_ref%%#*}"
+  PR_NUMBER="${_pr_ref#*#}"
+  if ! validate_repo_slug "${_slug}"; then
+    echo "ERROR: invalid repo '${_slug}' in '${PR_ARG}' (expected OWNER/REPO#N)" >&2
     exit 1
   fi
-  if PARSED=$(parse_remote_url "${REMOTE_URL}"); then
-    OWNER="${PARSED%% *}"
-    REPO="${PARSED##* }"
+  OWNER="${_slug%%/*}"
+  REPO="${_slug#*/}"
+  EXPLICIT_REPO=1
+else
+  PR_NUMBER="${_pr_ref}"
+fi
+if [[ ! "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: invalid PR '${PR_ARG}' (expected N, OWNER/REPO#N, or a PR URL)" >&2
+  exit 1
+fi
+
+# owner/repo of the cwd's origin, or empty. Used to resolve a bare N and to
+# name the local checkout when the PR head does not match it.
+LOCAL_SLUG=""
+REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+if [[ -n "${REMOTE_URL}" ]] && PARSED=$(parse_remote_url "${REMOTE_URL}"); then
+  LOCAL_SLUG="${PARSED%% *}/${PARSED##* }"
+fi
+
+if [[ -z "${OWNER}" ]] || [[ -z "${REPO}" ]]; then
+  if [[ -z "${REMOTE_URL}" ]]; then
+    echo "ERROR: no git remote 'origin' found" >&2
+    echo "  Pass OWNER/REPO#N to name the repo explicitly." >&2
+    exit 1
+  fi
+  if [[ -n "${LOCAL_SLUG}" ]]; then
+    OWNER="${LOCAL_SLUG%%/*}"
+    REPO="${LOCAL_SLUG#*/}"
   else
     echo "ERROR: cannot parse owner/repo from remote: ${REMOTE_URL}" >&2
-    echo "  Override with POSTPUSH_OWNER=<owner> POSTPUSH_REPO=<repo>" >&2
+    echo "  Pass OWNER/REPO#N, or set POSTPUSH_OWNER=<owner> POSTPUSH_REPO=<repo>" >&2
     exit 1
   fi
 fi
 
 echo "RESOLVED_OWNER=${OWNER} RESOLVED_REPO=${REPO}" >&2
+# On stdout too: a caller that greps stdout for CI_STATE must also be able to
+# see which PR that state belongs to (claude-config#714).
+echo "RESOLVED_PR=${OWNER}/${REPO}#${PR_NUMBER}"
 
-# Preflight: confirm the PR exists in the resolved repo before continuing.
-# Without this, running from the wrong CWD silently polls the wrong repo and
-# produces confusing downstream errors (jq blowups on 404 error bodies etc).
-if ! gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}" --jq '.number' >/dev/null 2>&1; then
+# Preflight: fetch state and head SHA. Fields are space-separated and
+# never empty, so `read` cannot shift them.
+PR_META=$(gh api "repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}" \
+  --jq '"\(.state) \(if .merged_at then "merged" else "unmerged" end) \(.head.sha)"' 2>/dev/null || echo "")
+PR_STATE="" PR_MERGED="" PR_HEAD_SHA=""
+read -r PR_STATE PR_MERGED PR_HEAD_SHA <<<"${PR_META}" || true
+if [[ -z "${PR_STATE}" ]] || [[ ! "${PR_HEAD_SHA}" =~ ^[0-9a-f]+$ ]]; then
   echo "ERROR: PR #${PR_NUMBER} not found in ${OWNER}/${REPO}." >&2
-  echo "  If the PR is in a different repo, set POSTPUSH_OWNER=<owner> POSTPUSH_REPO=<repo>" >&2
+  echo "  If the PR is in a different repo, pass OWNER/REPO#N" >&2
   echo "  or re-run from that repo's directory." >&2
   exit 1
 fi
 
+# A merged or closed PR's rollup says nothing about the push being polled.
+if [[ "${PR_STATE}" != "open" ]]; then
+  if [[ "${PR_MERGED}" == "merged" ]]; then
+    _state_word="MERGED"
+  else
+    _state_word="CLOSED"
+  fi
+  echo "PR_STATE=${_state_word}: ${OWNER}/${REPO}#${PR_NUMBER} is ${_state_word}, so its CI does not describe a new push. If you meant a PR in another repo, pass OWNER/REPO#N."
+  echo "CI_STATE=UNKNOWN"
+  exit 2
+fi
+
 CURRENT_COMMIT="${POSTPUSH_CURRENT_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo "")}"
 if [[ -z "${CURRENT_COMMIT}" ]]; then
-  echo "ERROR: cannot determine current commit" >&2
-  exit 1
+  if [[ "${EXPLICIT_REPO}" -eq 1 ]]; then
+    # No local checkout to compare against; the caller named the repo, so
+    # filter findings by the PR head.
+    CURRENT_COMMIT="${PR_HEAD_SHA}"
+  else
+    echo "ERROR: cannot determine current commit" >&2
+    exit 1
+  fi
+fi
+
+# PR numbers collide across repos (#714). With a bare N, a head mismatch
+# may mean the wrong PR, so the rollup is not trusted.
+if [[ "${CURRENT_COMMIT}" != "${PR_HEAD_SHA}" ]]; then
+  _local_desc="local HEAD in ${LOCAL_SLUG:-(no parsable origin)} ($(pwd))"
+  echo "WARNING: HEAD_MISMATCH: ${OWNER}/${REPO}#${PR_NUMBER} head is ${PR_HEAD_SHA}, but ${_local_desc} is ${CURRENT_COMMIT}."
+  if [[ "${EXPLICIT_REPO}" -eq 0 ]]; then
+    echo "  The PR number may belong to another repo, or the push has not landed yet. Pass OWNER/REPO#N to poll a PR from another checkout."
+    echo "CI_STATE=UNKNOWN"
+    exit 3
+  fi
+  echo "  The repo was named explicitly, so polling continues; findings are filtered by the PR head."
+  CURRENT_COMMIT="${PR_HEAD_SHA}"
 fi
 
 COMMIT_TIMESTAMP="${POSTPUSH_COMMIT_TIMESTAMP:-$(TZ=UTC git show -s --format=%cd --date=format:'%Y-%m-%dT%H:%M:%SZ' "${CURRENT_COMMIT}" 2>/dev/null || echo "")}"
