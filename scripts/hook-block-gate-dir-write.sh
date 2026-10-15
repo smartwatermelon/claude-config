@@ -7,6 +7,7 @@
 #   ~/.config/personify/stamps/  Human approval stamps
 #   ~/.claude/gate-rules.conf    destination routing rules (a file)
 #   ~/.claude/merge-lock-policy.conf  which PRs need a merge-lock (a file)
+#   ~/.claude/copy-paths.conf    which files are public-facing copy (a file)
 #
 # THE HOLE THIS CLOSES. hook-block-merge-locks-write.sh is registered for the
 # Write and Edit matchers only, and reads tool_input.file_path. A Bash `cp`
@@ -56,7 +57,9 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # `scripts/gate-rules-notes.md` and the repo's own `gate-rules.conf` (edited
 # through a human-reviewed PR) unmatched. The hook does not resolve symlinks,
 # so only the deployed spelling is covered.
-_dirs='(\.claude/(merge-locks|gate-review)/|\.config/personify/(checks|stamps)/|\.claude/(gate-rules|merge-lock-policy)\.conf)'
+#
+# copy-paths.conf likewise decides which files' text needs approval (dev-env#206).
+_dirs='(\.claude/(merge-locks|gate-review)/|\.config/personify/(checks|stamps)/|\.claude/(gate-rules|merge-lock-policy|copy-paths)\.conf)'
 
 # A verb counts only in COMMAND POSITION -- at the start of the line or just
 # after a separator. Without this anchor the alternation matched the letters
