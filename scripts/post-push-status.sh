@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # post-push-status.sh <N | OWNER/REPO#N | PR URL>
 # Stdout: RESOLVED_PR, CI_STATE, FINDING lines. Uses gh api (PAT-safe).
+
+# Exit 2: PR merged/closed (PR_STATE= line). Exit 3: PR head is not the
+# local HEAD (HEAD_MISMATCH). Both print CI_STATE=UNKNOWN.
 set -euo pipefail
 
 PR_ARG="${1:?Usage: post-push-status.sh <N | OWNER/REPO#N | PR URL>}"
