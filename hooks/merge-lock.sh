@@ -514,17 +514,25 @@ create_merge_lock() {
   local user
   user=$(whoami)
 
-  mkdir -p "$(dirname "${lock_file}")"
-  {
+  # Row first, lock second (#597): a kill between the two leaves a row, never a lock without one.
+  mkdir -p "${LOCK_DIR}" "$(dirname "${lock_file}")"
+  if ! append_ledger "${ts}" "${repo}" "${pr_number}" "${ttl}" "${user}" "${reason}"; then
+    echo -e "${RED}[merge-lock]${NC} Lock for ${repo}#${pr_number} NOT created: could not append to the ledger ${LEDGER_FILE}. A lock without a ledger row would look like an unauthorized merge to the audit. Fix the ledger path or permissions and authorize again." >&2
+    exit 1
+  fi
+
+  if ! {
     echo "PR_NUMBER=${pr_number}"
     echo "REPO=${repo}"
     echo "AUTHORIZED_BY=${user}"
     echo "TIMESTAMP=${ts}"
     echo "TTL_SECONDS=${ttl}"
     echo "REASON=${reason}"
-  } >"${lock_file}"
-
-  append_ledger "${ts}" "${repo}" "${pr_number}" "${ttl}" "${user}" "${reason}"
+  } >"${lock_file}"; then
+    rm -f "${lock_file}"
+    echo -e "${RED}[merge-lock]${NC} Lock for ${repo}#${pr_number} NOT created: could not write ${lock_file}." >&2
+    exit 1
+  fi
 
   echo -e "${GREEN}[merge-lock]${NC} Authorization created for ${repo}#${pr_number}"
   echo -e "${GREEN}[merge-lock]${NC} Valid for $((ttl / 60)) minutes"

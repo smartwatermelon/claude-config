@@ -287,3 +287,37 @@ age_lock() {
   [ "${status}" -eq 0 ]
   [[ "${output}" == *"m left"* ]]
 }
+
+# --- ledger failure fails closed (claude-config#597) -------------------------
+
+ledger_file() {
+  echo "${TMP_HOME}/.claude/merge-locks/ledger.tsv"
+}
+
+# A directory where the ledger file belongs makes every append fail, even for
+# root, without needing chmod.
+break_ledger() {
+  mkdir -p "$(ledger_file)"
+}
+
+@test "a failed ledger append exits non-zero and leaves no lock behind" {
+  break_ledger
+  run bash "${SCRIPT}" auth 100 "ok"
+  [ "${status}" -ne 0 ]
+  [ ! -e "$(lock_file 100)" ]
+  [[ "${output}" == *"NOT created"* ]]
+}
+
+@test "a failed ledger append leaves no lock for check to accept" {
+  break_ledger
+  run bash "${SCRIPT}" auth 100 "ok"
+  run bash "${SCRIPT}" check 100
+  [ "${status}" -ne 0 ]
+}
+
+@test "a working ledger records a row alongside the lock" {
+  run bash "${SCRIPT}" auth 100 "ok"
+  [ "${status}" -eq 0 ]
+  [ -f "$(lock_file 100)" ]
+  grep -q "acme/widgets	100	1800" "$(ledger_file)"
+}
