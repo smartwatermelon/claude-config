@@ -407,7 +407,10 @@ import shlex
 import sys
 
 try:
-    words = shlex.split(sys.argv[1], posix=True)
+    # Split ; & | into their own words, so `x.py ...; echo $?` ends the scan at the ;.
+    lexer = shlex.shlex(sys.argv[1], posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    words = list(lexer)
 except ValueError:
     print(1)
     sys.exit(0)
@@ -420,7 +423,7 @@ for i, word in enumerate(words):
         continue
     rest = words[i + 1:]
     for j, arg in enumerate(rest):
-        if arg in ("&&", "||", ";", "|"):
+        if arg and set(arg) <= set(";&|"):
             break
         if named and ("$" in arg or "`" in arg):
             asked = 1

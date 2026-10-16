@@ -266,6 +266,15 @@ _case "variable with no -k flag: untouched" 0 "" "${TMP}" "echo \$HOME copy"
 _case "commit message naming the command: untouched" 0 "" "${TMP}" \
   "echo \"\$(printf 'run pangram_check.py --kind copy')\" > /dev/null"
 _case "grep for the name with a pipe: untouched" 0 "" "${TMP}" "grep -rn pangram_check scripts | head -5"
+# A ; with no space before it still ends the call; what follows is another command (seen live 2026-10-15).
+_case "routed call, then ; echo \$?: untouched" 0 "" "${TMP}" \
+  "${PC} --kind pr --dir ${SITE} < ${OUTSIDE}; echo \"exit=\$?\""
+_case "grep of the script path, then ; and a variable: untouched" 0 "" "${TMP}" \
+  "grep -c route ${TMP}/personify/scripts/pangram_check.py; echo \"\$HOME\""
+_case "--kind copy after a ; with no space: still blocked" 2 "shell syntax" "${TMP}" \
+  "echo hi;${PC} --kind copy < ${OUTSIDE}"
+_case "--kind copy before a ; with no space: still blocked" 2 "shell syntax" "${TMP}" \
+  "${PC} --kind copy < ${OUTSIDE};echo hi"
 _case "quoted --dir, no copy: untouched" 0 "" "${TMP}" "${PC} --kind pr --dir \"${SITE}\" < ${OUTSIDE}"
 
 echo ""
