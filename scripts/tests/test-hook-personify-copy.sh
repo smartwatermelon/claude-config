@@ -250,6 +250,12 @@ _case "-kcopy outside: blocked" 2 "unexpected argument" "${TMP}" "${PC} -kcopy <
 _case "escaped script name, --kind copy outside: blocked" 2 "shell syntax" "${TMP}" \
   "python3 ${TMP}/personify/scripts/pangram_che\\ck.py --kind copy < ${OUTSIDE}"
 _case "unbalanced quote: blocked" 2 "shell syntax" "${TMP}" "${PC} --kind copy < '${OUTSIDE}"
+_case "globbed script name, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 ${TMP}/personify/scripts/pangram_che*.py --kind copy < ${OUTSIDE}"
+_case "script name from a variable, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 \${P}/pangram_check.py --kind copy < ${OUTSIDE}"
+_case "substituted script name, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 \$(ls ${TMP}/personify/scripts/pangram*) --kind copy < ${OUTSIDE}"
 _case "grep for the name with a pipe: untouched" 0 "" "${TMP}" "grep -rn pangram_check scripts | head -5"
 _case "quoted --dir, no copy: untouched" 0 "" "${TMP}" "${PC} --kind pr --dir \"${SITE}\" < ${OUTSIDE}"
 

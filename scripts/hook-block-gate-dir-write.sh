@@ -61,9 +61,13 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 #
 # copy-paths.conf likewise decides which files' text needs approval (dev-env#206).
 #
-# route-command names pangram_check.py's router; repointing it reroutes paid calls. The tail ends the name.
-_route_file='\.config/personify/route-command([^[:alnum:]_.-]|$)'
-_dirs='(\.claude/(merge-locks|gate-review)/|\.config/personify/(checks|stamps)/|\.claude/(gate-rules|merge-lock-policy|copy-paths)\.conf|'"${_route_file}"')'
+# route-command names pangram_check.py's router; repointing it reroutes paid calls. No .config anchor: $XDG_CONFIG_HOME spellings count.
+_route_name='personify/route-command'
+_route_file="${_route_name}([^[:alnum:]_.-]|\$)"
+_dirs_base='\.claude/(merge-locks|gate-review)/|\.config/personify/(checks|stamps)/|\.claude/(gate-rules|merge-lock-policy|copy-paths)\.conf'
+_dirs="(${_dirs_base}|${_route_file})"
+# For cp/mv targets: the tail would eat the space after the name and let `cp -p <file> /tmp/x` read as a write.
+_dirs_last="(${_dirs_base}|${_route_name})"
 
 # A verb counts only in COMMAND POSITION -- at the start of the line or just
 # after a separator. Without this anchor the alternation matched the letters
@@ -82,7 +86,7 @@ _cmdpos="(^|&&|\\|\\||;|\\||&|\\(|\\{|${_bt}|[[:space:]]then[[:space:]]|[[:space
 #
 # `cp`/`mv` are matched only when the dir appears as the LAST token: copying
 # OUT of the dir is a read and must pass.
-_verb_last="${_cmdpos}(cp|mv|install)[[:space:]]+[^|;&]*[[:space:]][^[:space:]|;&]*${_dirs}[^[:space:]|;&]*[[:space:]]*($|[|;&])"
+_verb_last="${_cmdpos}(cp|mv|install)[[:space:]]+[^|;&]*[[:space:]][^[:space:]|;&]*${_dirs_last}[^[:space:]|;&]*[[:space:]]*($|[|;&])"
 
 # These take the target anywhere and are never reads.
 _verb_any="${_cmdpos}(rm|rmdir|unlink|touch|ln|mkdir|chmod|chown|truncate|dd|tee)[[:space:]]+[^|;&]*${_dirs}"

@@ -765,6 +765,12 @@ _bcase "${DIRWRITE}" "cat the route-command file (read)" \
   'cat ~/.config/personify/route-command' 0
 _bcase "${DIRWRITE}" "cp OUT of the route-command file (read)" \
   'cp ~/.config/personify/route-command /tmp/rc.bak' 0
+_bcase "${DIRWRITE}" "cp -p OUT of the route-command file (read)" \
+  'cp -p ~/.config/personify/route-command /tmp/rc.bak' 0
+_bcase "${DIRWRITE}" "redirect over the route-command file via XDG_CONFIG_HOME" \
+  "echo /tmp/fake > \"\${XDG_CONFIG_HOME}/personify/route-command\"" 2
+_bcase "${DIRWRITE}" "rm the route-command file via XDG_CONFIG_HOME" \
+  "rm \"\$XDG_CONFIG_HOME/personify/route-command\"" 2
 _bcase "${DIRWRITE}" "a sibling that only shares the route-command prefix" \
   'echo x > ~/.config/personify/route-command.notes' 0
 

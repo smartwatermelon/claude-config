@@ -412,6 +412,9 @@ except ValueError:
     print(1)
     sys.exit(0)
 asked = 0
+# A glob, variable or substitution can spell the script name; with a copy word too, count it.
+if any(c in sys.argv[1] for c in "$`*?[") and any("copy" in w for w in words):
+    asked = 1
 for i, word in enumerate(words):
     if not word.endswith("pangram_check.py"):
         continue
@@ -435,9 +438,9 @@ PY
 _pangram_copy_guard() {
   local text="${_joined}" stripped asked w i path dir real_out n
   local -a words
-  # Strip quotes and backslashes first, so pangram_che\ck still matches.
+  # Strip quotes and backslashes first, so pangram_che\ck still matches; a glob can stand in for _check.
   stripped="${text//[\\\"\']/}"
-  [[ "${stripped}" == *pangram_check* ]] || return 0
+  [[ "${stripped}" == *pangram* ]] || return 0
   asked="$(_pangram_copy_asked "${text}")" || _deny_pangram_copy "could not parse the command"
   [[ "${asked}" == 1 ]] || return 0
 
