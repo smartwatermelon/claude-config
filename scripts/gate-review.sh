@@ -178,10 +178,15 @@ _personify_path() {
   return 1
 }
 
+# _check_hint <file> [--kind K] [--repo R] [--dir D]: the check command, with the destination flags pangram_check.py routes by.
 _check_hint() {
-  local file="$1" install_path
+  local file="$1" install_path flags="" arg
+  shift
+  for arg in "$@"; do
+    flags+=" $(printf '%q' "${arg}")"
+  done
   if install_path="$(_personify_path 2>&1)"; then
-    printf 'python3 %s/scripts/pangram_check.py < %s\n' "${install_path}" "${file}"
+    printf 'python3 %s/scripts/pangram_check.py%s < %s\n' "${install_path}" "${flags}" "${file}"
   else
     printf '%s\n' "${install_path}"
   fi
@@ -413,7 +418,11 @@ _cmd_stage() {
   record="$(_record_path "${file}")"
   if [[ "${outcome}" == "pangram" && ! -f "${record}" ]]; then
     local hint
-    hint="$(_check_hint "${file}")"
+    if [[ "${kind}" == "copy" ]]; then
+      hint="$(_check_hint "${file}" --kind copy)"
+    else
+      hint="$(_check_hint "${file}" --kind "${kind}" --dir "${here}")"
+    fi
     {
       echo "gate-review: no Pangram check record for ${file}."
       echo "gate-review: run the personify check on this exact file, then stage again:"
@@ -1262,10 +1271,10 @@ case "${1:-}" in
   check) shift; _cmd_check "$@" ;;
   # The command that writes a check record for <file>; the Bash-tool hook
   # prints it when check blocks a Pangram-gated text for want of a record.
-  hint) shift; _check_hint "${1:?usage: gate-review.sh hint <file>}" ;;
+  hint) shift; _check_hint "${1:?usage: gate-review.sh hint <file> [--kind K] [--repo R] [--dir D]}" "${@:2}" ;;
   measure) shift; _cmd_measure "$@" ;;
   route) shift; _cmd_route "$@" ;;
   personify-path) _personify_path ;;
   suspended) _cmd_suspended ;;
-  *) _die "usage: gate-review.sh {stage --kind <kind> <name> <file>|open|hash <file>|check [--kind <kind>] <file> [--repo owner/name] [--dir path]|measure --kind <kind> [--title T] [--repo owner/name] [--dir path] <body|route [--kind <kind>] [--repo owner/name] [--dir path]|hint <file>|personify-path|suspended}" ;;
+  *) _die "usage: gate-review.sh {stage --kind <kind> <name> <file>|open|hash <file>|check [--kind <kind>] <file> [--repo owner/name] [--dir path]|measure --kind <kind> [--title T] [--repo owner/name] [--dir path] <body|route [--kind <kind>] [--repo owner/name] [--dir path]|hint <file> [--kind <kind>] [--repo owner/name] [--dir path]|personify-path|suspended}" ;;
 esac

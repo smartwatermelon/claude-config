@@ -128,6 +128,7 @@ _case "staged copy change: blocked" 2 "public-facing copy that has not been appr
 _contains "  ... names the extract" "${err}" "extract: ${GATE_REVIEW_DIR}/copy/"
 _contains "  ... and the stage --kind copy step" "${err}" "stage --kind copy copy-"
 EX1="${extract}"
+_contains "  ... and the check hint names the copy kind" "${err}" "pangram_check.py --kind copy < ${EX1}"
 body="$(cat "${EX1}" 2>/dev/null)"
 _contains "  ... extract has the changed text" "${body}" "Export a tax report in two taps."
 _contains "  ... and not the unchanged text" "${body}" "Kebab keeps your receipts" absent
@@ -203,6 +204,69 @@ mkdir -p "${GATE_REVIEW_DIR}"
 printf '2999-12-31\n' >"${GATE_REVIEW_DIR}/SUSPENDED"
 COPY_PATHS_FILE="${TMP}/missing.conf" _case "SUSPENDED is the escape hatch" 0 "" "${OTHER}" "git commit -m x"
 rm -f "${GATE_REVIEW_DIR}/SUSPENDED"
+
+echo "--- route guard: pangram_check.py --kind copy reads only a copy extract ---"
+# --kind copy always routes to Pangram, so it must not run on arbitrary text.
+PC="python3 ${TMP}/personify/scripts/pangram_check.py"
+COPYDIR="${GATE_REVIEW_DIR}/copy"
+mkdir -p "${COPYDIR}"
+GOOD="${COPYDIR}/$(printf 'guard' | sha256sum | cut -d' ' -f1).txt"
+printf 'a copy extract\n' >"${GOOD}"
+OUTSIDE="${TMP}/x.md"
+printf 'some other text\n' >"${OUTSIDE}"
+ln -s "${OUTSIDE}" "${COPYDIR}/link.txt"
+_case "--kind copy < /tmp/x.md: blocked" 2 "not a copy extract" "${TMP}" "${PC} --kind copy < /tmp/x.md"
+_case "--kind copy from a file outside the copy dir: blocked" 2 "not a copy extract" "${TMP}" \
+  "${PC} --kind copy < ${OUTSIDE}"
+_case "--kind copy from a copy extract: allowed" 0 "" "${TMP}" "${PC} --kind copy < ${GOOD}"
+_case "--kind=copy from a copy extract: allowed" 0 "" "${TMP}" "${PC} --kind=copy < ${GOOD}"
+_case "copy extract with --dir too: allowed" 0 "" "${TMP}" "${PC} --kind copy --dir ${SITE} < ${GOOD}"
+_case "bare pangram_check.py path, no python3: allowed" 0 "" "${TMP}" \
+  "${TMP}/personify/scripts/pangram_check.py --kind copy < ${GOOD}"
+_case "--kind=copy outside: blocked" 2 "not a copy extract" "${TMP}" "${PC} --kind=copy < ${OUTSIDE}"
+_case "--ki copy (argparse prefix) outside: blocked" 2 "not a copy extract" "${TMP}" "${PC} --ki copy < ${OUTSIDE}"
+_case "quoted copy: blocked" 2 "shell syntax" "${TMP}" "${PC} --kind 'copy' < ${GOOD}"
+_case "variable kind: blocked" 2 "shell syntax" "${TMP}" "${PC} --kind \"\${K}\" < ${OUTSIDE}"
+_case "piped into --kind copy: blocked" 2 "shell syntax" "${TMP}" "cat ${OUTSIDE} | ${PC} --kind copy"
+_case "heredoc into --kind copy: blocked" 2 "more than one line" "${TMP}" "${PC} --kind copy <<EOF
+any text at all
+EOF"
+_case "no stdin redirect: blocked" 2 "one < redirect" "${TMP}" "${PC} --kind copy"
+_case "here-string into --kind copy: blocked" 2 "one < redirect" "${TMP}" "${PC} --kind copy <<< text"
+_case "relative stdin path: blocked" 2 "not absolute" "${TMP}" "${PC} --kind copy < x.md"
+_case ".. out of the copy dir: blocked" 2 ". or .." "${TMP}" "${PC} --kind copy < ${COPYDIR}/../../x.md"
+_case "symlink in the copy dir: blocked" 2 "not a regular file" "${TMP}" "${PC} --kind copy < ${COPYDIR}/link.txt"
+_case "a second command after it: blocked" 2 "shell syntax" "${TMP}" "${PC} --kind copy < ${GOOD} && echo hi"
+_case "an extra argument: blocked" 2 "unexpected argument" "${TMP}" "${PC} --kind copy --title x < ${GOOD}"
+_case "--kind commit with --dir: not copy, untouched" 0 "" "${TMP}" "${PC} --kind commit --dir ${SITE} < ${OUTSIDE}"
+_case "no --kind at all: untouched" 0 "" "${TMP}" "${PC} --repo acme/x < ${OUTSIDE}"
+_case "--check-key: untouched" 0 "" "${TMP}" "${PC} --check-key"
+_case "no pangram_check.py: untouched" 0 "" "${TMP}" "echo --kind copy < ${OUTSIDE}"
+# Quoting hides the flag from a plain text match; the guard reads unquoted words.
+_case "\"--kind\" copy outside: blocked" 2 "shell syntax" "${TMP}" "${PC} \"--kind\" copy < ${OUTSIDE}"
+_case "\\--kind copy outside: blocked" 2 "shell syntax" "${TMP}" "${PC} \\--kind copy < ${OUTSIDE}"
+_case "--k\\ind copy outside: blocked" 2 "shell syntax" "${TMP}" "${PC} --k\\ind copy < ${OUTSIDE}"
+_case "-kcopy outside: blocked" 2 "unexpected argument" "${TMP}" "${PC} -kcopy < ${OUTSIDE}"
+_case "escaped script name, --kind copy outside: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 ${TMP}/personify/scripts/pangram_che\\ck.py --kind copy < ${OUTSIDE}"
+_case "unbalanced quote: blocked" 2 "shell syntax" "${TMP}" "${PC} --kind copy < '${OUTSIDE}"
+_case "globbed script name, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 ${TMP}/personify/scripts/pangram_che*.py --kind copy < ${OUTSIDE}"
+_case "script name from a variable, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 \${P}/pangram_check.py --kind copy < ${OUTSIDE}"
+_case "substituted script name, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 \$(ls ${TMP}/personify/scripts/pangram*) --kind copy < ${OUTSIDE}"
+_case "script name hidden in a variable, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 \$SCRIPT --kind copy < ${OUTSIDE}"
+_case "script name hidden by a glob, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 /x/*_check.py --kind copy < ${OUTSIDE}"
+_case "script name hidden by a bracket glob, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 /x/p[a]ngram_check.py --kind copy < ${OUTSIDE}"
+_case "variable with no -k flag: untouched" 0 "" "${TMP}" "echo \$HOME copy"
+_case "commit message naming the command: untouched" 0 "" "${TMP}" \
+  "echo \"\$(printf 'run pangram_check.py --kind copy')\" > /dev/null"
+_case "grep for the name with a pipe: untouched" 0 "" "${TMP}" "grep -rn pangram_check scripts | head -5"
+_case "quoted --dir, no copy: untouched" 0 "" "${TMP}" "${PC} --kind pr --dir \"${SITE}\" < ${OUTSIDE}"
 
 echo ""
 echo "${pass} passed, ${fail} failed"

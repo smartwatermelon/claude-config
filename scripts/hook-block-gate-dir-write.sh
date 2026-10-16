@@ -8,6 +8,7 @@
 #   ~/.claude/gate-rules.conf    destination routing rules (a file)
 #   ~/.claude/merge-lock-policy.conf  which PRs need a merge-lock (a file)
 #   ~/.claude/copy-paths.conf    which files are public-facing copy (a file)
+#   ~/.config/personify/route-command  what pangram_check.py asks for a route (a file)
 #
 # THE HOLE THIS CLOSES. hook-block-merge-locks-write.sh is registered for the
 # Write and Edit matchers only, and reads tool_input.file_path. A Bash `cp`
@@ -59,7 +60,14 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # so only the deployed spelling is covered.
 #
 # copy-paths.conf likewise decides which files' text needs approval (dev-env#206).
-_dirs='(\.claude/(merge-locks|gate-review)/|\.config/personify/(checks|stamps)/|\.claude/(gate-rules|merge-lock-policy|copy-paths)\.conf)'
+#
+# route-command names pangram_check.py's router; repointing it reroutes paid calls. No .config anchor: $XDG_CONFIG_HOME spellings count.
+_route_name='personify/route-command'
+_route_file="${_route_name}([^[:alnum:]_.-]|\$)"
+_dirs_base='\.claude/(merge-locks|gate-review)/|\.config/personify/(checks|stamps)/|\.claude/(gate-rules|merge-lock-policy|copy-paths)\.conf'
+_dirs="(${_dirs_base}|${_route_file})"
+# For cp/mv targets: the tail would eat the space after the name and let `cp -p <file> /tmp/x` read as a write.
+_dirs_last="(${_dirs_base}|${_route_name})"
 
 # A verb counts only in COMMAND POSITION -- at the start of the line or just
 # after a separator. Without this anchor the alternation matched the letters
@@ -78,10 +86,14 @@ _cmdpos="(^|&&|\\|\\||;|\\||&|\\(|\\{|${_bt}|[[:space:]]then[[:space:]]|[[:space
 #
 # `cp`/`mv` are matched only when the dir appears as the LAST token: copying
 # OUT of the dir is a read and must pass.
-_verb_last="${_cmdpos}(cp|mv|install)[[:space:]]+[^|;&]*[[:space:]][^[:space:]|;&]*${_dirs}[^[:space:]|;&]*[[:space:]]*($|[|;&])"
+_verb_last="${_cmdpos}(cp|mv|install)[[:space:]]+[^|;&]*[[:space:]][^[:space:]|;&]*${_dirs_last}[^[:space:]|;&]*[[:space:]]*($|[|;&])"
 
 # These take the target anywhere and are never reads.
-_verb_any="${_cmdpos}(rm|rmdir|touch|ln|mkdir|chmod|chown|truncate|dd|tee)[[:space:]]+[^|;&]*${_dirs}"
+_verb_any="${_cmdpos}(rm|rmdir|unlink|touch|ln|mkdir|chmod|chown|truncate|dd|tee)[[:space:]]+[^|;&]*${_dirs}"
+
+# Moving the route-command file away deletes it, so for that one file `mv`
+# counts in any position, not only as the destination.
+_route_mv="${_cmdpos}mv[[:space:]]+[^|;&]*${_route_file}"
 
 # In-place editors rewrite the file they are pointed at.
 _inplace="${_cmdpos}(sed[[:space:]]+[^|;&]*-i|perl[[:space:]]+[^|;&]*-i|ex[[:space:]])[^|;&]*${_dirs}"
@@ -99,6 +111,8 @@ elif printf '%s\n' "${cmd}" | grep -qE "${_inplace}"; then
   blocked="in-place edit"
 elif printf '%s\n' "${cmd}" | grep -qE "${_verb_any}"; then
   blocked="file write"
+elif printf '%s\n' "${cmd}" | grep -qE "${_route_mv}"; then
+  blocked="move of the route-command file"
 elif printf '%s\n' "${cmd}" | grep -qE "${_verb_last}"; then
   blocked="copy or move into the directory"
 fi
