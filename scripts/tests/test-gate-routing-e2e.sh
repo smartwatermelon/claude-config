@@ -38,6 +38,8 @@ export GATE_REVIEW_DIR="${TMP}/gate"
 # Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
 GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
 export GATE_GH
+# Copy gate off: these suites do not test it (copy-paths-none.conf says why).
+export COPY_PATHS_FILE="${GATE_GH%/*}/copy-paths-none.conf"
 # A stub length_check.py that passes everything: CI has no personify checkout, and test-*-length.sh use the real one.
 _stub_personify() { # <config dir> <install dir>
   mkdir -p "$1/plugins" "$2/scripts"

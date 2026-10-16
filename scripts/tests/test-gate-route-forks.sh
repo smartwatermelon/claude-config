@@ -24,6 +24,8 @@ export GATE_REVIEW_DIR="${TMP}/gate"
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
 GATE_GH="${HERE}/fixtures/gh-fork-stub.sh"
 export GATE_GH
+# Copy gate off: these suites do not test it (copy-paths-none.conf says why).
+export COPY_PATHS_FILE="${GATE_GH%/*}/copy-paths-none.conf"
 export GATE_RULES_FILE="${SCRIPTS}/../gate-rules.conf"
 export GATE_TEST_FORKS="nightowlstudiollc/forked twistedmelonman/forkx beacon-biosignals/forked someone/privfork"
 export GATE_TEST_GH_FAIL="nightowlstudiollc/broken smartwatermelon/offline"
