@@ -147,7 +147,7 @@ else
   _no "twistedmelonman: commit passes unapproved (rc=${rc}): ${err}"
 fi
 
-# --- visual destination: rule 12 --------------------------------------------
+# --- visual destination: rule 10 --------------------------------------------
 printf 'fix(y): third-party change\n' >"${TMP}/pers.txt"
 if _approve "${VISUAL}" pers; then
   _ok "visual: stage and approve without a record"
@@ -155,10 +155,10 @@ else
   _no "visual: stage and approve without a record"
 fi
 line="$(cat "${TMP}/pers.line" 2>/dev/null || true)"
-if [[ "${line}" == "# pers: NOT PANGRAM REVIEWED (rule 12: "* ]]; then
-  _ok "visual: review shows the rule 12 banner"
+if [[ "${line}" == "# pers: NOT PANGRAM REVIEWED (rule 10: "* ]]; then
+  _ok "visual: review shows the rule 10 banner"
 else
-  _no "visual: review shows the rule 12 banner: ${line}"
+  _no "visual: review shows the rule 10 banner: ${line}"
 fi
 PERS_APPROVED="$(cat "${TMP}/pers.path" 2>/dev/null || true)"
 _hook "${VISUAL}" "git -C ${VISUAL} commit -F ${PERS_APPROVED}"
