@@ -742,6 +742,32 @@ _bcase "${DIRWRITE}" "rm the deployed copy paths file" \
 _bcase "${DIRWRITE}" "cat the deployed copy paths file (read)" \
   'cat ~/.claude/copy-paths.conf' 0
 
+# route-command names pangram_check.py's router; repointing or deleting it reroutes paid calls.
+_bcase "${DIRWRITE}" "redirect over the route-command file" \
+  'echo /tmp/fake > ~/.config/personify/route-command' 2
+_bcase "${DIRWRITE}" "append to the route-command file (home spelled out)" \
+  "echo x >> ${HOME}/.config/personify/route-command" 2
+_bcase "${DIRWRITE}" "tee the route-command file" \
+  'echo x | tee ~/.config/personify/route-command' 2
+_bcase "${DIRWRITE}" "sed -i the route-command file" \
+  "sed -i '' s/gate/fake/ ~/.config/personify/route-command" 2
+_bcase "${DIRWRITE}" "cp over the route-command file" \
+  'cp /tmp/x ~/.config/personify/route-command' 2
+_bcase "${DIRWRITE}" "rm the route-command file" \
+  'rm ~/.config/personify/route-command' 2
+_bcase "${DIRWRITE}" "rm -f the route-command file, then something else" \
+  "rm -f ${HOME}/.config/personify/route-command && echo done" 2
+_bcase "${DIRWRITE}" "unlink the route-command file" \
+  'unlink ~/.config/personify/route-command' 2
+_bcase "${DIRWRITE}" "mv the route-command file away (a delete)" \
+  'mv ~/.config/personify/route-command /tmp/rc' 2
+_bcase "${DIRWRITE}" "cat the route-command file (read)" \
+  'cat ~/.config/personify/route-command' 0
+_bcase "${DIRWRITE}" "cp OUT of the route-command file (read)" \
+  'cp ~/.config/personify/route-command /tmp/rc.bak' 0
+_bcase "${DIRWRITE}" "a sibling that only shares the route-command prefix" \
+  'echo x > ~/.config/personify/route-command.notes' 0
+
 echo "=== merge-locks-write (Write/Edit hook): file_path cases ==="
 # This hook reads tool_input.file_path, not a command string, so it gets its
 # own payload builder. A temp HOME with no .claude/ stands in for a fresh
@@ -812,6 +838,14 @@ _wcase "Write the deployed copy paths file" \
   "${HOME}/.claude/copy-paths.conf" 2
 _wcase "Write the deployed copy paths file, tilde-spelled" \
   "${_tilde}/.claude/copy-paths.conf" 2
+_wcase "Write the route-command file" \
+  "${HOME}/.config/personify/route-command" 2
+_wcase "Write the route-command file, tilde-spelled" \
+  "${_tilde}/.config/personify/route-command" 2
+_wcase "Write the route-command file under an XDG_CONFIG_HOME" \
+  "/tmp/xdg/personify/route-command" 2
+_wcase "a sibling that only shares the route-command prefix" \
+  "${HOME}/.config/personify/route-command.notes" 0
 
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]

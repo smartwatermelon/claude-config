@@ -327,7 +327,7 @@ cp "${TMP}/personify/scripts/length_check.py" "${PLUG}/scripts/"
 jq -n --arg p "${PLUG}" '{plugins:{"personify@personify":[{installPath:$p}]}}' \
   >"${HOME}/.claude/plugins/installed_plugins.json"
 _case "no record: deny prints the installed check command" 2 \
-  "python3 ${PLUG}/scripts/pangram_check.py < ${TXT}" "${BEACON}" "git commit -F ${TXT}"
+  "python3 ${PLUG}/scripts/pangram_check.py --kind commit --dir ${BEACON} < ${TXT}" "${BEACON}" "git commit -F ${TXT}"
 printf '%s\n' "${STUB_PLUGINS}" >"${HOME}/.claude/plugins/installed_plugins.json"
 printf 'never approved\n' >"${TMP}/unapproved.txt"
 UREC="${XDG_CONFIG_HOME}/personify/checks/$(sha256sum "${TMP}/unapproved.txt" | cut -d' ' -f1).json"

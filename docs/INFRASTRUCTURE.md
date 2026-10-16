@@ -47,7 +47,7 @@ entries are omitted here.
 | Event / matcher | Script |
 |-----------------|--------|
 | PreToolUse `Bash` | `~/.claude/scripts/hook-block-all.sh` (chain below) |
-| PreToolUse `Write`, `Edit` | `hook-block-merge-locks-write.sh`: blocks writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf` and `copy-paths.conf` |
+| PreToolUse `Write`, `Edit` | `hook-block-merge-locks-write.sh`: blocks writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf`, `copy-paths.conf` and personify's `route-command` |
 | PreToolUse `EnterWorktree` | `hook-block-enter-worktree.sh` |
 | PostToolUse `Bash\|Read` | `hook-redact-secret-output.py`: redacts env secret values, gitleaks findings, vendor prefixes gitleaks lacks, and the whole stdout of credential-printing commands (`op read`, `security -w`, ...) |
 | Stop, SubagentStop | `hook-budget-guard.sh` |
@@ -55,7 +55,7 @@ entries are omitted here.
 `hook-block-all.sh` runs these in order and stops at the first block:
 
 1. `hook-block-secret-leak.sh` (first on purpose: the others log the full command when they block)
-2. `hook-block-gate-dir-write.sh` (Bash-path writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf` and `copy-paths.conf`)
+2. `hook-block-gate-dir-write.sh` (Bash-path writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf`, `copy-paths.conf` and personify's `route-command`)
 3. `hook-block-no-verify.sh`
 4. `hook-block-short-no-verify.sh`
 5. `hook-block-main-commit.sh`
@@ -139,8 +139,8 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
 - Enforced by `hook-block-personify.sh` for the Bash tool, and by
   `gh-wrapper.sh` (`_gh_wrapper_approval_gate`) for manual `gh` calls.
 - `stage` also refuses a file with no `~/.config/personify/checks/<sha256 of
-  raw bytes>.json` check record. Run `pangram_check.py < <file>` on that
-  exact file first; PASS, FAIL, and SKIPPED records are all accepted. The
+  raw bytes>.json` check record. Run `pangram_check.py --kind <kind> --dir
+  <checkout> < <file>` on that exact file first; PASS, FAIL, and SKIPPED records are all accepted. The
   refusal prints the full command, with the `installPath` of
   `personify@personify` from `~/.claude/plugins/installed_plugins.json`. Use
   that path, not a directory picked from the plugin cache: the cache keeps
@@ -175,6 +175,15 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   it reads the index before the call runs. A missing or malformed conf blocks
   every agent commit; `SUSPENDED` is the escape hatch. In-app JSX strings are
   phase 2 (dev-env#206).
+- Pangram route guard. `install.sh` writes
+  `${XDG_CONFIG_HOME:-~/.config}/personify/route-command`, one line naming the
+  deployed `gate-review.sh`. With that file present, `pangram_check.py` needs
+  `--repo`, `--dir` or `--kind copy`, runs `gate-review.sh route` with them,
+  and calls Pangram only on a `pangram` route. The hints print those flags.
+  Both write hooks guard the file. `hook-block-personify.sh` denies
+  `pangram_check.py --kind copy` (any `--k...` spelling) unless it is one
+  plain command reading stdin from a file directly in
+  `~/.claude/gate-review/copy/`, since `copy` always routes to Pangram.
 
 ### Merge-Lock Subcommands
 

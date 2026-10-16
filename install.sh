@@ -546,6 +546,49 @@ _link_command scripts/claude-incognito.sh "${HOME}/.local/bin/claude-incognito"
 _link_command hooks/merge-lock.command "${HOME}/Applications/merge-lock.command"
 
 # ============================================================================
+# 7b. PERSONIFY ROUTE COMMAND
+# ============================================================================
+# pangram_check.py runs the path in this file as its router, and calls Pangram only on a pangram route.
+_route_rel="scripts/gate-review.sh"
+_route_file="${XDG_CONFIG_HOME:-${HOME}/.config}/personify/route-command"
+_route_want="${DEPLOY_DIR}/${_route_rel}"
+_route_tracked=false
+for _tf in "${_TRACKED_FILES[@]}"; do
+  if [[ "${_tf}" == "${_route_rel}" ]]; then
+    _route_tracked=true
+    break
+  fi
+done
+_route_have=""
+if [[ -f "${_route_file}" && ! -L "${_route_file}" ]]; then
+  _route_have="$(cat "${_route_file}" 2>/dev/null || true)"
+fi
+
+if ! ${_route_tracked}; then
+  # Not an error: the bats fixture copies only install.sh into a throwaway repo.
+  _skip "No tracked ${_route_rel} — skipping ${_route_file}"
+elif [[ "${_route_have}" == "${_route_want}" ]]; then
+  _skip "Route command already correct: ${_route_file}"
+elif [[ "${DRY_RUN}" == true ]]; then
+  _dry "Would write ${_route_file}: ${_route_want}"
+else
+  # Written beside the target and renamed, so a reader never sees half a line.
+  _route_tmp=""
+  if mkdir -p "${_route_file%/*}" &&
+    _route_tmp="$(mktemp "${_route_file}.XXXXXX")" &&
+    printf '%s\n' "${_route_want}" >"${_route_tmp}" &&
+    chmod 644 "${_route_tmp}" &&
+    mv -f "${_route_tmp}" "${_route_file}"; then
+    _ok "Wrote route command: ${_route_file} -> ${_route_want}"
+    installed+=("route-command:${_route_file}")
+  else
+    [[ -z "${_route_tmp}" ]] || rm -f "${_route_tmp}"
+    _err "Failed to write ${_route_file}"
+    failures+=("route-command:${_route_file}")
+  fi
+fi
+
+# ============================================================================
 # 8. GIT CLEAN FILTER (iTerm2 cc-status home directory)
 # ============================================================================
 # iTerm2 rewrites settings.json's cc-status hook paths to this machine's

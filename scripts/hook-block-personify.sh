@@ -378,6 +378,127 @@ fi
 COPY_SCRIPT="$(cd "$(dirname "${_self}")" && pwd)/gate-copy.py"
 COPY_OUT="${GATE_REVIEW_DIR:-${HOME}/.claude/gate-review}/copy"
 unset _self _target
+
+# --kind copy always routes to Pangram, so it may read only a file directly in COPY_OUT. Unparseable denies.
+_deny_pangram_copy() {
+  {
+    echo '🛑 BLOCKED: this Pangram check asks for the copy kind on text that is not a copy extract.'
+    echo ''
+    echo "  reason:  $1"
+    echo ''
+    echo '--kind copy always calls Pangram, so it is only for the extract the commit'
+    echo 'hook prints for staged public-facing copy. Run it in exactly this form:'
+    echo ''
+    echo "  python3 <personify>/scripts/pangram_check.py --kind copy < ${COPY_OUT}/<sha256>.txt"
+    echo ''
+    echo 'For any other text, name its destination instead, and the route decides'
+    echo 'whether Pangram runs:'
+    echo ''
+    echo '  python3 <personify>/scripts/pangram_check.py --kind <kind> --dir <checkout> < <file>'
+    echo '  python3 <personify>/scripts/pangram_check.py --kind <kind> --repo <owner/name> < <file>'
+  } >&2
+  exit 2
+}
+
+# 1 if pangram_check.py may get the copy kind. Reads unquoted words; odd -k flags, $, ` and bad quotes count too.
+_pangram_copy_asked() {
+  python3 - "$1" <<'PY'
+import shlex
+import sys
+
+try:
+    words = shlex.split(sys.argv[1], posix=True)
+except ValueError:
+    print(1)
+    sys.exit(0)
+asked = 0
+for i, word in enumerate(words):
+    if not word.endswith("pangram_check.py"):
+        continue
+    rest = words[i + 1:]
+    for j, arg in enumerate(rest):
+        if arg in ("&&", "||", ";", "|"):
+            break
+        if "$" in arg or "`" in arg:
+            asked = 1
+        if arg.startswith("-k") or arg.startswith("--k"):
+            name, eq, value = arg.partition("=")
+            if not eq:
+                value = rest[j + 1] if j + 1 < len(rest) else ""
+            plain = value.replace("-", "").isalpha()
+            if name != "--kind" or value == "copy" or not plain:
+                asked = 1
+print(asked)
+PY
+}
+
+_pangram_copy_guard() {
+  local text="${_joined}" stripped asked w i path dir real_out n
+  local -a words
+  # Strip quotes and backslashes first, so pangram_che\ck still matches.
+  stripped="${text//[\\\"\']/}"
+  [[ "${stripped}" == *pangram_check* ]] || return 0
+  asked="$(_pangram_copy_asked "${text}")" || _deny_pangram_copy "could not parse the command"
+  [[ "${asked}" == 1 ]] || return 0
+
+  [[ "${text}" != *$'\n'* ]] || _deny_pangram_copy "more than one line"
+  case "${text}" in
+    *[\;\&\|\$\`\(\)\{\}\>\\\"\'\*\?\[\]\~\!\#]*)
+      _deny_pangram_copy "shell syntax this hook cannot follow (separators, pipes, quotes, variables, globs, or ~)"
+      ;;
+    *) ;;
+  esac
+  n="$(printf '%s' "${text}" | tr -cd '<' | wc -c | tr -d ' ')"
+  ((n == 1)) || _deny_pangram_copy "stdin must be one < redirect from a file (found ${n} '<')"
+
+  read -ra words <<<"${text//</ < }"
+  i=0
+  if [[ "${words[0]:-}" =~ ^(/[^[:space:]]*/)?python3(\.[0-9]+)?$ ]]; then
+    i=1
+  fi
+  [[ "${words[i]:-}" =~ (^|/)pangram_check\.py$ ]] ||
+    _deny_pangram_copy "the command must start with python3 and the path to pangram_check.py"
+  i=$((i + 1))
+  path=""
+  while ((i < ${#words[@]})); do
+    w="${words[i]}"
+    case "${w}" in
+      --kind=copy | --repo=?* | --dir=?*) i=$((i + 1)) ;;
+      --kind)
+        [[ "${words[i + 1]:-}" == copy ]] || _deny_pangram_copy "--kind takes copy here, nothing else"
+        i=$((i + 2))
+        ;;
+      --repo | --dir)
+        [[ -n "${words[i + 1]:-}" && "${words[i + 1]}" != "<" ]] || _deny_pangram_copy "${w} needs a value"
+        i=$((i + 2))
+        ;;
+      "<")
+        path="${words[i + 1]:-}"
+        i=$((i + 2))
+        ;;
+      *) _deny_pangram_copy "unexpected argument: ${w}" ;;
+    esac
+  done
+  [[ -n "${path}" ]] || _deny_pangram_copy "no file redirected into stdin"
+  case "${path}" in
+    /*) ;;
+    *) _deny_pangram_copy "the stdin path is not absolute: ${path}" ;;
+  esac
+  case "/${path}/" in
+    */../* | */./*) _deny_pangram_copy "the stdin path has . or .. in it: ${path}" ;;
+    *) ;;
+  esac
+  [[ -f "${path}" && ! -L "${path}" ]] || _deny_pangram_copy "the stdin path is not a regular file: ${path}"
+  real_out="$(cd "${COPY_OUT}" 2>/dev/null && pwd -P)" ||
+    _deny_pangram_copy "the copy extract directory does not exist: ${COPY_OUT}"
+  dir="$(cd "$(dirname "${path}")" 2>/dev/null && pwd -P)" ||
+    _deny_pangram_copy "cannot resolve the directory of ${path}"
+  [[ "${dir}" == "${real_out}" ]] ||
+    _deny_pangram_copy "the stdin file is not a copy extract in ${COPY_OUT}: ${path}"
+  return 0
+}
+# In this hook, not a new chain entry: --repair links no new file. Suspension does not lift it.
+_pangram_copy_guard
 _index_git_re="(^|[^[:alnum:]_.-])${_path}git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(add|rm|mv|stage|apply|restore|reset|checkout|switch|update-index|read-tree|stash|merge|cherry-pick|revert|rebase|am|pull|commit)([[:space:]]|$)"
 
 _verify_copy() {
@@ -474,7 +595,7 @@ _deny_copy() {
     echo "  repo:    ${DEST_DIR}"
     echo "  reason:  ${reason}"
     if [[ -n "${extract}" ]]; then
-      hint="$("${GATE}" hint "${extract}" 2>/dev/null)" || hint="python3 <personify>/scripts/pangram_check.py < ${extract}"
+      hint="$("${GATE}" hint "${extract}" --kind copy 2>/dev/null)" || hint="python3 <personify>/scripts/pangram_check.py --kind copy < ${extract}"
       label="${extract##*/}"
       label="copy-${label:0:12}"
       echo "  extract: ${extract}"
@@ -764,7 +885,7 @@ _check_one() {
   done <<<"${err}"
   [[ -z "${err}" ]] || printf '%s\n' "${err}" | grep -vxF -- "${reason:-}" >&2 || true
   case "${reason}" in
-    *'no Pangram check ran'*) _deny_unchecked "${reason}" "${path}" "${surface}" ;;
+    *'no Pangram check ran'*) _deny_unchecked "${reason}" "${path}" "${surface}" "$@" ;;
     *'gate-review: over length:'*) _deny_length "${reason}" "${surface}" ;;
     *'length checker error'*) _deny_checker "${reason}" "${surface}" ;;
     '') _deny "the bytes in ${path} do not match anything approved" "${surface}" ;;
@@ -773,8 +894,10 @@ _check_one() {
 }
 
 _deny_unchecked() {
+  # The rest are the destination flags _check_one passed to check; the hint repeats them.
   local reason="$1" path="$2" surface="$3" hint
-  hint="$("${GATE}" hint "${path}" 2>/dev/null)" || hint="(gate-review.sh hint failed; run personify's scripts/pangram_check.py < ${path})"
+  shift 3
+  hint="$("${GATE}" hint "${path}" "$@" 2>/dev/null)" || hint="(gate-review.sh hint failed; run personify's scripts/pangram_check.py $* < ${path})"
   {
     echo '🛑 BLOCKED: this text goes to a Pangram-gated destination and no Pangram check ran on it.'
     echo ''

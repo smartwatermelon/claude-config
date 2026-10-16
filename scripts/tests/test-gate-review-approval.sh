@@ -324,7 +324,7 @@ cp "${TMP}/personify/scripts/length_check.py" "${PLUGINS}/cache/personify/2.0.3/
 printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
   "${PLUGINS}/cache/personify/2.0.3" >"${PLUGINS}/installed_plugins.json"
 got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
-if [[ "${got}" == *"python3 ${PLUGINS}/cache/personify/2.0.3/scripts/pangram_check.py < ${UNCHECKED}"* ]]; then
+if [[ "${got}" == *"python3 ${PLUGINS}/cache/personify/2.0.3/scripts/pangram_check.py --kind commit --dir "*" < ${UNCHECKED}"* ]]; then
   _ok "refusal names the installed pangram_check.py"
 else
   _no "refusal names the installed pangram_check.py: ${got}"
@@ -367,7 +367,7 @@ cp "${TMP}/personify/scripts/length_check.py" "${SYNCED}/personify~g2/scripts/"
 printf '{"plugins":{}}\n' >"${PLUGINS}/installed_plugins.json"
 printf '{"plugins":[{"name":"personify"}]}\n' >"${SYNCED}/manifest.json"
 got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
-if [[ "${got}" == *"python3 ${SYNCED}/personify/scripts/pangram_check.py < ${UNCHECKED}"* ]]; then
+if [[ "${got}" == *"python3 ${SYNCED}/personify/scripts/pangram_check.py --kind commit --dir "*" < ${UNCHECKED}"* ]]; then
   _ok "refusal names the synced pangram_check.py when nothing is installed locally"
 else
   _no "refusal names the synced pangram_check.py when nothing is installed locally: ${got}"
@@ -375,7 +375,7 @@ fi
 
 printf '{"plugins":[{"name":"personify","generation":2}]}\n' >"${SYNCED}/manifest.json"
 got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
-if [[ "${got}" == *"python3 ${SYNCED}/personify~g2/scripts/pangram_check.py < ${UNCHECKED}"* ]]; then
+if [[ "${got}" == *"python3 ${SYNCED}/personify~g2/scripts/pangram_check.py --kind commit --dir "*" < ${UNCHECKED}"* ]]; then
   _ok "refusal names the synced generation the manifest lists"
 else
   _no "refusal names the synced generation the manifest lists: ${got}"
