@@ -87,17 +87,17 @@ _case() {
 # --- text inside the repo (commits) -----------------------------------------
 _case "NOS fork: exempt" 0 "" "${TMP}/nosfork" "git commit -F ${TXT}"
 _case "beacon fork: exempt" 0 "" "${TMP}/bbfork" "git commit -F ${TXT}"
-_case "NOS fork lookup fails: gated (pangram)" 2 "no Pangram check ran" "${TMP}/nosbroken" "git commit -F ${TXT}"
-_case "NOS non-fork: gated (pangram)" 2 "no Pangram check ran" "${TMP}/nos" "git commit -F ${TXT}"
-_case "projectinsomnia: gated (pangram)" 2 "no Pangram check ran" "${TMP}/insomnia" "git commit -F ${TXT}"
-_case "crazy-larry: gated (pangram)" 2 "no Pangram check ran" "${TMP}/larry" "git commit -F ${TXT}"
+_case "NOS fork lookup fails: exempt" 0 "" "${TMP}/nosbroken" "git commit -F ${TXT}"
+_case "NOS non-fork: exempt" 0 "" "${TMP}/nos" "git commit -F ${TXT}"
+_case "projectinsomnia: exempt" 0 "" "${TMP}/insomnia" "git commit -F ${TXT}"
+_case "crazy-larry: exempt" 0 "" "${TMP}/larry" "git commit -F ${TXT}"
 _case "beacon-workspace: exempt, even inline" 0 "" "${TMP}/workspace" "git commit -m 'notes'"
 _case "twistedmelonman fork: exempt" 0 "" "${TMP}/tmfork" "git commit -F ${TXT}"
 
 # --- private repos (dev-env#206) ----------------------------------------------
 _case "private NOS repo: exempt" 0 "" "${TMP}/kebab" "git commit -F ${TXT}"
 _case "private beacon repo: gated (pangram)" 2 "no Pangram check ran" "${TMP}/bbsecret" "git commit -F ${TXT}"
-_case "private NOS repo, lookup fails: gated (pangram)" 2 "no Pangram check ran" "${TMP}/nosbroken" "git commit -F ${TXT}"
+_case "private NOS repo, lookup fails: exempt" 0 "" "${TMP}/nosbroken" "git commit -F ${TXT}"
 _case "private NOS checkout, no -R: exempt" 0 "" "${TMP}/kebab" \
   "gh pr create --title t --body-file ${TXT}"
 _case "-R private NOS repo from a smartwatermelon checkout: exempt" 0 "" "${TMP}/swm" \
@@ -115,7 +115,7 @@ _case "PR to the fork itself with -R: exempt" 0 "" "${TMP}/tmfork" \
   "gh pr create -R twistedmelonman/forkx --title t --body-file ${TXT}"
 _case "NOS fork checkout, no -R: gated (the stricter route)" 2 "no visual approval" "${TMP}/nosfork" \
   "gh pr create --title t --body-file ${TXT}"
-_case "NOS non-fork checkout, no -R: pangram kept" 2 "no Pangram check ran" "${TMP}/nos" \
+_case "NOS non-fork checkout, no -R: exempt" 0 "" "${TMP}/nos" \
   "gh pr create --title t --body-file ${TXT}"
 _case "smartwatermelon non-fork checkout: exempt" 0 "" "${TMP}/swm" \
   "gh pr create --title t --body-file ${TXT}"

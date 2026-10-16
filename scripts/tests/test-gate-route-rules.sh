@@ -59,56 +59,57 @@ RULES="${ROOT}/gate-rules.conf"
   # Decided 2026-10-08 (dev-env#154).
   expect_match "beacon-workspace exempt" "${RULES}" "andrewmrich/beacon-workspace" "andrewmrich" "${E}${TAB}1"
   expect_match "mixed case repo" "${RULES}" "AndrewMRich/Beacon-Workspace" "andrewmrich" "${E}${TAB}1"
-  expect_match "projectinsomnia pangram" "${RULES}" "smartwatermelon/projectinsomnia" "twistedmelonman" "${P}${TAB}2" "${GH}"
-  expect_match "crazy-larry pangram" "${RULES}" "smartwatermelon/crazy-larry" "twistedmelonman" "${P}${TAB}3" "${GH}"
-  expect_match "other repo, author" "${RULES}" "other/beacon-workspace" "andrewmrich" "${P}${TAB}9"
-  expect_match "twistedmelonman exempt" "${RULES}" "twistedmelonman/x" "twistedmelonman" "${E}${TAB}5" "${GH}"
-  expect_match "empty inputs" "${RULES}" "" "" "${V}${TAB}14"
-  expect_match "empty repo, github host" "${RULES}" "" "twistedmelonman" "${V}${TAB}14" "${GH}"
+  # Public sites: commit text is exempt; their pages go through copy-paths.conf.
+  expect_match "projectinsomnia exempt" "${RULES}" "smartwatermelon/projectinsomnia" "twistedmelonman" "${E}${TAB}2" "${GH}"
+  expect_match "crazy-larry exempt" "${RULES}" "smartwatermelon/crazy-larry" "twistedmelonman" "${E}${TAB}2" "${GH}"
+  expect_match "other repo, author" "${RULES}" "other/beacon-workspace" "andrewmrich" "${P}${TAB}7"
+  expect_match "twistedmelonman exempt" "${RULES}" "twistedmelonman/x" "twistedmelonman" "${E}${TAB}3" "${GH}"
+  expect_match "empty inputs" "${RULES}" "" "" "${V}${TAB}10"
+  expect_match "empty repo, github host" "${RULES}" "" "twistedmelonman" "${V}${TAB}10" "${GH}"
   # owner= rules: personal owners are exempt on github.com only.
-  expect_match "owner smartwatermelon" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${E}${TAB}4" "${GH}"
-  expect_match "owner mixed case" "${RULES}" "SmartWatermelon/X" "twistedmelonman" "${E}${TAB}4" "GitHub.com"
-  expect_match "nightowlstudiollc pangram" "${RULES}" "nightowlstudiollc/y" "twistedmelonman" "${P}${TAB}13" "${GH}"
-  expect_match "beacon-biosignals owner, author unresolved" "${RULES}" "beacon-biosignals/x" "" "${P}${TAB}10" "${GH}"
+  expect_match "owner smartwatermelon" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${E}${TAB}2" "${GH}"
+  expect_match "owner mixed case" "${RULES}" "SmartWatermelon/X" "twistedmelonman" "${E}${TAB}2" "GitHub.com"
+  expect_match "nightowlstudiollc exempt" "${RULES}" "nightowlstudiollc/y" "twistedmelonman" "${E}${TAB}4" "${GH}"
+  expect_match "beacon-biosignals owner, author unresolved" "${RULES}" "beacon-biosignals/x" "" "${P}${TAB}8" "${GH}"
   # The known-bad cases: author resolves every unknown owner to twistedmelonman,
   # so only an owner rule can tell these apart, and none may match them.
-  expect_match "third party stays gated" "${RULES}" "anthropics/claude-code" "twistedmelonman" "${V}${TAB}14" "${GH}"
-  expect_match "owner prefix only" "${RULES}" "smartwatermelonx/y" "twistedmelonman" "${V}${TAB}14" "${GH}"
-  expect_match "owner without name" "${RULES}" "smartwatermelon" "twistedmelonman" "${V}${TAB}14" "${GH}"
-  expect_match "owner with extra path" "${RULES}" "smartwatermelon/x/y" "twistedmelonman" "${V}${TAB}14" "${GH}"
+  expect_match "third party stays gated" "${RULES}" "anthropics/claude-code" "twistedmelonman" "${V}${TAB}10" "${GH}"
+  expect_match "owner prefix only" "${RULES}" "smartwatermelonx/y" "twistedmelonman" "${V}${TAB}10" "${GH}"
+  expect_match "owner without name" "${RULES}" "smartwatermelon" "twistedmelonman" "${V}${TAB}10" "${GH}"
+  expect_match "owner with extra path" "${RULES}" "smartwatermelon/x/y" "twistedmelonman" "${V}${TAB}10" "${GH}"
   # Host must be github.com; unknown or other hosts fall through.
-  expect_match "owner, no host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}14"
-  expect_match "owner, other host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}14" "gitlab.com"
-  expect_match "owner, lookalike host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}14" "github.com.evil.example"
+  expect_match "owner, no host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}10"
+  expect_match "owner, other host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}10" "gitlab.com"
+  expect_match "owner, lookalike host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}10" "github.com.evil.example"
   # fork= rules (the stub answers): a proven fork is exempt, anything else is gated.
   export GATE_TEST_FORKS="nightowlstudiollc/forked beacon-biosignals/forked andrewmrich/forked anthropics/forked"
   export GATE_TEST_GH_FAIL="nightowlstudiollc/broken beacon-biosignals/broken"
-  expect_match "NOS fork exempt" "${RULES}" "nightowlstudiollc/forked" "twistedmelonman" "${E}${TAB}6" "${GH}"
-  expect_match "beacon fork exempt" "${RULES}" "beacon-biosignals/forked" "andrewmrich" "${E}${TAB}7" "${GH}"
-  expect_match "andrewmrich fork exempt" "${RULES}" "andrewmrich/forked" "andrewmrich" "${E}${TAB}8" "${GH}"
-  expect_match "third-party fork gated" "${RULES}" "anthropics/forked" "twistedmelonman" "${V}${TAB}14" "${GH}"
-  expect_match "NOS fork lookup fails: gated" "${RULES}" "nightowlstudiollc/broken" "twistedmelonman" "${P}${TAB}13" "${GH}"
-  expect_match "beacon fork lookup fails: gated" "${RULES}" "beacon-biosignals/broken" "andrewmrich" "${P}${TAB}9" "${GH}"
-  expect_match "NOS non-fork gated" "${RULES}" "nightowlstudiollc/site" "twistedmelonman" "${P}${TAB}13" "${GH}"
-  expect_match "fork rule needs github.com" "${RULES}" "nightowlstudiollc/forked" "twistedmelonman" "${V}${TAB}14" "gitlab.com"
+  expect_match "NOS fork exempt" "${RULES}" "nightowlstudiollc/forked" "twistedmelonman" "${E}${TAB}4" "${GH}"
+  expect_match "beacon fork exempt" "${RULES}" "beacon-biosignals/forked" "andrewmrich" "${E}${TAB}5" "${GH}"
+  expect_match "andrewmrich fork exempt" "${RULES}" "andrewmrich/forked" "andrewmrich" "${E}${TAB}6" "${GH}"
+  expect_match "third-party fork gated" "${RULES}" "anthropics/forked" "twistedmelonman" "${V}${TAB}10" "${GH}"
+  expect_match "NOS fork lookup fails: owner rule, exempt" "${RULES}" "nightowlstudiollc/broken" "twistedmelonman" "${E}${TAB}4" "${GH}"
+  expect_match "beacon fork lookup fails: gated" "${RULES}" "beacon-biosignals/broken" "andrewmrich" "${P}${TAB}7" "${GH}"
+  expect_match "NOS non-fork exempt" "${RULES}" "nightowlstudiollc/site" "twistedmelonman" "${E}${TAB}4" "${GH}"
+  expect_match "fork rule needs github.com" "${RULES}" "nightowlstudiollc/forked" "twistedmelonman" "${V}${TAB}10" "gitlab.com"
   unset GATE_TEST_FORKS GATE_TEST_GH_FAIL
-  # private=nightowlstudiollc (dev-env#206): own owners only; Beacon rules come first. Unknown is gated.
+  # Private repos: Beacon stays gated, NOS is exempt by owner, third parties fall to *.
   export GATE_TEST_PRIVATE="beacon-biosignals/secret nightowlstudiollc/kebab-tax andrewmrich/secret anthropics/secret smartwatermelon/secret nightowlstudiollc/broken"
   export GATE_TEST_GH_FAIL="nightowlstudiollc/broken"
-  expect_match "private beacon repo, andrewmrich: gated" "${RULES}" "beacon-biosignals/secret" "andrewmrich" "${P}${TAB}9" "${GH}"
-  expect_match "private beacon repo, author unresolved: gated" "${RULES}" "beacon-biosignals/secret" "" "${P}${TAB}10" "${GH}"
-  expect_match "private beacon repo, other author: gated" "${RULES}" "beacon-biosignals/secret" "twistedmelonman" "${P}${TAB}10" "${GH}"
-  expect_match "private andrewmrich repo: gated" "${RULES}" "andrewmrich/secret" "" "${P}${TAB}11" "${GH}"
-  expect_match "andrewmrich text in a private NOS repo: gated" "${RULES}" "nightowlstudiollc/kebab-tax" "andrewmrich" "${P}${TAB}9" "${GH}"
-  expect_match "private NOS repo: exempt" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${E}${TAB}12" "${GH}"
-  expect_match "private NOS repo, mixed case: exempt" "${RULES}" "NightOwlStudioLLC/Kebab-Tax" "twistedmelonman" "${E}${TAB}12" "${GH}"
-  expect_match "private third-party repo: gated (falls to *)" "${RULES}" "anthropics/secret" "twistedmelonman" "${V}${TAB}14" "${GH}"
-  expect_match "public NOS repo: gated" "${RULES}" "nightowlstudiollc/tnjcleaning" "twistedmelonman" "${P}${TAB}13" "${GH}"
-  expect_match "NOS private lookup fails: gated" "${RULES}" "nightowlstudiollc/broken" "twistedmelonman" "${P}${TAB}13" "${GH}"
-  expect_match "public third-party repo: gated" "${RULES}" "anthropics/claude-code" "twistedmelonman" "${V}${TAB}14" "${GH}"
-  expect_match "public smartwatermelon repo: exempt as before" "${RULES}" "smartwatermelon/plain" "twistedmelonman" "${E}${TAB}4" "${GH}"
-  expect_match "private repo on another host: gated" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${V}${TAB}14" "gitlab.com"
-  expect_match "private repo, no host: gated" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${V}${TAB}14"
+  expect_match "private beacon repo, andrewmrich: gated" "${RULES}" "beacon-biosignals/secret" "andrewmrich" "${P}${TAB}7" "${GH}"
+  expect_match "private beacon repo, author unresolved: gated" "${RULES}" "beacon-biosignals/secret" "" "${P}${TAB}8" "${GH}"
+  expect_match "private beacon repo, other author: gated" "${RULES}" "beacon-biosignals/secret" "twistedmelonman" "${P}${TAB}8" "${GH}"
+  expect_match "private andrewmrich repo: gated" "${RULES}" "andrewmrich/secret" "" "${P}${TAB}9" "${GH}"
+  expect_match "andrewmrich text in a NOS repo: exempt" "${RULES}" "nightowlstudiollc/kebab-tax" "andrewmrich" "${E}${TAB}4" "${GH}"
+  expect_match "private NOS repo: exempt" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${E}${TAB}4" "${GH}"
+  expect_match "private NOS repo, mixed case: exempt" "${RULES}" "NightOwlStudioLLC/Kebab-Tax" "twistedmelonman" "${E}${TAB}4" "${GH}"
+  expect_match "private third-party repo: gated (falls to *)" "${RULES}" "anthropics/secret" "twistedmelonman" "${V}${TAB}10" "${GH}"
+  expect_match "public NOS repo: exempt" "${RULES}" "nightowlstudiollc/tnjcleaning" "twistedmelonman" "${E}${TAB}4" "${GH}"
+  expect_match "NOS private lookup fails: exempt" "${RULES}" "nightowlstudiollc/broken" "twistedmelonman" "${E}${TAB}4" "${GH}"
+  expect_match "public third-party repo: gated" "${RULES}" "anthropics/claude-code" "twistedmelonman" "${V}${TAB}10" "${GH}"
+  expect_match "public smartwatermelon repo: exempt as before" "${RULES}" "smartwatermelon/plain" "twistedmelonman" "${E}${TAB}2" "${GH}"
+  expect_match "private repo on another host: gated" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${V}${TAB}10" "gitlab.com"
+  expect_match "private repo, no host: gated" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${V}${TAB}10"
   unset GATE_TEST_PRIVATE GATE_TEST_GH_FAIL
   # Earlier rules still win.
   expect_match "workspace repo before author" "${RULES}" "andrewmrich/beacon-workspace" "andrewmrich" "${E}${TAB}1" "${GH}"
@@ -139,7 +140,7 @@ for i in "${!RULE_KIND[@]}"; do
     *) ;;
   esac
 done
-if ((vis > 0 && beacon_last > 0 && beacon_last < vis)); then ok; else bad "Beacon rules (last ${beacon_last}) not above the first private= rule (${vis})"; fi
+if ((beacon_last > 0 && (vis == 0 || beacon_last < vis))); then ok; else bad "Beacon rules (last ${beacon_last}) not above the first private= rule (${vis})"; fi
 
 # private= takes a login, like fork=: no slash, no empty value, any case.
 printf 'private=a/b exempt\n* visual\n' >"${TMP}/privslash.conf"
@@ -149,7 +150,13 @@ expect_load_fail "private empty" "${TMP}/privempty.conf" "privempty.conf:1"
 printf 'private=NightOwlStudioLLC exempt\n* visual\n' >"${TMP}/privcase.conf"
 export GATE_TEST_PRIVATE="nightowlstudiollc/kebab-tax"
 expect_match "private login case-insensitive" "${TMP}/privcase.conf" "nightowlstudiollc/kebab-tax" "" "${E}${TAB}1" "${GH}"
-unset GATE_TEST_PRIVATE
+# The shipped rules no longer use private=, so its fail-closed cases live here.
+export GATE_TEST_PRIVATE="nightowlstudiollc/kebab-tax nightowlstudiollc/broken"
+export GATE_TEST_GH_FAIL="nightowlstudiollc/broken"
+expect_match "private= public repo: no match" "${TMP}/privcase.conf" "nightowlstudiollc/site" "" "${V}${TAB}2" "${GH}"
+expect_match "private= lookup fails: no match" "${TMP}/privcase.conf" "nightowlstudiollc/broken" "" "${V}${TAB}2" "${GH}"
+expect_match "private= other host: no match" "${TMP}/privcase.conf" "nightowlstudiollc/kebab-tax" "" "${V}${TAB}2" "gitlab.com"
+unset GATE_TEST_PRIVATE GATE_TEST_GH_FAIL
 
 # The private= cache: answers are kept under private-cache, failures are not.
 export GATE_TEST_PRIVATE="nightowlstudiollc/cached" GATE_TEST_GH_FAIL="nightowlstudiollc/down"
@@ -223,7 +230,7 @@ check "arrays reset on error" "${dump//$'\n'/;}" "declare -a RULE_KIND=();declar
 _load_rules "${ROOT}/gate-rules.conf"
 out="$(_match_rule "x/y" 2>&1)"
 IFS="${TAB}" read -r o_outcome o_rule _ <<<"${out}"
-check "one-arg match" "${o_outcome}${TAB}${o_rule}" "${V}${TAB}14"
+check "one-arg match" "${o_outcome}${TAB}${o_rule}" "${V}${TAB}10"
 
 echo "passed=${PASS} failed=${FAIL}"
 [[ ${FAIL} -eq 0 ]]

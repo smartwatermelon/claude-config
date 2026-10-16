@@ -115,12 +115,12 @@ check "beacon-workspace rc/stderr" "${RC}:${ERR}" "0:"
 mkrepo bb "git@github-beacon:beacon-biosignals/x.git"
 run_cli --dir "${TMP}/bb"
 val="$(f12 "${OUT}")"
-check "beacon-biosignals" "${val}" "pangram${TAB}9"
+check "beacon-biosignals" "${val}" "pangram${TAB}7"
 
 mkrepo tm "https://github.com/twistedmelonman/y"
 run_cli --dir "${TMP}/tm"
 val="$(f12 "${OUT}")"
-check "twistedmelonman" "${val}" "exempt${TAB}5"
+check "twistedmelonman" "${val}" "exempt${TAB}3"
 
 # owner= rules through the CLI. Every github.com spelling of a personal org
 # is exempt; third parties and other hosts fall through to visual.
@@ -134,17 +134,17 @@ for url in \
   mkrepo "swm${i}" "${url}"
   run_cli --dir "${TMP}/swm${i}"
   val="$(f12 "${OUT}")"
-  check "owner via ${url}" "${val}" "exempt${TAB}4"
+  check "owner via ${url}" "${val}" "exempt${TAB}2"
 done
 mkrepo nos "git@github.com:nightowlstudiollc/site.git"
 run_cli --dir "${TMP}/nos"
 val="$(f12 "${OUT}")"
-check "owner nightowlstudiollc" "${val}" "pangram${TAB}13"
+check "owner nightowlstudiollc" "${val}" "exempt${TAB}4"
 while IFS='|' read -r name url; do
   mkrepo "${name}" "${url}"
   run_cli --dir "${TMP}/${name}"
   val="$(f12 "${OUT}")"
-  check "gated: ${url}" "${val}" "visual${TAB}14"
+  check "gated: ${url}" "${val}" "visual${TAB}10"
 done <<'URLS'
 third|https://github.com/anthropics/claude-code.git
 gitlab|git@gitlab.com:smartwatermelon/x.git
@@ -156,20 +156,20 @@ URLS
 # --repo is gh's owner/name, which names a github.com repository.
 run_cli --repo smartwatermelon/x --dir /nonexistent
 val="$(f12 "${OUT}")"
-check "--repo owner exempt" "${val}" "exempt${TAB}4"
+check "--repo owner exempt" "${val}" "exempt${TAB}2"
 run_cli --repo SmartWatermelon/X
 val="$(f12 "${OUT}")"
-check "--repo owner mixed case" "${val}" "exempt${TAB}4"
+check "--repo owner mixed case" "${val}" "exempt${TAB}2"
 run_cli --repo anthropics/claude-code --dir "${TMP}/swm1"
 val="$(f12 "${OUT}")"
-check "--repo third party over personal dir" "${val}" "visual${TAB}14"
+check "--repo third party over personal dir" "${val}" "visual${TAB}10"
 
 run_cli --repo beacon-biosignals/x --dir /nonexistent
 val="$(f12 "${OUT}")"
-check "--repo wins over missing dir" "${val}" "pangram${TAB}9"
+check "--repo wins over missing dir" "${val}" "pangram${TAB}7"
 run_cli --repo Beacon-Biosignals/X --dir "${TMP}/tm"
 val="$(f12 "${OUT}")"
-check "--repo wins over remote" "${val}" "pangram${TAB}9"
+check "--repo wins over remote" "${val}" "pangram${TAB}7"
 
 # Unresolvable repo: the default rule, exit 0, one stderr line per problem.
 mkdir -p "${TMP}/plain"
@@ -177,7 +177,7 @@ mkrepo noorigin ""
 for d in "${TMP}/plain" "${TMP}/noorigin"; do
   run_cli --dir "${d}"
   val="$(f12 "${OUT}")"
-  check "unresolved ${d##*/}" "${val}:${RC}" "visual${TAB}14:0"
+  check "unresolved ${d##*/}" "${val}:${RC}" "visual${TAB}10:0"
   if [[ "${ERR}" == *"gate-route: repo unresolved"* ]]; then ok; else bad "unresolved ${d##*/}: stderr '${ERR}'"; fi
 done
 
@@ -186,7 +186,7 @@ OUT="$(cd "${TMP}/plain" && "${SCRIPT}" 2>"${TMP}/err")"
 RC=$?
 ERR="$(cat "${TMP}/err")"
 val="$(f12 "${OUT}")"
-check "no args" "${val}:${RC}" "visual${TAB}14:0"
+check "no args" "${val}:${RC}" "visual${TAB}10:0"
 check "no args stderr" "${ERR}" "gate-route: repo unresolved
 gate-route: author unresolved"
 
