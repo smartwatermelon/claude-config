@@ -162,7 +162,11 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   `install.sh --sync`.
 - `copy-paths.conf` (repo root, linked to `~/.claude/copy-paths.conf`, guarded
   by both write hooks the same way) lists each repo's public-facing copy:
-  `<owner/name> <include|exclude> <glob>`. On every agent `git commit`,
+  `<owner/name> <include|exclude> <glob>`. A `public=*` line applies to every
+  github.com repo that `gate-route.sh is-private` does not prove private
+  (unknown counts as public), with case-insensitive globs; the shipped
+  `public=* include **/README*` gates READMEs in public repos, so every public
+  repo now counts as having copy paths. On every agent `git commit`,
   `hook-block-personify.sh` runs `scripts/gate-copy.py extract` on the
   destination checkout. When staged changes touch a listed path, the added or
   changed text (whole text for a new file; HTML and Markdown stripped, JSON

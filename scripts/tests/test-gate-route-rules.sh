@@ -175,6 +175,17 @@ _is_private nightowlstudiollc/cached
 if [[ ! -s "${GATE_TEST_GH_LOG}" ]]; then ok; else bad "cached private answer made a gh call"; fi
 GATE_PRIVATE_CACHE_TTL=0 _is_private nightowlstudiollc/cached
 if grep -qx 'nightowlstudiollc/cached' "${GATE_TEST_GH_LOG}"; then ok; else bad "expired private answer not looked up again"; fi
+# `gate-route.sh is-private` (gate-copy.py's public=* lookup): _is_private's answer as the exit code.
+# _ip_rc <label> <want-rc> [args...]
+_ip_rc() {
+  local rc=0
+  bash "${ROOT}/scripts/gate-route.sh" is-private "${@:3}" >/dev/null 2>&1 || rc=$?
+  if [[ "${rc}" == "$2" ]]; then ok; else bad "$1: rc=${rc} want $2"; fi
+}
+_ip_rc "is-private: private repo exits 0" 0 nightowlstudiollc/cached
+_ip_rc "is-private: public repo exits 1" 1 nightowlstudiollc/open
+_ip_rc "is-private: failed lookup exits 2" 2 nightowlstudiollc/down
+_ip_rc "is-private: no repo is a usage error (2)" 2
 unset GATE_TEST_PRIVATE GATE_TEST_GH_FAIL GATE_TEST_GH_LOG
 
 # A fork= value with a slash is a parse error, like owner=.

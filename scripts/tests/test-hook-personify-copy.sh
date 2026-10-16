@@ -120,6 +120,28 @@ printf '<p>Hello</p>\n' >"${OTHER}/index.html"
 git -C "${OTHER}" add index.html
 _case "repo with no conf entry: copy not gated" 0 "" "${OTHER}" "git commit -m x"
 
+echo "--- public=*: READMEs in public repos (claude-config#735) ---"
+cp "${COPY_PATHS_FILE}" "${TMP}/public.conf"
+printf 'public=* include **/README*\n' >>"${TMP}/public.conf"
+# _readme_repo <dir> <owner/name>: a repo with docs/readme.md staged.
+_readme_repo() {
+  mkdir -p "$1/docs"
+  git -C "$1" init -q
+  git -C "$1" remote add origin "git@github.com:$2.git"
+  printf '# Hello\n\nA public readme.\n' >"$1/docs/readme.md"
+  git -C "$1" add docs/readme.md
+}
+_readme_repo "${TMP}/pubrepo" someone/pubrepo
+_readme_repo "${TMP}/privrepo" someone/privrepo
+export GATE_TEST_PRIVATE="someone/privrepo"
+COPY_PATHS_FILE="${TMP}/public.conf" _case "public repo, staged README: blocked" 2 \
+  "public-facing copy that has not been approved" "${TMP}/pubrepo" "git commit -m x"
+body="$(cat "${extract}" 2>/dev/null)"
+_contains "  ... extract has the README text" "${body}" "A public readme."
+COPY_PATHS_FILE="${TMP}/public.conf" _case "private repo, staged README: not gated" 0 "" \
+  "${TMP}/privrepo" "git commit -m x"
+unset GATE_TEST_PRIVATE
+
 echo "--- copy changed in a repo whose commit text is exempt ---"
 sed -i.bak -e 's#Export a tax report in one tap.#Export a tax report in two taps.#' "${SITE}/index.html"
 git -C "${SITE}" add index.html
@@ -198,7 +220,7 @@ git -C "${SITE}" reset -q
 COPY_PATHS_FILE="${TMP}/missing.conf" _case "conf missing: blocked, even in a repo with no entry" 2 \
   "copy paths file not found" "${OTHER}" "git commit -m x"
 printf 'nightowlstudiollc/kebab-tax-netlify include\n' >"${TMP}/bad.conf"
-COPY_PATHS_FILE="${TMP}/bad.conf" _case "conf malformed: blocked" 2 "expected '<owner/name>" "${OTHER}" \
+COPY_PATHS_FILE="${TMP}/bad.conf" _case "conf malformed: blocked" 2 "expected '<owner/name|public=*>" "${OTHER}" \
   "git commit -m x"
 mkdir -p "${GATE_REVIEW_DIR}"
 printf '2999-12-31\n' >"${GATE_REVIEW_DIR}/SUSPENDED"

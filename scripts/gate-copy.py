@@ -35,7 +35,10 @@ class ConfError(Exception):
     pass
 
 
-def glob_to_regex(glob):
+PUBLIC = "public=*"
+
+
+def glob_to_regex(glob, nocase=False):
     """`**/` matches zero or more directories, `**` anything, `*` and `?`
     stay within one path component. Everything else is literal."""
     out = []
@@ -56,12 +59,13 @@ def glob_to_regex(glob):
         else:
             out.append(re.escape(glob[i]))
             i += 1
-    return re.compile("^" + "".join(out) + "$")
+    return re.compile("^" + "".join(out) + "$", re.IGNORECASE if nocase else 0)
 
 
 def load_conf(path):
-    """Return {repo: (includes, excludes)}. Any problem raises ConfError, so
-    a caller never gates on a truncated list."""
+    """Return ({repo: (includes, excludes)}, (public includes, public excludes)).
+    `public=*` globs ignore case. Any problem raises ConfError, so a caller
+    never gates on a truncated list."""
     try:
         with open(path, encoding="utf-8") as f:
             lines = f.read().splitlines()
@@ -71,27 +75,29 @@ def load_conf(path):
             "to deploy it, run install.sh --sync in the claude-config repo"
         ) from e
     rules = {}
+    public = ([], [])
     for n, line in enumerate(lines, 1):
         fields = line.split()
         if not fields or fields[0].startswith("#"):
             continue
         if len(fields) != 3:
             raise ConfError(
-                f"{path}:{n}: expected '<owner/name> <include|exclude> <glob>'"
+                f"{path}:{n}: expected '<owner/name|public=*> <include|exclude> <glob>'"
             )
         repo, kind, glob = fields
-        if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repo):
+        is_public = repo == PUBLIC
+        if not is_public and not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", repo):
             raise ConfError(f"{path}:{n}: '{repo}' is not owner/name")
         if kind not in ("include", "exclude"):
             raise ConfError(f"{path}:{n}: unknown kind '{kind}'")
         if glob.startswith("/") or ".." in glob.split("/"):
             raise ConfError(f"{path}:{n}: glob must be repo-relative: '{glob}'")
-        inc, exc = rules.setdefault(repo.lower(), ([], []))
-        (inc if kind == "include" else exc).append(glob_to_regex(glob))
-    if not rules:
+        inc, exc = public if is_public else rules.setdefault(repo.lower(), ([], []))
+        (inc if kind == "include" else exc).append(glob_to_regex(glob, is_public))
+    if not rules and not public[0] and not public[1]:
         # Empty or comment-only reads as "nothing is copy"; fail closed instead.
         raise ConfError(f"{path} has no rules; an empty list would ungate all copy")
-    return rules
+    return rules, public
 
 
 def is_copy(path, inc, exc):
@@ -127,6 +133,37 @@ def repo_of(cwd):
         re.IGNORECASE,
     )
     return m.group(1).lower() if m else ""
+
+
+def is_private(repo):
+    """True only if `gate-route.sh is-private` exits 0. Public, unknown, or
+    a failed call is False: public=* fails closed. Its stderr is dropped,
+    since the hook takes our output on success as the extract path."""
+    route = os.path.join(os.path.dirname(os.path.realpath(__file__)), "gate-route.sh")
+    try:
+        p = subprocess.run(
+            ["bash", route, "is-private", repo],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return p.returncode == 0
+
+
+def rules_for(repo, rules, public):
+    """(includes, excludes) for a lowercase github.com owner/name, or None
+    when the repo has no copy paths. public=* lines apply unless the repo is
+    proven private; an exclude from either source wins."""
+    inc, exc = rules.get(repo, ([], []))
+    if repo and (public[0] or public[1]) and not is_private(repo):
+        inc, exc = inc + public[0], exc + public[1]
+    if not inc and not exc and repo not in rules:
+        return None
+    return inc, exc
 
 
 # --- text extraction ---------------------------------------------------------
@@ -421,16 +458,17 @@ def cmd_extract(argv):
         return 2
     cwd, out_dir = args["--dir"], args["--out-dir"]
     try:
-        rules = load_conf(conf_path())
+        rules, public = load_conf(conf_path())
     except ConfError as e:
         print(f"gate-copy: {e}", file=sys.stderr)
         return 4
     repo = "?"
     try:
         repo = repo_of(cwd)
-        if not repo or repo not in rules:
+        found = rules_for(repo, rules, public) if repo else None
+        if found is None:
             return 3
-        inc, exc = rules[repo]
+        inc, exc = found
         text = build_extract(cwd, staged_copy(cwd, inc, exc))
     except (RuntimeError, ValueError, OSError) as e:
         print(
@@ -467,11 +505,11 @@ def cmd_match(argv):
         )
         return 2
     try:
-        rules = load_conf(conf_path())
+        rules, public = load_conf(conf_path())
     except ConfError as e:
         print(f"gate-copy: {e}", file=sys.stderr)
         return 4
-    inc, exc = rules.get(argv[1].lower(), ([], []))
+    inc, exc = rules_for(argv[1].lower(), rules, public) or ([], [])
     for p in argv[2:]:
         if is_copy(p, inc, exc):
             print(p)
