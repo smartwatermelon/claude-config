@@ -28,6 +28,8 @@ export GATE_REVIEW_DIR="${TMP}/gate"
 # Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
 GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
 export GATE_GH
+# Copy gate off: these suites do not test it (copy-paths-none.conf says why).
+export COPY_PATHS_FILE="${GATE_GH%/*}/copy-paths-none.conf"
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved/k1"
 export GATE_RULES_FILE="${TMP}/rules.conf"
 cat >"${GATE_RULES_FILE}" <<'RULES'

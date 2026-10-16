@@ -108,11 +108,36 @@ _eqr "absolute glob: malformed (4)" 4 _conf_rc 'o/site include /etc/*'
 _eqr "empty conf: fails closed (4)" 4 _conf_rc ''
 _eqr "comment-only conf: fails closed (4)" 4 _conf_rc '# nothing here'
 _eqr "missing conf (4)" 4 _match_with "${TMP}/nope.conf"
+_eqr "public= with a value other than *: malformed (4)" 4 _conf_rc 'public=o include README*'
+_eqr "public=* alone is a rule, not an empty conf (0)" 0 _conf_rc 'public=* include **/README*'
+
+echo "--- public=* selector (READMEs in public repos) ---"
+# gh stub: public unless in GATE_TEST_PRIVATE; GATE_TEST_GH_FAIL fails.
+# Answers are cached, so each case uses its own repo.
+export GATE_TEST_PRIVATE="p/secret p/site nightowlstudiollc/kebab-tax-netlify nightowlstudiollc/kebab-tax"
+export GATE_TEST_GH_FAIL="p/down"
+PUB="${TMP}/public.conf"
+printf '%s\n' 'public=* include **/README*' 'p/site include index.html' 'p/site exclude docs/README.md' \
+  'p/open exclude legacy/**' >"${PUB}"
+_pmatch() { COPY_PATHS_FILE="${PUB}" python3 "${COPY}" match --repo "$1" "${@:2}" 2>&1; }
+_eqo "public repo: README at any depth, any case" \
+  $'README.md\nreadme.md\nReadme.rst\ndocs/README.md\na/b/README' \
+  _pmatch p/pub README.md readme.md Readme.rst docs/README.md a/b/README index.html
+_eqo "public repo: basename must start with README" "" \
+  _pmatch p/pub2 docs/readme/notes.md XREADME.md docs/my-readme.md
+_eqo "private repo: README not copy" "" _pmatch p/secret README.md docs/README.md
+_eqo "failed lookup counts as public: README is copy" "README.md" _pmatch p/down README.md
+_eqo "private repo with its own lines: those still apply, README does not" "index.html" \
+  _pmatch p/site index.html README.md
+_eqo "owner/name exclude wins over public=*" "README.md" \
+  _pmatch p/open README.md legacy/README.md
+_eqo "owner/name globs stay case-sensitive" "" \
+  _pmatch p/site INDEX.html
 
 echo "--- the real copy-paths.conf ---"
 _real() { COPY_PATHS_FILE="${REAL_CONF}" python3 "${COPY}" match --repo "$1" "${@:2}" 2>&1; }
 _eqr "real conf parses" 0 _match_with "${REAL_CONF}"
-_eqo "kebab.tax: pages, emails, release notes; not README or nested html" \
+_eqo "kebab.tax (private): pages, emails, release notes; not README or nested html" \
   $'index.html\nemails/beta-invitation.html\nrelease-notes.json\nAPP_STORE_COPY.txt' \
   _real nightowlstudiollc/kebab-tax-netlify index.html emails/beta-invitation.html release-notes.json \
   APP_STORE_COPY.txt README.md node_modules/x/index.html netlify/functions/a.mjs
@@ -121,8 +146,13 @@ _eqo "kebab-tax: fastlane text, not *_url.txt, not app source (phase 2)" \
   _real nightowlstudiollc/kebab-tax mobile/fastlane/metadata/en-US/description.txt \
   mobile/fastlane/metadata/android/en-US/changelogs/default.txt mobile/fastlane/metadata/en-US/support_url.txt \
   mobile/src/screens/Home.tsx mobile/src/config/easterEggMessages.ts
-_eqo "amelia-boone: posts, not pagefind output" "src/data/blog/a.md" \
+_eqo "amelia-boone (public): posts and README, not pagefind output" $'src/data/blog/a.md\nREADME.md' \
   _real nightowlstudiollc/amelia-boone src/data/blog/a.md public/pagefind/x.html README.md
+_eqo "any public repo: README files, nothing else" $'README.md\ndocs/readme.md' \
+  _real smartwatermelon/dotfiles README.md docs/readme.md install.sh
+_eqo "vendored READMEs at any depth are not copy" "" \
+  _real smartwatermelon/dotfiles vendor/x/README.md a/b/node_modules/p/README.md third_party/y/readme.md \
+  web/Vendor/z/README
 
 echo "--- extraction ---"
 REPO="${TMP}/site"
@@ -269,6 +299,50 @@ _eq "empty conf: extract fails closed (4)" 4 "$?"
 printf '[remote "origin"\n' >>"${UNKNOWN}/.git/config"
 python3 "${COPY}" extract --dir "${UNKNOWN}" --out-dir "${OUT}" >/dev/null 2>&1
 _eq "git error reading origin: fails closed (5)" 5 "$?"
+
+# public=* through extract: the exit code decides whether the hook checks the commit.
+_pextract() { COPY_PATHS_FILE="${PUB}" python3 "${COPY}" extract --dir "$1" --out-dir "${OUT}"; }
+_pinit() {
+  mkdir -p "${TMP}/$1/docs"
+  git -C "${TMP}/$1" init -q
+  git -C "${TMP}/$1" remote add origin "git@github.com:$2.git"
+  printf '# Title\n\nHello readers.\n' >"${TMP}/$1/docs/ReadMe.md"
+  git -C "${TMP}/$1" add docs/ReadMe.md
+}
+_pinit pubx p/pubx
+got="$(_pextract "${TMP}/pubx" 2>&1)"
+_eq "public repo, staged README: extract written (0)" 0 "$?"
+_eqo "  ... with the README text" $'>> docs/ReadMe.md (new file, whole text)\nTitle\nHello readers.' cat "${got}"
+_pinit privx p/secret
+_pextract "${TMP}/privx" >/dev/null 2>&1
+_eq "private repo with no own lines: not copy (3)" 3 "$?"
+_pinit downx p/down
+got="$(_pextract "${TMP}/downx" 2>&1)"
+_eq "failed lookup: extract written, nothing on stderr" "0 ${OUT}" "$? ${got%/*}"
+git -C "${TMP}/pubx" commit -q -m init
+got="$(_pextract "${TMP}/pubx" 2>&1)"
+_eq "public repo, nothing staged: has copy paths (0), no output" "0 " "$? ${got}"
+
+_scope() { COPY_PATHS_FILE="${PUB}" python3 "${COPY}" scope --dir "$1" 2>&1; }
+_eqo "scope: public=* only" "public" _scope "${TMP}/pubx"
+_eqo "scope: proven private, no own lines" "none" _scope "${TMP}/privx"
+_eqo "scope: own lines" "own" env COPY_PATHS_FILE="${CONF}" python3 "${COPY}" scope --dir "${REPO}"
+
+# pending: what git add or commit -a/paths would take from the work tree.
+_pend() { COPY_PATHS_FILE="${PUB}" python3 "${COPY}" pending --dir "${TMP}/pubx" --mode "$@" 2>&1; }
+mkdir -p "${TMP}/pubx/src"
+printf 'x\n' >"${TMP}/pubx/src/a.sh"
+printf 'new\n' >"${TMP}/pubx/README.markdown"
+_eqo "pending add: an untracked README under the pathspec" "README.markdown" _pend add -- .
+_eqo "pending add: nothing under src" "" _pend add -- src
+_eqo "pending add: no pathspec stages nothing" "" _pend add --
+_eqo "pending tracked: untracked files are not taken" "" _pend tracked --
+printf '# Changed\n' >"${TMP}/pubx/docs/ReadMe.md"
+_eqo "pending tracked: a modified tracked README" "docs/ReadMe.md" _pend tracked --
+_eqo "pending tracked: only under the pathspec" "" _pend tracked -- src
+_eqo "pending add: from a subdirectory, paths stay repo-relative" "docs/ReadMe.md" \
+  env COPY_PATHS_FILE="${PUB}" python3 "${COPY}" pending --dir "${TMP}/pubx/docs" --mode add -- .
+_eqr "pending: bad mode is a usage error (2)" 2 _pend both -- .
 
 echo "--- gate-review.sh copy kind ---"
 printf 'Some copy text.\n' >"${TMP}/extract.txt"

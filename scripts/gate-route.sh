@@ -278,7 +278,7 @@ main() {
         shift 2
         ;;
       *)
-        echo "usage: gate-route.sh [--repo owner/name] [--dir path] [--publish]" >&2
+        echo "usage: gate-route.sh [--repo owner/name] [--dir path] [--publish] | is-private <owner/name>" >&2
         exit 2
         ;;
     esac
@@ -328,6 +328,13 @@ _strength() {
   esac
 }
 
+# is-private <owner/name>: _is_private's exit code, for gate-copy.py's public=* lines.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  if [[ "${1:-}" == "is-private" ]]; then
+    [[ $# -eq 2 ]] || { echo "usage: gate-route.sh is-private <owner/name>" >&2; exit 2; }
+    rc=0
+    _is_private "$2" || rc=$?
+    exit "${rc}"
+  fi
   main "$@"
 fi
