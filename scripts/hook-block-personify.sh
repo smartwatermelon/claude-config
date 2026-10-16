@@ -412,17 +412,17 @@ except ValueError:
     print(1)
     sys.exit(0)
 asked = 0
-# A glob, variable or substitution can spell the script name; with a copy word too, count it.
-if any(c in sys.argv[1] for c in "$`*?[") and any("copy" in w for w in words):
-    asked = 1
 for i, word in enumerate(words):
-    if not word.endswith("pangram_check.py"):
+    named = word.endswith("pangram_check.py")
+    # A glob, variable or substitution may hide the script name; then only its -k flags decide.
+    hidden = any(c in word for c in "$`*?[")
+    if not (named or hidden):
         continue
     rest = words[i + 1:]
     for j, arg in enumerate(rest):
         if arg in ("&&", "||", ";", "|"):
             break
-        if "$" in arg or "`" in arg:
+        if named and ("$" in arg or "`" in arg):
             asked = 1
         if arg.startswith("-k") or arg.startswith("--k"):
             name, eq, value = arg.partition("=")
@@ -438,9 +438,9 @@ PY
 _pangram_copy_guard() {
   local text="${_joined}" stripped asked w i path dir real_out n
   local -a words
-  # Strip quotes and backslashes first, so pangram_che\ck still matches; a glob can stand in for _check.
+  # Quotes and backslashes stripped first. A -k flag alone also scans: $S or a glob can hide the name.
   stripped="${text//[\\\"\']/}"
-  [[ "${stripped}" == *pangram* ]] || return 0
+  [[ "${stripped}" == *pangram* || "${stripped}" == *-k* ]] || return 0
   asked="$(_pangram_copy_asked "${text}")" || _deny_pangram_copy "could not parse the command"
   [[ "${asked}" == 1 ]] || return 0
 

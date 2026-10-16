@@ -256,6 +256,15 @@ _case "script name from a variable, --kind copy: blocked" 2 "shell syntax" "${TM
   "python3 \${P}/pangram_check.py --kind copy < ${OUTSIDE}"
 _case "substituted script name, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
   "python3 \$(ls ${TMP}/personify/scripts/pangram*) --kind copy < ${OUTSIDE}"
+_case "script name hidden in a variable, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 \$SCRIPT --kind copy < ${OUTSIDE}"
+_case "script name hidden by a glob, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 /x/*_check.py --kind copy < ${OUTSIDE}"
+_case "script name hidden by a bracket glob, --kind copy: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 /x/p[a]ngram_check.py --kind copy < ${OUTSIDE}"
+_case "variable with no -k flag: untouched" 0 "" "${TMP}" "echo \$HOME copy"
+_case "commit message naming the command: untouched" 0 "" "${TMP}" \
+  "echo \"\$(printf 'run pangram_check.py --kind copy')\" > /dev/null"
 _case "grep for the name with a pipe: untouched" 0 "" "${TMP}" "grep -rn pangram_check scripts | head -5"
 _case "quoted --dir, no copy: untouched" 0 "" "${TMP}" "${PC} --kind pr --dir \"${SITE}\" < ${OUTSIDE}"
 
