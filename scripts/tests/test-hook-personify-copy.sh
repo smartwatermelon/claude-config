@@ -142,6 +142,85 @@ COPY_PATHS_FILE="${TMP}/public.conf" _case "private repo, staged README: not gat
   "${TMP}/privrepo" "git commit -m x"
 unset GATE_TEST_PRIVATE
 
+echo "--- public=* only: commit limits only when the call could commit a README ---"
+printf 'public=* exclude **/vendor/**\n' >>"${TMP}/public.conf"
+PO="${TMP}/pubonly"
+mkdir -p "${PO}/src" "${PO}/docs" "${PO}/lib/vendor/x"
+git -C "${PO}" init -q
+git -C "${PO}" remote add origin git@github.com:someone/pubonly.git
+printf 'a\n' >"${PO}/src/a.sh"
+printf '# Old\n' >"${PO}/README.md"
+printf '# Docs\n' >"${PO}/docs/README.md"
+printf '# Lib\n' >"${PO}/lib/vendor/x/README.md"
+git -C "${PO}" add src/a.sh README.md docs/README.md lib/vendor/x/README.md
+git -C "${PO}" commit -q -m init
+printf 'b\n' >"${PO}/src/a.sh"
+printf 'new\n' >"${PO}/src/new.sh"
+# _po <label> <want-rc> <want-substring> <command>: run the hook in PO with public.conf.
+_po() { COPY_PATHS_FILE="${TMP}/public.conf" _case "$1" "$2" "$3" "${PO}" "$4"; }
+_po "no README involved: git add x && git commit passes" 0 "" "git add src/a.sh && git commit -m x"
+_po "no README involved: a new file through git add passes" 0 "" "git add src/new.sh src && git commit -m x"
+_po "no README involved: commit -a passes" 0 "" "git commit -a -m x"
+_po "no README involved: commit -am passes" 0 "" "git commit -am x"
+_po "no README involved: commit pathspec passes" 0 "" "git commit -m x src/a.sh"
+_po "no README involved: git -C add && git -C commit passes" 0 "" \
+  "git -C ${PO} add src/a.sh && git -C ${PO} commit -m x"
+_po "no README involved: cd, add, commit, pipe into tail passes" 0 "" \
+  "cd ${PO} && git add -A && git commit -m x 2>&1 | tail -3"
+_po "a vendored README is not copy: git add . passes" 0 "" "git add . && git commit -m x"
+printf '# Vendored, edited\n' >"${PO}/lib/vendor/x/README.md"
+_po "  ... nor with the vendored README edited" 0 "" "git add . && git commit -m x"
+printf '# New\n' >"${PO}/README.md"
+_po "README modified, git add README.md && git commit: blocked" 2 "could commit public-facing copy (README.md)" \
+  "git add README.md && git commit -m x"
+_po "README modified, git add . && git commit: blocked" 2 "README.md" "git add . && git commit -m x"
+_po "README modified, git add -u && git commit: blocked" 2 "README.md" "git add -u && git commit -m x"
+_po "README modified, commit -a: blocked" 2 "README.md" "git commit -a -m x"
+_po "README modified, commit pathspec .: blocked" 2 "README.md" "git commit -m x ."
+_po "README modified, other file added: passes" 0 "" "git add src/a.sh && git commit -m x"
+git -C "${PO}" checkout -q -- README.md
+printf '# Docs, edited\n' >"${PO}/docs/README.md"
+_po "nested README under a named directory: blocked" 2 "docs/README.md" "git add docs && git commit -m x"
+git -C "${PO}" checkout -q -- docs/README.md
+_po "undecidable: a file write in the call gets the strict limits" 2 "another git command" \
+  "echo x > src/a.sh && git add src/a.sh && git commit -m x"
+_po "undecidable: a variable pathspec gets the strict limits" 2 "another git command" \
+  "git add \"\$F\" && git commit -m x"
+_po "undecidable: git pull in the call gets the strict limits" 2 "another git command" \
+  "git pull && git commit -m x"
+_po "undecidable: piping into tee gets the strict limits" 2 "another git command" \
+  "git add src/a.sh && git commit -m x | tee out"
+_po "undecidable: a background job gets the strict limits" 2 "(-a)" "touch x & git commit -a -m x"
+_po "undecidable: an assignment before git gets the strict limits" 2 "another git command" \
+  "GIT_INDEX_FILE=/tmp/i git add src/a.sh && git commit -m x"
+_po "commit -p is never relaxed" 2 "(-p)" "git commit -p -m x"
+printf '# New\n' >"${PO}/README.md"
+_po "a second commit after the first gets the strict limits" 2 "another git command" \
+  "git add src/a.sh && git commit -m a && git add README.md && git commit -m b"
+_po "git commit then commit -a gets the strict limits" 2 "another git command" \
+  "git commit -m x && git commit -a -m y"
+_po "git add hidden in bash -c after the commit gets the strict limits" 2 "another git command" \
+  "git commit -m x; bash -c 'git add README.md'"
+_po "a command substitution in the message gets the strict limits" 2 "another git command" \
+  "git commit -m \"\$(git add README.md)\""
+_po "brace expansion in a pathspec gets the strict limits" 2 "another git command" \
+  "git add README.{md,txt} && git commit -m x"
+_po "git push after the commit stays relaxed" 0 "" "git add src/a.sh && git commit -m x && git push"
+COPY_PATHS_FILE="${TMP}/public.conf" _case "cd into the repo from elsewhere: README still found" 2 \
+  "could commit public-facing copy (README.md)" "${TMP}" "cd ${PO} && git add . && git commit -m x"
+COPY_PATHS_FILE="${TMP}/public.conf" _case "git -C from elsewhere: README still found" 2 \
+  "could commit public-facing copy (README.md)" "${TMP}" "git -C ${PO} add . && git -C ${PO} commit -m x"
+git -C "${PO}" checkout -q -- README.md
+printf '# Staged\n' >"${PO}/README.md"
+git -C "${PO}" add README.md
+_po "README staged, plain commit: extract and approval as before" 2 "public-facing copy that has not been approved" \
+  "git commit -m x"
+_contains "  ... with an extract" "${err}" "extract: ${GATE_REVIEW_DIR}/copy/"
+git -C "${PO}" reset -q
+git -C "${PO}" checkout -q -- README.md
+COPY_PATHS_FILE="${TMP}/public.conf" _case "own lines plus public=*: strict limits as before" 2 \
+  "another git command" "${SITE}" "git add README.md && git commit -m x"
+
 echo "--- copy changed in a repo whose commit text is exempt ---"
 sed -i.bak -e 's#Export a tax report in one tap.#Export a tax report in two taps.#' "${SITE}/index.html"
 git -C "${SITE}" add index.html

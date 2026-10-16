@@ -150,6 +150,9 @@ _eqo "amelia-boone (public): posts and README, not pagefind output" $'src/data/b
   _real nightowlstudiollc/amelia-boone src/data/blog/a.md public/pagefind/x.html README.md
 _eqo "any public repo: README files, nothing else" $'README.md\ndocs/readme.md' \
   _real smartwatermelon/dotfiles README.md docs/readme.md install.sh
+_eqo "vendored READMEs at any depth are not copy" "" \
+  _real smartwatermelon/dotfiles vendor/x/README.md a/b/node_modules/p/README.md third_party/y/readme.md \
+  web/Vendor/z/README
 
 echo "--- extraction ---"
 REPO="${TMP}/site"
@@ -319,6 +322,27 @@ _eq "failed lookup: extract written, nothing on stderr" "0 ${OUT}" "$? ${got%/*}
 git -C "${TMP}/pubx" commit -q -m init
 got="$(_pextract "${TMP}/pubx" 2>&1)"
 _eq "public repo, nothing staged: has copy paths (0), no output" "0 " "$? ${got}"
+
+_scope() { COPY_PATHS_FILE="${PUB}" python3 "${COPY}" scope --dir "$1" 2>&1; }
+_eqo "scope: public=* only" "public" _scope "${TMP}/pubx"
+_eqo "scope: proven private, no own lines" "none" _scope "${TMP}/privx"
+_eqo "scope: own lines" "own" env COPY_PATHS_FILE="${CONF}" python3 "${COPY}" scope --dir "${REPO}"
+
+# pending: what git add or commit -a/paths would take from the work tree.
+_pend() { COPY_PATHS_FILE="${PUB}" python3 "${COPY}" pending --dir "${TMP}/pubx" --mode "$@" 2>&1; }
+mkdir -p "${TMP}/pubx/src"
+printf 'x\n' >"${TMP}/pubx/src/a.sh"
+printf 'new\n' >"${TMP}/pubx/README.markdown"
+_eqo "pending add: an untracked README under the pathspec" "README.markdown" _pend add -- .
+_eqo "pending add: nothing under src" "" _pend add -- src
+_eqo "pending add: no pathspec stages nothing" "" _pend add --
+_eqo "pending tracked: untracked files are not taken" "" _pend tracked --
+printf '# Changed\n' >"${TMP}/pubx/docs/ReadMe.md"
+_eqo "pending tracked: a modified tracked README" "docs/ReadMe.md" _pend tracked --
+_eqo "pending tracked: only under the pathspec" "" _pend tracked -- src
+_eqo "pending add: from a subdirectory, paths stay repo-relative" "docs/ReadMe.md" \
+  env COPY_PATHS_FILE="${PUB}" python3 "${COPY}" pending --dir "${TMP}/pubx/docs" --mode add -- .
+_eqr "pending: bad mode is a usage error (2)" 2 _pend both -- .
 
 echo "--- gate-review.sh copy kind ---"
 printf 'Some copy text.\n' >"${TMP}/extract.txt"

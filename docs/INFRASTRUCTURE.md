@@ -165,8 +165,9 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   `<owner/name> <include|exclude> <glob>`. A `public=*` line applies to every
   github.com repo that `gate-route.sh is-private` does not prove private
   (unknown counts as public), with case-insensitive globs; the shipped
-  `public=* include **/README*` gates READMEs in public repos, so every public
-  repo now counts as having copy paths. On every agent `git commit`,
+  `public=* include **/README*` gates READMEs in public repos, except vendored
+  copies (`**/vendor/**`, `**/third_party/**`, `**/node_modules/**`). On
+  every agent `git commit`,
   `hook-block-personify.sh` runs `scripts/gate-copy.py extract` on the
   destination checkout. When staged changes touch a listed path, the added or
   changed text (whole text for a new file; HTML and Markdown stripped, JSON
@@ -176,7 +177,11 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   approval, even where the commit message is exempt, and it has no length cap.
   In a repo with copy paths the hook also blocks `git commit -a/-i/-o/-p`, a
   pathspec, and any other index-changing git command in the same call, since
-  it reads the index before the call runs. A missing or malformed conf blocks
+  it reads the index before the call runs. A repo covered only by `public=*`
+  gets those limits only when git shows the call could commit a copy file, and
+  only for calls of a fixed shape (cd, git add, git rm, one git commit, pipes
+  into tail/head/grep/wc/cat); any other shape gets the full limits. The
+  `copy-paths.conf` header has the rule. A missing or malformed conf blocks
   every agent commit; `SUSPENDED` is the escape hatch. In-app JSX strings are
   phase 2 (dev-env#206).
 - Pangram route guard. `install.sh` writes

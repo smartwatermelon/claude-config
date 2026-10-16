@@ -508,7 +508,7 @@ _pangram_copy_guard
 _index_git_re="(^|[^[:alnum:]_.-])${_path}git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(add|rm|mv|stage|apply|restore|reset|checkout|switch|update-index|read-tree|stash|merge|cherry-pick|revert|rebase|am|pull|commit)([[:space:]]|$)"
 
 _verify_copy() {
-  local seg="$1" surface="public-facing copy" out rc=0 n
+  local seg="$1" surface="public-facing copy" out rc=0 n scope
   [[ -f "${COPY_SCRIPT}" ]] || _deny_copy "gate-copy.py missing at ${COPY_SCRIPT}; cannot check staged copy" "${surface}"
   out="$(python3 "${COPY_SCRIPT}" extract --dir "${DEST_DIR}" --out-dir "${COPY_OUT}" 2>&1)" || rc=$?
   case "${rc}" in
@@ -516,11 +516,15 @@ _verify_copy() {
     0) ;;
     *) _deny_copy "${out:-gate-copy.py exited ${rc} with no message}" "${surface}" ;;
   esac
-  n="$(printf '%s\n' "${_scan_flat}" | { grep -oE -- "${_index_git_re}" || true; } | wc -l | tr -d ' ')"
-  if ((n > 1)); then
-    _deny_copy "this repo has copy paths, and the call runs another git command that can change what is staged (git add, rm, mv, restore, a second commit, ...). This hook reads the index before the call runs. Run that command in its own call, then commit." "${surface}"
+  # A public=*-only repo skips the strict limits when git shows the call stages no copy (#735).
+  scope="$(python3 "${COPY_SCRIPT}" scope --dir "${DEST_DIR}" 2>/dev/null)" || scope="own"
+  if [[ "${scope}" != "public" ]] || ! _public_call_ok; then
+    n="$(printf '%s\n' "${_scan_flat}" | { grep -oE -- "${_index_git_re}" || true; } | wc -l | tr -d ' ')"
+    if ((n > 1)); then
+      _deny_copy "this repo has copy paths, and the call runs another git command that can change what is staged (git add, rm, mv, restore, a second commit, ...). This hook reads the index before the call runs. Run that command in its own call, then commit." "${surface}"
+    fi
+    _commit_args_ok "${seg}"
   fi
-  _commit_args_ok "${seg}"
   [[ -n "${out}" ]] || return 0
   local err reason="" line
   if err="$("${GATE}" check "${out}" --kind copy --dir "${DEST_DIR}" 2>&1 >/dev/null)"; then
@@ -590,6 +594,233 @@ _commit_args_ok() {
     esac
   done <<<"${words}"
   return 0
+}
+
+# One line per command of the call: <separator after>\037<text>. Quote-blind; unlike _segments, it keeps VAR= prefixes.
+_call_parts() {
+  printf '%s\n' "${_joined}" | LC_ALL=C awk '
+    {
+      n = length($0); seg = ""; i = 1
+      while (i <= n) {
+        c = substr($0, i, 1); nx = substr($0, i + 1, 1)
+        if ((c == "&" && nx == "&") || (c == "|" && nx == "|")) { printf "%s\037%s\n", c nx, seg; seg = ""; i += 2; continue }
+        pv = (seg == "") ? "" : substr(seg, length(seg), 1)
+        if (c == "&" && pv != ">" && nx != ">") { printf "&\037%s\n", seg; seg = ""; i++; continue }
+        if (c == ";" || c == "|") { printf "%s\037%s\n", c, seg; seg = ""; i++; continue }
+        seg = seg c; i++
+      }
+      printf ";\037%s\n", seg
+    }'
+}
+
+# Fill W_TAG and W_DEC with _words output for one command.
+_load_words() {
+  local tag raw dec words
+  W_TAG=()
+  W_DEC=()
+  W_RAW=()
+  words="$(_words "$1")" || return 1
+  while IFS=$'\037' read -r tag raw dec; do
+    [[ -n "${raw}" ]] || continue
+    W_TAG+=("${tag}")
+    W_RAW+=("${raw}")
+    W_DEC+=("${dec}")
+  done <<<"${words}"
+}
+
+# 0 if no word redirects to a file or opens a subshell. Only stream merges and /dev/null are allowed.
+_no_redirects() {
+  local raw
+  for raw in "${W_RAW[@]}"; do
+    case "${raw}" in
+      2'>&1' | 1'>&2' | '>&2' | '>/dev/null' | [12]'>/dev/null' | '&>/dev/null') ;;
+      *'<'* | *'>'* | '('* | ')'* | '{'* | '}'*) return 1 ;;
+      *) ;;
+    esac
+  done
+  return 0
+}
+
+# _git_sub: index of the git subcommand in W_DEC, with GIT_C set from a literal -C. Returns 1 otherwise.
+_git_sub() {
+  local i=1
+  GIT_C=""
+  [[ "${W_DEC[0]:-}" == "git" && "${W_TAG[0]}" == "OK" ]] || return 1
+  while ((i < ${#W_DEC[@]})); do
+    case "${W_DEC[i]}" in
+      -C)
+        [[ "${W_TAG[i + 1]:-BAD}" == "OK" ]] || return 1
+        GIT_C="${W_DEC[i + 1]}"
+        i=$((i + 2))
+        ;;
+      --no-pager) i=$((i + 1)) ;;
+      -*) return 1 ;;
+      *)
+        GIT_SUB="${i}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+# Pathspecs of a `git add` (W_* loaded, from index $1) into ADD_SPECS. -A and -u add the whole tree.
+_add_specs() {
+  local i="$1" d c dashdash=0
+  for ((; i < ${#W_DEC[@]}; i++)); do
+    d="${W_DEC[i]}"
+    [[ "${W_TAG[i]}" == "OK" ]] || return 1
+    if ((dashdash == 0)); then
+      case "${d}" in
+        --) dashdash=1; continue ;;
+        2'>&1' | 1'>&2' | '>&2' | '>/dev/null' | [12]'>/dev/null' | '&>/dev/null') continue ;;
+        --all | --update | --no-ignore-removal) ADD_SPECS+=(":/"); continue ;;
+        --verbose | --intent-to-add) continue ;;
+        --*) return 1 ;;
+        -?*)
+          for ((c = 1; c < ${#d}; c++)); do
+            case "${d:c:1}" in
+              A | u) ADD_SPECS+=(":/") ;;
+              v | N) ;;
+              *) return 1 ;;
+            esac
+          done
+          continue
+          ;;
+        *) ;;
+      esac
+    fi
+    ADD_SPECS+=("${d}")
+  done
+  return 0
+}
+
+# Flags and pathspecs of the commit (W_* loaded, from index $1): sets COMMIT_ALL, fills COMMIT_SPECS.
+_commit_specs() {
+  local i="$1" d c opt long want=0 dashdash=0
+  for ((; i < ${#W_DEC[@]}; i++)); do
+    d="${W_DEC[i]}"
+    # A non-literal word, even a message, may run a command (-m "$(git add x)").
+    [[ "${W_TAG[i]}" == "OK" ]] || return 1
+    if ((want)); then
+      want=0
+      continue
+    fi
+    if ((dashdash == 0)); then
+      opt="${d%%=*}"
+      case "${opt}" in
+        --) dashdash=1; continue ;;
+        --?*)
+          for long in --patch --interactive --pathspec-from-file; do
+            [[ "${long}" != "${opt}"* ]] || return 1
+          done
+          [[ "--all" != "${opt}"* ]] || { COMMIT_ALL=1; continue; }
+          case "${d}" in
+            --file | --message | --reuse-message | --reedit-message | --author | --date | --fixup | --squash | --template | --cleanup | --trailer) want=1 ;;
+            *) ;;
+          esac
+          continue
+          ;;
+        -?*)
+          for ((c = 1; c < ${#d}; c++)); do
+            case "${d:c:1}" in
+              a) COMMIT_ALL=1 ;;
+              p) return 1 ;;
+              F | m | C | c | t)
+                ((c == ${#d} - 1)) && want=1
+                break
+                ;;
+              S | u) break ;;
+              *) ;;
+            esac
+          done
+          continue
+          ;;
+        2'>&1' | 1'>&2' | '>&2' | '>/dev/null' | [12]'>/dev/null' | '&>/dev/null') continue ;;
+        *) ;;
+      esac
+    fi
+    COMMIT_SPECS+=("${d}")
+  done
+  return 0
+}
+
+# public=*-only repo: 0 when the call has a known shape and git says it stages no copy. 1: use the strict limits.
+_public_call_ok() {
+  local sep text state=pre gits=0 commit=0 commit_c="" out hits="" i parts n
+  local -a add_cs=()
+  ADD_SPECS=()
+  COMMIT_SPECS=()
+  COMMIT_ALL=0
+  out="$(_quoted_segments)" || return 1
+  [[ -z "${out}" ]] || return 1
+  parts="$(_call_parts)" || return 1
+  while IFS=$'\037' read -r sep text; do
+    [[ "${state}" != post ]] || continue
+    [[ "${sep}" != "&" ]] || return 1
+    _load_words "${text}" || return 1
+    if ((${#W_DEC[@]} == 0)); then
+      [[ "${sep}" != "|" ]] || return 1
+      continue
+    fi
+    _no_redirects || return 1
+    if [[ "${state}" == pipe ]]; then
+      case "${W_DEC[0]}" in
+        tail | head | grep | wc | cat) ;;
+        *) return 1 ;;
+      esac
+      [[ "${sep}" == "|" ]] || state=post
+      continue
+    fi
+    case "${W_DEC[0]}" in
+      cd | pushd)
+        ((gits == 0)) || return 1
+        [[ "${sep}" != "|" ]] || return 1
+        continue
+        ;;
+      *) ;;
+    esac
+    _git_sub || return 1
+    gits=$((gits + 1))
+    case "${W_DEC[GIT_SUB]}" in
+      add | stage)
+        [[ "${sep}" != "|" ]] || return 1
+        _add_specs "$((GIT_SUB + 1))" || return 1
+        add_cs+=("${GIT_C}")
+        ;;
+      rm)
+        # git rm only removes from the index; a removal is never copy.
+        [[ "${sep}" != "|" ]] || return 1
+        ;;
+      commit)
+        ((commit == 0)) || return 1
+        commit=1
+        commit_c="${GIT_C}"
+        _commit_specs "$((GIT_SUB + 1))" || return 1
+        if [[ "${sep}" == "|" ]]; then state=pipe; else state=post; fi
+        ;;
+      *) return 1 ;;
+    esac
+  done <<<"${parts}"
+  ((commit == 1)) || return 1
+  # Every index-changing git word in the call, after the commit or quoted, must be one parsed above.
+  n="$(printf '%s\n' "${_scan_flat}" | { grep -oE -- "${_index_git_re}" || true; } | wc -l | tr -d ' ')"
+  ((n == gits)) || return 1
+  for i in "${add_cs[@]}"; do
+    [[ "${i}" == "${commit_c}" ]] || return 1
+  done
+  if ((${#ADD_SPECS[@]} > 0)); then
+    out="$(python3 "${COPY_SCRIPT}" pending --dir "${DEST_DIR}" --mode add -- "${ADD_SPECS[@]}" 2>/dev/null)" || return 1
+    hits+="${out:+${out}$'\n'}"
+  fi
+  if ((COMMIT_ALL == 1 || ${#COMMIT_SPECS[@]} > 0)); then
+    ((COMMIT_ALL == 1)) && COMMIT_SPECS=()
+    out="$(python3 "${COPY_SCRIPT}" pending --dir "${DEST_DIR}" --mode tracked -- "${COMMIT_SPECS[@]}" 2>/dev/null)" || return 1
+    hits+="${out:+${out}$'\n'}"
+  fi
+  [[ -n "${hits}" ]] || return 0
+  hits="$(printf '%s' "${hits}" | sort -u | paste -sd ' ' -)"
+  _deny_copy "this call could commit public-facing copy (${hits}) through git add, -a or paths. Stage it with git add in its own call, then run git commit with no -a or paths." "public-facing copy"
 }
 
 _deny_copy() {

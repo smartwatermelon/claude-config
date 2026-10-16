@@ -498,6 +498,71 @@ def cmd_extract(argv):
     return 0
 
 
+def _dir_args(argv, usage):
+    """(dir, rest) from `--dir D rest...`; None after printing usage."""
+    if len(argv) < 2 or argv[0] != "--dir":
+        print(f"usage: gate-copy.py {usage}", file=sys.stderr)
+        return None
+    return argv[1], argv[2:]
+
+
+def cmd_scope(argv):
+    """scope --dir D: print own (own lines), public (public=* only) or none."""
+    parsed = _dir_args(argv, "scope --dir <checkout>")
+    if parsed is None or parsed[1]:
+        return 2
+    try:
+        rules, public = load_conf(conf_path())
+        repo = repo_of(parsed[0])
+    except (ConfError, RuntimeError) as e:
+        print(f"gate-copy: {e}", file=sys.stderr)
+        return 5
+    if repo in rules:
+        print("own")
+    elif repo and rules_for(repo, rules, public) is not None:
+        print("public")
+    else:
+        print("none")
+    return 0
+
+
+def cmd_pending(argv):
+    """add: modified and untracked, unignored files under SPEC. tracked:
+    modified tracked files under SPEC, or all of them with no SPEC."""
+    usage = "pending --dir <checkout> --mode add|tracked -- <pathspec>..."
+    parsed = _dir_args(argv, usage)
+    if parsed is None:
+        return 2
+    cwd, rest = parsed
+    if len(rest) < 3 or rest[0] != "--mode" or rest[1] not in ("add", "tracked"):
+        print(f"usage: gate-copy.py {usage}", file=sys.stderr)
+        return 2
+    mode, specs = rest[1], rest[2:]
+    if specs[0] != "--":
+        print(f"usage: gate-copy.py {usage}", file=sys.stderr)
+        return 2
+    specs = specs[1:]
+    try:
+        rules, public = load_conf(conf_path())
+        repo = repo_of(cwd)
+        found = rules_for(repo, rules, public) if repo else None
+        if found is None or (mode == "add" and not specs):
+            return 0
+        if mode == "add":
+            args = ["ls-files", "-z", "--full-name", "-m", "-o", "--exclude-standard"]
+        else:
+            args = ["diff", "-z", "--name-only", "--no-relative", "--no-renames"]
+            args.append("--diff-filter=d")
+        p = git(cwd, *args, "--", *specs)
+    except (ConfError, RuntimeError, OSError) as e:
+        print(f"gate-copy: {e}", file=sys.stderr)
+        return 5
+    names = p.stdout.decode("utf-8", "surrogateescape").split("\0")
+    for name in sorted({n for n in names if n and is_copy(n, *found)}):
+        print(name)
+    return 0
+
+
 def cmd_match(argv):
     if len(argv) < 2 or argv[0] != "--repo":
         print(
@@ -521,7 +586,11 @@ def main(argv):
         return cmd_extract(argv[1:])
     if argv and argv[0] == "match":
         return cmd_match(argv[1:])
-    print("usage: gate-copy.py {extract|match} ...", file=sys.stderr)
+    if argv and argv[0] == "scope":
+        return cmd_scope(argv[1:])
+    if argv and argv[0] == "pending":
+        return cmd_pending(argv[1:])
+    print("usage: gate-copy.py {extract|match|scope|pending} ...", file=sys.stderr)
     return 2
 
 
