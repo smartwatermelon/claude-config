@@ -776,6 +776,9 @@ _public_call_ok() {
       cd | pushd)
         ((gits == 0)) || return 1
         [[ "${sep}" != "|" ]] || return 1
+        for i in "${W_TAG[@]}"; do
+          [[ "${i}" == "OK" ]] || return 1
+        done
         continue
         ;;
       *) ;;

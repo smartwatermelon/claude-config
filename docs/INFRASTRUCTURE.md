@@ -180,7 +180,8 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   it reads the index before the call runs. A repo covered only by `public=*`
   gets those limits only when git shows the call could commit a copy file, and
   only for calls of a fixed shape (cd, git add, git rm, one git commit, pipes
-  into tail/head/grep/wc/cat); any other shape gets the full limits. The
+  into tail/head/grep/wc/cat, then commands with no other index-changing git
+  command); any other shape gets the full limits. The
   `copy-paths.conf` header has the rule. A missing or malformed conf blocks
   every agent commit; `SUSPENDED` is the escape hatch. In-app JSX strings are
   phase 2 (dev-env#206).

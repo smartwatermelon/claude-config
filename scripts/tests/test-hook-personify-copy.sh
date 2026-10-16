@@ -206,6 +206,10 @@ _po "a command substitution in the message gets the strict limits" 2 "another gi
 _po "brace expansion in a pathspec gets the strict limits" 2 "another git command" \
   "git add README.{md,txt} && git commit -m x"
 _po "git push after the commit stays relaxed" 0 "" "git add src/a.sh && git commit -m x && git push"
+_po "a quoted message holding a separator gets the strict limits" 2 "another git command" \
+  "git add src/a.sh && git commit -m \"fix: a; b\""
+_po "a quoted message without a separator stays relaxed" 0 "" "git add src/a.sh && git commit -m \"fix: a b\""
+_po "cd to a non-literal target gets denied or strict" 2 "" "cd \"\$X\" && git add README.md && git commit -m x"
 COPY_PATHS_FILE="${TMP}/public.conf" _case "cd into the repo from elsewhere: README still found" 2 \
   "could commit public-facing copy (README.md)" "${TMP}" "cd ${PO} && git add . && git commit -m x"
 COPY_PATHS_FILE="${TMP}/public.conf" _case "git -C from elsewhere: README still found" 2 \
