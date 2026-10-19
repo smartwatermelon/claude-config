@@ -1446,8 +1446,36 @@ _inert_gh_values() {
   segs="$(_quoted_segments 1 "${_joined}")"
   while IFS= read -r seg; do
     printf '%s\n' "${seg}" | grep -qE "${gh_re}" || continue
-    printf '%s\n' "${seg}" |
-      grep -oE -- "[[:space:]](-t|--title|-b|--body)(=|[[:space:]]+)('[^']*'|\"[^\"\$${bt}\\\\]*\")" || true
+    # Nested quoting would defeat the quote scan below; such a segment keeps every cd word.
+    case "${seg}" in
+      *"${bt}"* | *"\$("* | *"\${"* | *"\$'"* | *"\$\""* | *"<("* | *">("*) continue ;;
+      *) ;;
+    esac
+    # A flag counts only outside quotes; a rejected value is scanned as normal text, never skipped.
+    printf '%s\n' "${seg}" | LC_ALL=C awk '
+      {
+        s = $0; n = length(s); q = 0; i = 1
+        while (i <= n) {
+          c = substr(s, i, 1)
+          if (q == 1) { if (c == "\047") q = 0; i++; continue }
+          if (c == "\\") { i += 2; continue }
+          if (q == 2) { if (c == "\"") q = 0; i++; continue }
+          if (c == "\047") { q = 1; i++; continue }
+          if (c == "\"") { q = 2; i++; continue }
+          if (c ~ /[ \t]/ && match(substr(s, i), /^[ \t]+(-t|--title|-b|--body)(=|[ \t]+)/)) {
+            j = i + RLENGTH; o = substr(s, j, 1)
+            if (o == "\047" || o == "\"") {
+              k = index(substr(s, j + 1), o)
+              v = substr(s, j + 1, k - 1)
+              if (k > 0 && !index(v, "$") && !index(v, "\140") && !index(v, "\\")) {
+                print v; i = j + k + 1; continue
+              }
+            }
+            i = j; continue
+          }
+          i++
+        }
+      }'
   done <<<"${segs}"
 }
 CD_DIR=""

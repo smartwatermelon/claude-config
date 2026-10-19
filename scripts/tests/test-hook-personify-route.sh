@@ -325,6 +325,20 @@ _case "an inert title does not hide a cd later in the command" 2 "cd the hook ca
   "gh issue create --title 'cd' --body-file ${TXT}; bash -c 'cd ${BEACON} && git commit -F ${TXT}'"
 _case "ssh -t with a quoted cd still denies (not a gh title)" 2 "cd the hook cannot resolve" "${PERSONAL}" \
   "ssh -t 'cd ${BEACON}' && git commit -F ${TXT}"
+# Commit-review finding: a -t inside one literal must not pair with the next
+# literal's quote and swallow a live cd between them.
+_case "a -t inside a literal does not swallow a live \$(cd ...)" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue create --title t --body-file ${TXT} 'a -t ' \$(cd ${BEACON} && git commit -F ${TXT}) ' b'"
+_case "a -t inside a literal does not swallow a cd after a separator" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue comment 1 -b \"q\" -t \"x\" ' -t ' ; echo \$(cd ${BEACON}) ; echo ' '"
+_case "a literal -t pairs only with its own quote" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue create --body-file ${TXT} 'x -t ' cd ' y' ; echo \$(cd ${BEACON})"
+_case "a -t inside a literal does not swallow a backtick cd" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue create --title t --body-file ${TXT} 'a -t ' \`cd ${BEACON} && git commit -F ${TXT}\` ' b'"
+_case "a -t inside a literal does not swallow a double-quoted \$(cd ...)" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue create --title t --body-file ${TXT} 'a -t ' \"\$(cd ${BEACON} && git commit -F ${TXT})\" ' b'"
+_case "an escaped quote in a double-quoted title does not desync the scan" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue create --title \"a\\\" -b 'x\" ; echo \$(cd ${BEACON}) ; echo '\" --body-file ${TXT}"
 
 # Final review I3: several -C options deny.
 _case "two git -C options deny" 2 "more than one git -C" "${TMP}" \
