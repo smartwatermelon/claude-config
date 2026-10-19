@@ -388,6 +388,37 @@ printf 'unapproved\n' >"${TMP}/other.txt"
 _case "unapproved bytes still block" 2 "rule 3 (visual): no visual approval matches" "${PERSONAL}" \
   "git -C ${PERSONAL} commit -F ${TMP}/other.txt"
 
+# #739: an unresolved destination never reached the route, so the deny must
+# say to name the repository, not print the approval steps.
+_dest_msg() { # <label> <cwd> <command>
+  _run "$2" "$3"
+  if ((rc == 2)) && [[ "${err}" == *"cannot tell which repository this writes to"* &&
+    "${err}" == *"Name it literally and retry"* && "${err}" != *"stage --kind"* &&
+    "${err}" != *"has not been visually approved"* ]]; then
+    _ok "$1"
+  else
+    _no "$1 (rc=${rc}): ${err}"
+  fi
+}
+_dest_msg "git -C \$R: name-it message, no staging steps" "${TMP}" \
+  "git -C \$R commit -F ${TXT}"
+_dest_msg "unfollowable cd: name-it message, no staging steps" "${PERSONAL}" \
+  "cd \$D && git commit -F ${TXT}"
+_dest_msg "cd with parentheses: name-it message, no staging steps" "${PERSONAL}" \
+  "cd ${BEACON} && gh pr create --title 'docs(x): t' --body-file ${TXT}"
+_dest_msg "gh -R \$X: name-it message, no staging steps" "${PERSONAL}" \
+  "gh pr create --title t --body-file ${TXT} -R \$X"
+_dest_msg "xargs wrapper: name-it message, no staging steps" "${PERSONAL}" \
+  "echo ${TXT} | xargs git commit -F"
+# A resolved, gated destination keeps the approval steps.
+_run "${PERSONAL}" "git -C ${PERSONAL} commit -F ${TMP}/other.txt"
+if ((rc == 2)) && [[ "${err}" == *"This destination is gated"* && "${err}" == *"stage --kind"* &&
+  "${err}" != *"Every commit message"* ]]; then
+  _ok "gated destination: deny keeps the staging steps"
+else
+  _no "gated destination: deny keeps the staging steps (rc=${rc}): ${err}"
+fi
+
 echo ""
 echo "passed: ${pass}  failed: ${fail}"
 ((fail == 0))

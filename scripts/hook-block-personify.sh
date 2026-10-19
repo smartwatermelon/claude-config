@@ -295,8 +295,8 @@ _deny() {
     echo "  surface: ${surface}"
     echo "  reason:  ${reason}"
     echo ''
-    echo 'Every commit message and PR body must be read and approved in the'
-    echo 'editor before it is written. To do that:'
+    echo 'This destination is gated: its commit messages and PR bodies must be'
+    echo 'read and approved in the editor before they are written. To do that:'
     echo ''
     echo '  1. Write the text to a file.'
     echo "  2. ${GATE} stage --kind <kind> <label> <file>"
@@ -317,6 +317,27 @@ _deny() {
     echo ''
     echo 'Approval is his to give. Staging and opening on his behalf is fine;'
     echo 'typing the word for him is not.'
+  } >&2
+  exit 2
+}
+
+# The destination is unknown, so the route was never asked. Printing the
+# approval steps here made agents stage text for exempt repos (#739).
+_deny_dest() {
+  local reason="$1" surface="$2"
+  {
+    echo '🛑 BLOCKED: cannot tell which repository this writes to.'
+    echo ''
+    echo "  surface: ${surface}"
+    echo "  reason:  ${reason}"
+    echo ''
+    echo 'The approval gate applies only to some repositories, so the hook must'
+    echo 'know the destination. Name it literally and retry:'
+    echo '  git -C /absolute/path commit ...'
+    echo '  gh ... -R owner/name ...'
+    echo '  gh api repos/owner/name/...'
+    echo 'Do not stage this text for approval. If the retry is gated, the next'
+    echo 'block says so.'
   } >&2
   exit 2
 }
@@ -944,20 +965,20 @@ _gh_destination() {
   local seg="$1" kind="$2" surface="$3" blank flags urls paths c n placeholder=0
   local -a cands=()
   if printf '%s\n' "${_joined}" | tr '\n' ' ' | grep -qE '(^|[^A-Za-z0-9_])GH_REPO='; then
-    _deny "GH_REPO sets the destination repository outside the command; drop it and use gh -R <owner/name>" "${surface}"
+    _deny_dest "GH_REPO sets the destination repository outside the command; drop it and use gh -R <owner/name>" "${surface}"
   fi
   if printf '%s\n' "${seg}" | grep -qE -- '[[:space:]]-R[^[:space:]]'; then
-    _deny "attached -R<value> form; write -R <owner/name> with a space" "${surface}"
+    _deny_dest "attached -R<value> form; write -R <owner/name> with a space" "${surface}"
   fi
   blank="$(printf '%s\n' "${seg}" | sed -E "s/\"[^\"]*\"/\"\"/g; s/'[^']*'/''/g")"
   for c in '[[:space:]](-R|--repo)([[:space:]]|=|$)' 'github\.com/'; do
     n="$(_count_re "${c}" "${seg}")"
     if [[ "${n}" != "$(_count_re "${c}" "${blank}" || true)" ]]; then
-      _deny "a repository (-R, --repo or github.com/) appears inside quoted text; the hook cannot tell it from the real option; name the repository outside quotes and keep it out of titles" "${surface}"
+      _deny_dest "a repository (-R, --repo or github.com/) appears inside quoted text; the hook cannot tell it from the real option; name the repository outside quotes and keep it out of titles" "${surface}"
     fi
   done
   if [[ "${kind}" == "api" ]] && printf '%s\n' "${seg}" | grep -qE -- "(^|[[:space:]\"'/])repositories/"; then
-    _deny "gh api repositories/<id> names the repository by number; use repos/<owner>/<name>" "${surface}"
+    _deny_dest "gh api repositories/<id> names the repository by number; use repos/<owner>/<name>" "${surface}"
   fi
   flags="$(printf '%s\n' "${seg}" |
     grep -oE -- "[[:space:]](-R|--repo)(=|[[:space:]]+)(\"[^\"]*\"|'[^']*'|[^[:space:]]+)" |
@@ -974,7 +995,7 @@ _gh_destination() {
   case "${flags}${urls}${paths}" in
     *'$'* | *"${bt}"*)
       c="${flags}${urls}${paths}"
-      _deny "cannot resolve the repository from '${c//$'\n'/ }'; name it literally" "${surface}"
+      _deny_dest "cannot resolve the repository from '${c//$'\n'/ }'; name it literally" "${surface}"
       ;;
     *) ;;
   esac
@@ -986,7 +1007,7 @@ _gh_destination() {
       continue
     fi
     if [[ "${c}" != */* ]]; then
-      _deny "cannot resolve the repository from 'repos/${c}'" "${surface}"
+      _deny_dest "cannot resolve the repository from 'repos/${c}'" "${surface}"
     fi
     # An endpoint path runs on past owner/name (repos/o/n/issues/1/comments).
     if [[ "${c}" == */*/* ]]; then
@@ -1001,9 +1022,9 @@ _gh_destination() {
   DEST_ALSO_CWD=0
   for c in "${cands[@]}"; do
     n="$(_norm_repo "${c}")"
-    [[ -n "${n}" ]] || _deny "cannot resolve '${c}' to a single owner/name repository" "${surface}"
+    [[ -n "${n}" ]] || _deny_dest "cannot resolve '${c}' to a single owner/name repository" "${surface}"
     if [[ -n "${DEST_REPO}" && "${DEST_REPO}" != "${n}" ]]; then
-      _deny "the command names more than one repository (${DEST_REPO}, ${n}); name exactly one" "${surface}"
+      _deny_dest "the command names more than one repository (${DEST_REPO}, ${n}); name exactly one" "${surface}"
     fi
     DEST_REPO="${n}"
   done
@@ -1025,15 +1046,15 @@ _destination_for_segment() {
     CD_UNRESOLVED=1
   fi
   if [[ "${CD_UNRESOLVED}" -eq 1 ]]; then
-    _deny "this command has a cd the hook cannot resolve (bare cd, cd -, a variable or substitution, a popd, or a cd/pushd inside a command substitution, backticks, bash -c, or after !, if, builtin or command); use git -C <dir> or gh -R <owner/name> so the destination is explicit" "${surface}"
+    _deny_dest "this command has a cd the hook cannot resolve (bare cd, cd -, a variable or substitution, a popd, or a cd/pushd inside a command substitution, backticks, bash -c, or after !, if, builtin or command); use git -C <dir> or gh -R <owner/name> so the destination is explicit" "${surface}"
   fi
   if [[ "${CD_SEEN}" -eq 1 && "${_joined}" == *[\(\)]* ]]; then
-    _deny "a cd combined with parentheses leaves the destination unclear; use git -C <dir> or gh -R <owner/name> so it is explicit" "${surface}"
+    _deny_dest "a cd combined with parentheses leaves the destination unclear; use git -C <dir> or gh -R <owner/name> so it is explicit" "${surface}"
   fi
   # A whole segment from _quoted_segments is checked after every piece, so it
   # cannot tell which cd came before it. Any cd word in the command denies.
   if [[ "${QUOTED_PASS}" -eq 1 && "${CD_WORDS}" -gt 0 ]]; then
-    _deny "a cd combined with a quoted ; && || or | leaves the destination unclear; use git -C <dir> or gh -R <owner/name> so it is explicit" "${surface}"
+    _deny_dest "a cd combined with a quoted ; && || or | leaves the destination unclear; use git -C <dir> or gh -R <owner/name> so it is explicit" "${surface}"
   fi
   base="${CD_DIR:-${hook_cwd}}"
   DEST_DIR="${base}"
@@ -1050,17 +1071,17 @@ _destination_for_segment() {
       # (_joined), since _scan has had leading assignments stripped.
       if printf '%s\n' "${pre}" | grep -qE -- '[[:space:]]--(git-dir|work-tree)([[:space:]]|=)' ||
         printf '%s\n' "${_joined}" | tr '\n' ' ' | grep -qE '(^|[^A-Za-z0-9_])GIT_(DIR|WORK_TREE)='; then
-        _deny "--git-dir, --work-tree, GIT_DIR and GIT_WORK_TREE hide the destination repository; use git -C <dir> instead" "${surface}"
+        _deny_dest "--git-dir, --work-tree, GIT_DIR and GIT_WORK_TREE hide the destination repository; use git -C <dir> instead" "${surface}"
       fi
       # git applies several -C options cumulatively (`-C a -C ../b` is b's
       # sibling of a), and _extract_path would read only one of them.
       if (($(printf '%s\n' "${pre}" | tr -s '[:space:]' '\n' | grep -cx -- '-C' || true) > 1)); then
-        _deny "more than one git -C option; git applies them cumulatively and the hook reads one; give a single -C <dir>" "${surface}"
+        _deny_dest "more than one git -C option; git applies them cumulatively and the hook reads one; give a single -C <dir>" "${surface}"
       fi
       dir="$(_extract_path "${pre}" '-C')"
       if [[ -n "${dir}" ]]; then
         case "${dir}" in
-          *'$'* | *"${bt}"*) _deny "cannot resolve the repository from git -C '${dir}'" "${surface}" ;;
+          *'$'* | *"${bt}"*) _deny_dest "cannot resolve the repository from git -C '${dir}'" "${surface}" ;;
           *) ;;
         esac
         # A bare or leading `~` is the user's home, as the shell would expand it.
@@ -1553,7 +1574,7 @@ _gate_segment() {
     pre="$(printf '%s\n' "${seg}" | sed -E 's/(^|[^[:alnum:]_.-])(git|gh)[[:space:]].*$//')"
     if printf '%s\n' "${pre}" | grep -qE "${_wrapper_re}"; then
       _suspended && exit 0
-      _deny "xargs and env -C run the command with arguments or a directory the hook cannot see; run git -C <dir> commit or gh -R <owner/name> directly" "commit message or PR/issue body"
+      _deny_dest "xargs and env -C run the command with arguments or a directory the hook cannot see; run git -C <dir> commit or gh -R <owner/name> directly" "commit message or PR/issue body"
     fi
   fi
   if printf '%s\n' "${seg}" | grep -qE "${commit_re}"; then
