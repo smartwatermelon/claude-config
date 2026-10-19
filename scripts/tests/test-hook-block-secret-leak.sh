@@ -225,6 +225,87 @@ check "grep for the literal string is allowed" 0 \
   "grep -rn 'GH_TOKEN:-' ."
 
 echo
+echo "=== BLOCK: 1Password commands that print whole items (#731) ==="
+# The first command leaked a whole item on 2026-10-15. JSON output shows
+# concealed values with no --reveal.
+check 'the actual 2026-10-15 leak: op item get --format json' 2 \
+  'op item get "Cloudflare NOS" --vault Automation --format json'
+check 'op item get --format=json' 2 \
+  'op item get "Cloudflare NOS" --vault Automation --format=json'
+check 'op item get --format JSON (case)' 2 'op item get X --format JSON'
+check 'op item get --reveal' 2 'op item get X --reveal'
+check 'op item get --fields' 2 'op item get X --fields label=credential'
+check 'op item get --fields=' 2 'op item get X --fields=credential'
+check 'op item get --otp' 2 'op item get X --otp'
+check 'op global flag before the subcommand' 2 \
+  'op --account my.1password.com item get X --format json'
+check 'OP_FORMAT=json prefix' 2 'OP_FORMAT=json op item get X'
+check 'timeout wrapper' 2 'timeout 10 op item get X --format json'
+check 'env wrapper' 2 'env -u FOO op item get X --format=json'
+check 'command wrapper' 2 'command op item get X --format json'
+check 'absolute path to op' 2 '/opt/homebrew/bin/op item get X --format json'
+check 'piped into jq' 2 'op item get X --format json | jq .fields'
+check 'redirected to a file' 2 'op item get X --format json > /tmp/x.json'
+check 'inside a capture' 2 "v=\"${D}(op item get X --format json)\""
+check 'inside bash -c' 2 "bash -c 'op item get X --format json'"
+check 'after another command' 2 'cd /tmp && op item get X --reveal'
+check 'on a later line' 2 "echo start
+op item get X --format json"
+check 'via xargs' 2 'echo X | xargs op item get --format json'
+check 'op document get without --out-file' 2 'op document get "Some Doc"'
+check 'op document get with --vault but no --out-file' 2 \
+  'op document get Doc --vault Automation'
+check 'op item list --format json piped into op item get' 2 \
+  'op item list --vault Automation --format json | op item get -'
+check 'op item list --format=json piped into op item get' 2 \
+  'op item list --format=json | op item get - --vault Automation'
+
+echo
+echo "=== ALLOW: 1Password forms that print no field values ==="
+# `op read` is the interface the deny message recommends. If it blocks, the
+# hook leaves no correct way to fetch a secret.
+check 'op read (the recommended path)' 0 'op read "op://Automation/Item/field"'
+check 'op read captured' 0 "k=\"${D}(op read op://v/i/f)\""
+check 'op item get with no format (metadata, values concealed)' 0 \
+  'op item get "Cloudflare NOS" --vault Automation'
+check 'op item get --format human-readable' 0 \
+  'op item get X --format human-readable'
+check 'plain op item list' 0 'op item list --vault Automation'
+check 'op item list --format json alone' 0 'op item list --format json'
+check 'op item list --format json into jq (titles only)' 0 \
+  'op item list --format json | jq -r ".[].title"'
+check 'op document get --out-file' 0 'op document get Doc --out-file /tmp/f'
+check 'op document get -o' 0 'op document get Doc -o /tmp/f'
+check 'op vault list' 0 'op vault list'
+check 'grep for the phrase op item get' 0 "grep -rn 'op item get' notes.md"
+check 'echo naming the command' 0 'echo "never run op item get --format json"'
+
+# Bare env: the env prongs skip when no secret var is set, and the op check
+# must still fire.
+make_input 'op item get "Cloudflare NOS" --vault Automation --format json' \
+  | env -i PATH="${PATH}" HOME="${HOME}" bash "${HOOK}" >/dev/null 2>&1
+bare_rc=$?
+if [[ "${bare_rc}" -eq 2 ]]; then
+  printf 'PASS: op item get --format json blocks with no secrets in the env\n'
+  pass=$((pass + 1))
+else
+  printf 'FAIL: op item get --format json with bare env (want 2, got %s)\n' \
+    "${bare_rc}"
+  fail=$((fail + 1))
+fi
+
+# The deny message must name the interface to use instead.
+op_msg=$(make_input 'op item get X --format json' \
+  | env -i PATH="${PATH}" HOME="${HOME}" bash "${HOOK}" 2>&1 >/dev/null)
+if printf '%s' "${op_msg}" | grep -qF 'op read op://'; then
+  printf 'PASS: the op deny message points to op read op://\n'
+  pass=$((pass + 1))
+else
+  printf 'FAIL: the op deny message does not name op read op://\n'
+  fail=$((fail + 1))
+fi
+
+echo
 echo "=== control: the detector must actually be running ==="
 # If the detector silently no-ops, every test above passes for the wrong
 # reason. This asserts a known-bad input really does block.

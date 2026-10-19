@@ -225,17 +225,154 @@ def find_expansion_forms(cmd, secrets):
     return findings
 
 
+# #731: op forms that print whole items. Denied in every position (a capture
+# or pipe still hands the item over); use op read.
+OP_LABEL = "<1password>"
+
+# Shared parser. realpath: the symlink's checkout holds both files.
+_REDACTOR = os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "hook-redact-secret-output.py"
+)
+
+# xargs runs its arguments as a command. These xargs flags take a value word.
+_XARGS_VALUE_FLAGS = frozenset({"-I", "-L", "-n", "-P", "-s", "-d", "-E", "-a"})
+
+# Fail-closed regex for when the parser is unavailable or cannot tokenize.
+_CRUDE_SEG = r"[^;&|\n]*"
+_CRUDE_GET = rf"\bop\b{_CRUDE_SEG}\b(item\s+get|get\s+item)\b{_CRUDE_SEG}"
+_CRUDE_ITEM = re.compile(
+    rf"{_CRUDE_GET}(--format|--reveal|--fields|--otp)"
+    rf"|OP_FORMAT=\S*{_CRUDE_SEG}\bop\b{_CRUDE_SEG}\bitem\s+get\b"
+    rf"|\bop\b{_CRUDE_SEG}\bget\s+item\b"
+)
+_CRUDE_DOC = re.compile(rf"\bop\b{_CRUDE_SEG}\b(document\s+get|get\s+document)\b({_CRUDE_SEG})")
+
+
+def _load_redactor():
+    """The redactor module, or None if it cannot be loaded."""
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("_redactor", _REDACTOR)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.op_value_form  # noqa: B018 -- fail here if the API is missing
+        return mod
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _crude_op_findings(cmd):
+    """Regex fallback. Over-blocks rather than under-blocks."""
+    found = []
+    if _CRUDE_ITEM.search(cmd):
+        found.append((OP_LABEL, "op item get that can print field values"))
+    for m in _CRUDE_DOC.finditer(cmd):
+        if not re.search(r"(^|\s)(-o|--out-file)(\s|=|$)", m.group(2)):
+            found.append((OP_LABEL, "op document get without --out-file"))
+            break
+    return found
+
+
+def _unwrap(words, R):
+    """argv of the real command, with the assignments that preceded it.
+
+    Strips assignments and wrappers, then sees through xargs, which runs its
+    trailing words as a command.
+    """
+    argv = R._strip_prefix(words)
+    assigns = R.prefix_assigns(words, argv)
+    while argv and os.path.basename(argv[0]) == "xargs":
+        i = 1
+        while i < len(argv) and argv[i].startswith("-"):
+            i += 2 if argv[i] in _XARGS_VALUE_FLAGS else 1
+        rest = argv[i:]
+        argv = R._strip_prefix(rest)
+        assigns += R.prefix_assigns(rest, argv)
+    return argv, assigns
+
+
+def find_op_item_reads(cmd, R, _depth=0):
+    """Every op form in cmd that prints item field values."""
+    if _depth > 5 or not cmd:
+        return []
+    raw = cmd
+    cmd = re.sub(r"`([^`]*)`", r"$(\1)", cmd)
+    cmd, inners = R._extract_captures(cmd)
+    found = []
+    for inner in inners:
+        found += find_op_item_reads(inner, R, _depth + 1)
+    try:
+        tokens = R._tokenize(cmd.replace("\n", " ; "))
+    except ValueError:
+        return found + _crude_op_findings(raw)
+
+    pipelines = [[[]]]
+    for tok in tokens:
+        if tok in R.SEPARATORS:
+            pipelines.append([[]])
+        elif tok in R.PIPES:
+            pipelines[-1].append([])
+        else:
+            pipelines[-1][-1].append(tok)
+
+    for pipeline in pipelines:
+        listed_json = False
+        for words in pipeline:
+            argv, assigns = _unwrap(words, R)
+            if not argv:
+                continue
+            prog = os.path.basename(argv[0])
+            if prog in R.SHELLS and "-c" in argv:
+                c_at = argv.index("-c")
+                if c_at + 1 < len(argv):
+                    found += find_op_item_reads(argv[c_at + 1], R, _depth + 1)
+                continue
+            if prog == "eval":
+                found += find_op_item_reads(" ".join(argv[1:]), R, _depth + 1)
+                continue
+            if prog != "op":
+                continue
+            label = R.op_value_form(argv, assigns)
+            if label:
+                found.append((OP_LABEL, "%s prints item field values" % label))
+                continue
+            pos = R._positionals(argv[1:], R.OP_VALUE_FLAGS)
+            if pos[:2] == ["item", "list"] and R.op_json_output(argv, assigns):
+                listed_json = True
+            elif pos[:2] == ["item", "get"] and listed_json:
+                # Feeds every listed item to `get`: a bulk read of the vault.
+                found.append(
+                    (OP_LABEL, "op item list --format json piped into op item get")
+                )
+    return found
+
+
+def find_op_findings(cmd):
+    """1Password findings, falling back to the regex if the parser is gone."""
+    R = _load_redactor()
+    if R is None:
+        sys.stderr.write(
+            "secret-leak hook: redactor parser unavailable; "
+            "1Password check fell back to a regex\n"
+        )
+        return _crude_op_findings(cmd)
+    return find_op_item_reads(cmd, R)
+
+
 def main():
     cmd = sys.stdin.read()
     if not cmd.strip():
         return 0
 
-    secrets = secret_vars()
-    if not secrets:
-        return 0
+    # Before the environment check: these values live in 1Password, not in
+    # any variable, so this must run even when no secret variable is set.
+    findings = find_op_findings(cmd)
 
-    findings = find_value_matches(cmd, secrets)
-    findings += find_expansion_forms(cmd, secrets)
+    secrets = secret_vars()
+    if secrets:
+        findings += find_value_matches(cmd, secrets)
+        findings += find_expansion_forms(cmd, secrets)
 
     # Deduplicate while preserving order; a command can trip both prongs.
     seen = set()

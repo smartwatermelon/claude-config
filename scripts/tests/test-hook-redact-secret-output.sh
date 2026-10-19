@@ -397,6 +397,29 @@ check_cmd_redacted 'gh auth token' 'gh auth token' "${NOFMT}" "${NOFMT}"
 check_cmd_redacted 'bash -c wrapping op read' \
   'bash -c "op read op://v/i/f"' "${NOFMT}" "${NOFMT}"
 
+# #731: JSON output prints concealed values without --reveal. A whole item
+# comes back, so the stdout is a JSON document holding the secret.
+ITEM_JSON="{\"title\":\"Cloudflare NOS\",\"fields\":[{\"label\":\"token\",\"value\":\"${NOFMT}\"}]}"
+check_cmd_redacted 'the actual 2026-10-15 leak: op item get --format json' \
+  'op item get "Cloudflare NOS" --vault Automation --format json' \
+  "${ITEM_JSON}" "${NOFMT}"
+check_cmd_redacted 'op item get --format=json' \
+  'op item get "Cloudflare NOS" --vault Automation --format=json' \
+  "${ITEM_JSON}" "${NOFMT}"
+check_cmd_redacted 'op item get --format json under timeout' \
+  'timeout 10 op item get X --format json' "${ITEM_JSON}" "${NOFMT}"
+check_cmd_redacted 'op item get --format=json under env' \
+  'env -u FOO op item get X --format=json' "${ITEM_JSON}" "${NOFMT}"
+check_cmd_redacted 'op item get --format json under command' \
+  'command op item get X --format json' "${ITEM_JSON}" "${NOFMT}"
+check_cmd_redacted 'op item get --format json through jq' \
+  'op item get X --format json | jq .fields' "${ITEM_JSON}" "${NOFMT}"
+check_cmd_redacted 'OP_FORMAT=json op item get' \
+  'OP_FORMAT=json op item get X' "${ITEM_JSON}" "${NOFMT}"
+check_cmd_redacted 'op item get --otp' 'op item get X --otp' "${NOFMT}" "${NOFMT}"
+check_cmd_redacted 'op document get to stdout' \
+  'op document get Doc' "${NOFMT}" "${NOFMT}"
+
 # `security -g` prints the password to STDERR, not stdout.
 g_out="$(run_cmd_hook 'security find-generic-password -s pangram -g' \
   '' "password: \"${NOFMT}\"")"
@@ -424,6 +447,12 @@ check_cmd_untouched 'grep for the phrase op read' \
   "grep -n 'op read' notes.md" '3:use op read to fetch it'
 check_cmd_untouched 'op item get without --reveal/--fields' \
   'op item get Pangram' 'Title: Pangram'
+check_cmd_untouched 'op item get --format human-readable' \
+  'op item get Pangram --format human-readable' 'Title: Pangram'
+check_cmd_untouched 'op document get --out-file' \
+  'op document get Doc --out-file /tmp/f' 'saved to /tmp/f'
+check_cmd_untouched 'op item list --format json (no values)' \
+  'op item list --format json' '[{"title":"Pangram"}]'
 check_cmd_untouched 'gh auth status without --show-token' \
   'gh auth status' 'Logged in to github.com'
 # Output full of long hex, UUIDs, base64 and prose that NAMES every prefix.
