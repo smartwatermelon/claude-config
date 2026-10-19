@@ -359,6 +359,9 @@ ARBITER_MODEL=$(git config --get review.arbiterModel 2>/dev/null || echo "")
 [[ -n "${ARBITER_MODEL}" ]] || ARBITER_MODEL="claude-sonnet-5-5"
 ARBITER_MODEL_ARGS=(--model "${ARBITER_MODEL}")
 
+# Read-only tools, no MCP. Shared by the arbiter and codebase mode (#681).
+READONLY_TOOL_ARGS=(--tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" --strict-mcp-config)
+
 # --- Reviewer agent selection ---
 # Pinned to a fully-qualified plugin:agent name (git config review.codeReviewerAgent
 # to override). The bare name "code-reviewer" broke once a second installed plugin
@@ -1880,7 +1883,7 @@ invoke_agent() {
   # that sets INVOKE_AGENT_READONLY; see the comment there for why.
   local -a tool_args=(--tools "")
   if [[ -n "${INVOKE_AGENT_READONLY:-}" ]]; then
-    tool_args=(--tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" --strict-mcp-config)
+    tool_args=("${READONLY_TOOL_ARGS[@]}")
   fi
   agent_output=$(echo "${prompt}" | run_claude_cli "${TIMEOUT_SECONDS}" --agent "${agent_name}" -p "${model_args[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" "${tool_args[@]}" --no-session-persistence 2>"${_agent_err}") || exit_code=$?
   _slow_notice_stop
@@ -1953,7 +1956,7 @@ invoke_agent() {
 # pre-approves, so -p mode does not stop on a permission prompt. Neither one
 # drops MCP servers: a probe on 2026-10-05 with both flags still reported
 # Gmail, Drive, Notion and 1Password tools. Adding --strict-mcp-config left
-# only Glob, Grep and Read. (Codebase mode passes --allowedTools alone.)
+# only Glob, Grep and Read. Codebase mode uses the same READONLY_TOOL_ARGS.
 invoke_agent_readonly() {
   INVOKE_AGENT_READONLY=1 invoke_agent "$@"
 }
@@ -3463,8 +3466,7 @@ no factual claim about external state (style, structure, maintainability)."
   codebase_start=$(date +%s)
 
   codebase_exit=0
-  # Invoke WITHOUT --tools "" so agent gets default tool access (Read, Grep, Glob).
-  # --allowedTools restricts to safe read-only tools only.
+  # READONLY_TOOL_ARGS: Read, Grep, Glob, no MCP servers (#681).
   # stderr is routed to its own temp file rather than merged via 2>&1: CLI
   # upgrade notices / deprecation warnings on stderr would otherwise land in
   # CODEBASE_OUTPUT and could corrupt the `grep -q "VERDICT:"` parsing below.
@@ -3475,7 +3477,7 @@ no factual claim about external state (style, structure, maintainability)."
   # --output-format json + --json-schema, as in invoke_agent (claude-config#443).
   # Tool use and structured output compose: the reviewer reads files across
   # several turns, then emits the conforming object at the end.
-  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | run_claude_cli "${TIMEOUT_SECONDS}" --agent "adversarial-reviewer" -p "${ADVERSARIAL_MODEL_ARGS[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" --allowedTools "Read,Grep,Glob" --no-session-persistence 2>"${_codebase_err}") || codebase_exit=$?
+  CODEBASE_OUTPUT=$(echo "${CODEBASE_PROMPT}" | run_claude_cli "${TIMEOUT_SECONDS}" --agent "adversarial-reviewer" -p "${ADVERSARIAL_MODEL_ARGS[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" "${READONLY_TOOL_ARGS[@]}" --no-session-persistence 2>"${_codebase_err}") || codebase_exit=$?
   if [[ -s "${_codebase_err}" ]]; then
     cat "${_codebase_err}" >&2
   fi
