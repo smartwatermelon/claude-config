@@ -335,6 +335,7 @@ _deny_dest() {
     echo 'know the destination. Name it literally and retry:'
     echo '  git -C /absolute/path commit ...'
     echo '  gh ... -R owner/name ...'
+    echo '  gh api repos/owner/name/...'
     echo 'Do not stage this text for approval. If the retry is gated, the next'
     echo 'block says so.'
   } >&2
@@ -1096,7 +1097,7 @@ _destination_for_segment() {
     gh | api)
       _gh_destination "${seg}" "${kind}" "${surface}"
       ;;
-    *) _deny_dest "internal error: unknown destination kind '${kind}'" "${surface}" ;;
+    *) _deny "internal error: unknown destination kind '${kind}'" "${surface}" ;;
   esac
 }
 
