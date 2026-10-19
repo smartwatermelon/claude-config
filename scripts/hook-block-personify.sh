@@ -1462,12 +1462,16 @@ _suspended() {
 _cd_word_count() {
   tr -c '[:alnum:]_./-' '\n' | grep -cxE 'cd|pushd|popd' || true
 }
+# Bash removes quotes and backslashes before it runs a word: `s\ource` and `'-v'` are source and -v.
+_unquote() {
+  tr -d "\\\\\"'"
+}
 # The echo/printf half is off for the whole command when anything in it could run that text.
 _echo_exempt_ok() {
   # More than one line, or `$c` and `$(cat f)`, which run text.
   [[ "${_joined}" != *$'\n'* && "${_joined}" != *'$'* && "${_joined}" != *"${bt}"* ]] || return 1
   # Text piped or sourced into these can run in the current shell (lastpipe, `. /dev/stdin`).
-  ! printf '%s\n' "${_joined}" | tr -c '[:alnum:]_.' '\n' | grep -qxE 'bash|sh|zsh|ksh|dash|eval|source|xargs|\.'
+  ! printf '%s\n' "${_joined}" | _unquote | tr -c '[:alnum:]_.' '\n' | grep -qxE 'bash|sh|zsh|ksh|dash|eval|source|xargs|\.'
 }
 # First word only: `env echo`, `/bin/echo` and `command echo` keep every cd, on purpose.
 _echo_re='^[[:space:]({]*((then|do)[[:space:]]+)?(echo|printf)([[:space:]]|$)'
@@ -1490,6 +1494,7 @@ _inert_values() {
     if printf '%s\n' "${seg}" | grep -qE "${_echo_re}"; then
       ((echo_ok)) || continue
       # Every quoted literal, never an unquoted word; a word starting with -v (printf -v) drops the segment.
+      printf '%s\n' "${seg}" | _unquote | grep -qE '[[:space:]]-v' && continue
       mode="echo"
     elif printf '%s\n' "${seg}" | grep -qE "${gh_re}"; then
       mode=gh
@@ -1509,31 +1514,27 @@ _inert_values() {
         return (k > 0 && !index(v, "$") && !index(v, "\140") && !index(v, "\\"))
       }
       {
-        s = $0; n = length(s); q = 0; i = 1; out = ""; bad = 0
+        s = $0; n = length(s); q = 0; i = 1
         while (i <= n) {
           c = substr(s, i, 1)
           if (q == 1) { if (c == "\047") q = 0; i++; continue }
           if (c == "\\") { i += 2; continue }
           if (q == 2) { if (c == "\"") q = 0; i++; continue }
           if (mode == "echo" && (c == "\047" || c == "\"")) {
-            if (lit(c, i)) { out = out v "\n"; i = i + k + 1; continue }
+            if (lit(c, i)) { print v; i = i + k + 1; continue }
           }
           if (c == "\047") { q = 1; i++; continue }
           if (c == "\"") { q = 2; i++; continue }
-          if (mode == "echo") {
-            if (c ~ /[ \t]/ && substr(s, i + 1, 2) == "-v") bad = 1
-            i++; continue
-          }
+          if (mode == "echo") { i++; continue }
           if (c ~ /[ \t]/ && match(substr(s, i), /^[ \t]+(-t|--title|-b|--body)(=|[ \t]+)/)) {
             j = i + RLENGTH; o = substr(s, j, 1)
             if (o == "\047" || o == "\"") {
-              if (lit(o, j)) { out = out v "\n"; i = j + k + 1; continue }
+              if (lit(o, j)) { print v; i = j + k + 1; continue }
             }
             i = j; continue
           }
           i++
         }
-        if (!bad) printf "%s", out
       }'
   done <<<"${segs}"
 }

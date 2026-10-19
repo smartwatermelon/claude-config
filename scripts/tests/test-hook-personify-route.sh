@@ -383,6 +383,16 @@ _case "nested quoting in an echo segment keeps every cd" 2 "cd the hook cannot r
   "echo 'cd ${BEACON}' <(true); git commit -F ${TXT}"
 _case "an echo segment that matches gh_re is not subtracted twice" 2 "cd the hook cannot resolve" "${PERSONAL}" \
   "echo -t 'cd' 'gh issue create ' ; echo \$(cd ${BEACON} && git commit -F ${TXT})"
+_case "a backslash-split source is still source" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' > ${TMP}/s; s\\ource ${TMP}/s; git commit -F ${TXT}"
+_case "a quote-split bash is still bash" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' | ba''sh; git commit -F ${TXT}"
+_case "a quoted '.' is still ." 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' > ${TMP}/s; '.' ${TMP}/s; git commit -F ${TXT}"
+_case "printf with a backslashed -v is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "printf \\-v c 'cd ${BEACON}'; git commit -F ${TXT}"
+_case "printf with a quoted -v is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "printf '-v' c 'cd ${BEACON}'; git commit -F ${TXT}"
 _case "env echo is not exempt (first word only)" 2 "cd the hook cannot resolve" "${PERSONAL}" \
   "env echo 'cd x' > ${TMP}/m.txt; git commit -F ${TXT}"
 
