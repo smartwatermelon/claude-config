@@ -1458,22 +1458,61 @@ _suspended() {
 # or `command`, and every popd) makes the destination unknown, and
 # _destination_for_segment denies.
 #
-# Minus those in a literal gh title or body (no $, backtick or \): such text cannot move the cwd.
+# Minus cd words in literal (no $, backtick, \) gh titles/bodies and quoted echo/printf arguments (#742): text cannot move the cwd.
 _cd_word_count() {
   tr -c '[:alnum:]_./-' '\n' | grep -cxE 'cd|pushd|popd' || true
 }
-_inert_gh_values() {
-  local seg segs
+# Bash removes quotes and backslashes before it runs a word: `s\ource` and `'-v'` are source and -v.
+_unquote() {
+  tr -d "\\\\\"'"
+}
+# The echo/printf half is off for the whole command when anything in it could run that text.
+_echo_exempt_ok() {
+  # More than one line, or `$c` and `$(cat f)`, which run text.
+  [[ "${_joined}" != *$'\n'* && "${_joined}" != *'$'* && "${_joined}" != *"${bt}"* ]] || return 1
+  # Text piped or sourced into these can run in the current shell (lastpipe, `. /dev/stdin`).
+  ! printf '%s\n' "${_joined}" | _unquote | tr -c '[:alnum:]_.' '\n' | grep -qxE 'bash|sh|zsh|ksh|dash|eval|source|xargs|\.'
+}
+# First word only: `env echo`, `/bin/echo` and `command echo` keep every cd, on purpose.
+_echo_re='^[[:space:]({]*((then|do)[[:space:]]+)?(echo|printf)([[:space:]]|$)'
+_inert_values() {
+  local seg segs mode echo_ok=0
   segs="$(_quoted_segments 1 "${_joined}")"
+  if _echo_exempt_ok; then
+    echo_ok=1
+    while IFS= read -r seg; do
+      printf '%s\n' "${seg}" | grep -qE "${_echo_re}" || continue
+      # A gated verb inside echo/printf (`printf 'cd B' 'git commit' | fish`) would run after that cd.
+      if printf '%s\n' "${seg}" | grep -qE "${commit_re}|${gh_re}|${api_re}"; then
+        echo_ok=0
+        break
+      fi
+    done <<<"${segs}"
+  fi
   while IFS= read -r seg; do
-    printf '%s\n' "${seg}" | grep -qE "${gh_re}" || continue
+    # One mode per segment, so no quoted value is subtracted twice.
+    if printf '%s\n' "${seg}" | grep -qE "${_echo_re}"; then
+      ((echo_ok)) || continue
+      # Every quoted literal, never an unquoted word; a word starting with -v (printf -v) drops the segment.
+      printf '%s\n' "${seg}" | _unquote | grep -qE '[[:space:]]-v' && continue
+      mode="echo"
+    elif printf '%s\n' "${seg}" | grep -qE "${gh_re}"; then
+      mode=gh
+    else
+      continue
+    fi
     # Nested quoting would defeat the quote scan below; such a segment keeps every cd word.
     case "${seg}" in
       *"${bt}"* | *"\$("* | *"\${"* | *"\$'"* | *"\$\""* | *"<("* | *">("*) continue ;;
       *) ;;
     esac
-    # A flag counts only outside quotes; a rejected value is scanned as normal text, never skipped.
-    printf '%s\n' "${seg}" | LC_ALL=C awk '
+    # gh: a flag counts only outside quotes; a rejected value is scanned as normal text, never skipped.
+    printf '%s\n' "${seg}" | LC_ALL=C awk -v mode="${mode}" '
+      function lit(o, from) {
+        k = index(substr(s, from + 1), o)
+        v = substr(s, from + 1, k - 1)
+        return (k > 0 && !index(v, "$") && !index(v, "\140") && !index(v, "\\"))
+      }
       {
         s = $0; n = length(s); q = 0; i = 1
         while (i <= n) {
@@ -1481,16 +1520,16 @@ _inert_gh_values() {
           if (q == 1) { if (c == "\047") q = 0; i++; continue }
           if (c == "\\") { i += 2; continue }
           if (q == 2) { if (c == "\"") q = 0; i++; continue }
+          if (mode == "echo" && (c == "\047" || c == "\"")) {
+            if (lit(c, i)) { print v; i = i + k + 1; continue }
+          }
           if (c == "\047") { q = 1; i++; continue }
           if (c == "\"") { q = 2; i++; continue }
+          if (mode == "echo") { i++; continue }
           if (c ~ /[ \t]/ && match(substr(s, i), /^[ \t]+(-t|--title|-b|--body)(=|[ \t]+)/)) {
             j = i + RLENGTH; o = substr(s, j, 1)
             if (o == "\047" || o == "\"") {
-              k = index(substr(s, j + 1), o)
-              v = substr(s, j + 1, k - 1)
-              if (k > 0 && !index(v, "$") && !index(v, "\140") && !index(v, "\\")) {
-                print v; i = j + k + 1; continue
-              }
+              if (lit(o, j)) { print v; i = j + k + 1; continue }
             }
             i = j; continue
           }
@@ -1504,7 +1543,7 @@ CD_UNRESOLVED=0
 CD_SEEN=0
 CD_TRACKED=0
 CD_WORDS="$(printf '%s\n' "${_joined}" | _cd_word_count)"
-CD_WORDS=$((CD_WORDS - $(_inert_gh_values | _cd_word_count)))
+CD_WORDS=$((CD_WORDS - $(_inert_values | _cd_word_count)))
 _track_cd() {
   local seg="$1" rest arg
   rest="$(printf '%s\n' "${seg}" | sed -E 's/^[[:space:]({]*((then|do)[[:space:]]+)?//')"

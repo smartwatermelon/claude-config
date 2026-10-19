@@ -340,6 +340,62 @@ _case "a -t inside a literal does not swallow a double-quoted \$(cd ...)" 2 "cd 
 _case "an escaped quote in a double-quoted title does not desync the scan" 2 "cd the hook cannot resolve" "${PERSONAL}" \
   "gh issue create --title \"a\\\" -b 'x\" ; echo \$(cd ${BEACON}) ; echo '\" --body-file ${TXT}"
 
+# claude-config#742: the word cd inside a literal printf or echo argument is
+# text too. Anything that could run it, or hide a cd, still counts.
+_norec
+_case "#742 reproducer: cd in a printf literal, then commit, routes by -C" 0 "" "${PERSONAL}" \
+  "printf '%s\n' 'fix(env): x' '' 'kept the value for its own cd calls.' > ${TMP}/m.txt; git -C ${PERSONAL} commit -F ${TXT}"
+_case "cd in a double-quoted echo literal routes by the cwd (visual)" 0 "" "${PERSONAL}" \
+  "echo \"run cd first\" > ${TMP}/m.txt && git commit -F ${TXT}"
+_case "cd in an echo literal routes by the cwd (pangram)" 2 "no Pangram check ran" "${BEACON}" \
+  "echo 'about cd' > ${TMP}/m.txt; git commit -F ${TXT}"
+_case "a real cd after a printf literal cd is still followed" 2 "no Pangram check ran" "${PERSONAL}" \
+  "printf 'cd' > ${TMP}/m.txt; cd ${BEACON} && git commit -F ${TXT}"
+_case "printf -v is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "printf -v c 'cd ${BEACON}'; git commit -F ${TXT}"
+_case "printf -v then \$c is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "printf -v c 'cd ${BEACON}'; \$c; git commit -F ${TXT}"
+_case "printf -vc (attached) is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "printf -vc 'cd ${BEACON}'; git commit -F ${TXT}"
+_case "echo piped into bash is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' | bash; git commit -F ${TXT}"
+_case "echo piped into /bin/sh is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' | /bin/sh; git commit -F ${TXT}"
+_case "echo into a file that is sourced with . is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' > ${TMP}/s; . ${TMP}/s; git commit -F ${TXT}"
+_case "echo into a file that is sourced is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' > ${TMP}/s; source ${TMP}/s; git commit -F ${TXT}"
+_case "a command with eval is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' > ${TMP}/s; eval true; git commit -F ${TXT}"
+_case "echo piped into xargs is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' | xargs true; git commit -F ${TXT}"
+_case "an unquoted echo cd still denies" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo cd /tmp; git commit -F ${TXT}"
+_case "a printf literal with \$ still counts" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "printf '%s' \"cd \$X\"; git commit -F ${TXT}"
+_case "a command that runs a file through \$(...) is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "printf 'cd ${BEACON}' > ${TMP}/s; \$(cat ${TMP}/s); git commit -F ${TXT}"
+_case "a printf that also holds a gated command is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "printf '%s\n' 'cd ${BEACON}' 'git commit -F ${TXT}' | fish"
+_case "a quoted newline in a printf literal is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "printf '%s\n' 'cd ${BEACON}"$'\n'"git commit -F ${TXT}' | fish"
+_case "nested quoting in an echo segment keeps every cd" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' <(true); git commit -F ${TXT}"
+_case "an echo segment that matches gh_re is not subtracted twice" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo -t 'cd' 'gh issue create ' ; echo \$(cd ${BEACON} && git commit -F ${TXT})"
+_case "a backslash-split source is still source" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' > ${TMP}/s; s\\ource ${TMP}/s; git commit -F ${TXT}"
+_case "a quote-split bash is still bash" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' | ba''sh; git commit -F ${TXT}"
+_case "a quoted '.' is still ." 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "echo 'cd ${BEACON}' > ${TMP}/s; '.' ${TMP}/s; git commit -F ${TXT}"
+_case "printf with a backslashed -v is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "printf \\-v c 'cd ${BEACON}'; git commit -F ${TXT}"
+_case "printf with a quoted -v is never exempt" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "printf '-v' c 'cd ${BEACON}'; git commit -F ${TXT}"
+_case "env echo is not exempt (first word only)" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "env echo 'cd x' > ${TMP}/m.txt; git commit -F ${TXT}"
+
 # Final review I3: several -C options deny.
 _case "two git -C options deny" 2 "more than one git -C" "${TMP}" \
   "git -C personal -C ../beacon commit -F ${TXT}"
