@@ -259,6 +259,16 @@ check 'op item list --format json piped into op item get' 2 \
   'op item list --vault Automation --format json | op item get -'
 check 'op item list --format=json piped into op item get' 2 \
   'op item list --format=json | op item get - --vault Automation'
+check 'export OP_FORMAT=json earlier in the command' 2 \
+  'export OP_FORMAT=json; op item get X'
+check 'bash -lc (combined flag cluster)' 2 "bash -lc 'op item get X --reveal'"
+
+# An unbalanced quote makes the parser give up; the regex fallback runs.
+check 'fallback: unparsable op item get --format json' 2 \
+  'op item get "Cloudflare NOS" --format json "'
+check 'fallback: unparsable list piped into get' 2 \
+  'op item list --format json | op item get - "'
+check 'fallback: unparsable op document get' 2 'op document get "Doc'
 
 echo
 echo "=== ALLOW: 1Password forms that print no field values ==="
@@ -277,6 +287,9 @@ check 'op item list --format json into jq (titles only)' 0 \
 check 'op document get --out-file' 0 'op document get Doc --out-file /tmp/f'
 check 'op document get -o' 0 'op document get Doc -o /tmp/f'
 check 'op vault list' 0 'op vault list'
+check 'OP_FORMAT=human-readable op item get' 0 \
+  'OP_FORMAT=human-readable op item get X'
+check 'fallback: unparsable op read' 0 'op read "op://v/i/f'
 check 'grep for the phrase op item get' 0 "grep -rn 'op item get' notes.md"
 check 'echo naming the command' 0 'echo "never run op item get --format json"'
 

@@ -242,9 +242,16 @@ _CRUDE_SEG = r"[^;&|\n]*"
 _CRUDE_GET = rf"\bop\b{_CRUDE_SEG}\b(item\s+get|get\s+item)\b{_CRUDE_SEG}"
 _CRUDE_ITEM = re.compile(
     rf"{_CRUDE_GET}(--format|--reveal|--fields|--otp)"
-    rf"|OP_FORMAT=\S*{_CRUDE_SEG}\bop\b{_CRUDE_SEG}\bitem\s+get\b"
+    rf"|OP_FORMAT=[\s\S]*?\bop\b{_CRUDE_SEG}\bitem\s+get\b"
     rf"|\bop\b{_CRUDE_SEG}\bget\s+item\b"
+    r"|\bop\b[^;&\n]*\bitem\s+list\b[^;&\n]*\|[^;&\n]*\bop\b[^;&\n]*\bitem\s+get\b"
 )
+
+# `export OP_FORMAT=json; op item get X` sets the format for later commands.
+_OP_FORMAT_SET = re.compile(r"(?<![\w])OP_FORMAT=(\S*)")
+
+# `bash -c`, `bash -lc`, `sh -ec`: a short-option cluster holding c.
+_SHELL_C = re.compile(r"-[A-Za-z]*c[A-Za-z]*")
 _CRUDE_DOC = re.compile(rf"\bop\b{_CRUDE_SEG}\b(document\s+get|get\s+document)\b({_CRUDE_SEG})")
 
 
@@ -292,16 +299,21 @@ def _unwrap(words, R):
     return argv, assigns
 
 
-def find_op_item_reads(cmd, R, _depth=0):
+def find_op_item_reads(cmd, R, _depth=0, _set=()):
     """Every op form in cmd that prints item field values."""
     if _depth > 5 or not cmd:
         return []
     raw = cmd
+    # An OP_FORMAT set anywhere applies to every op call after it. Quotes are
+    # stripped so `OP_FORMAT="human-readable"` still reads as the table.
+    _set = list(_set) + [
+        "OP_FORMAT=" + v.strip("\"'") for v in _OP_FORMAT_SET.findall(raw)
+    ]
     cmd = re.sub(r"`([^`]*)`", r"$(\1)", cmd)
     cmd, inners = R._extract_captures(cmd)
     found = []
     for inner in inners:
-        found += find_op_item_reads(inner, R, _depth + 1)
+        found += find_op_item_reads(inner, R, _depth + 1, _set)
     try:
         tokens = R._tokenize(cmd.replace("\n", " ; "))
     except ValueError:
@@ -322,14 +334,22 @@ def find_op_item_reads(cmd, R, _depth=0):
             argv, assigns = _unwrap(words, R)
             if not argv:
                 continue
+            assigns = _set + assigns
             prog = os.path.basename(argv[0])
-            if prog in R.SHELLS and "-c" in argv:
-                c_at = argv.index("-c")
+            c_at = next(
+                (i for i, a in enumerate(argv[1:], 1) if _SHELL_C.fullmatch(a)),
+                None,
+            )
+            if prog in R.SHELLS and c_at is not None:
                 if c_at + 1 < len(argv):
-                    found += find_op_item_reads(argv[c_at + 1], R, _depth + 1)
+                    found += find_op_item_reads(
+                        argv[c_at + 1], R, _depth + 1, _set
+                    )
                 continue
             if prog == "eval":
-                found += find_op_item_reads(" ".join(argv[1:]), R, _depth + 1)
+                found += find_op_item_reads(
+                    " ".join(argv[1:]), R, _depth + 1, _set
+                )
                 continue
             if prog != "op":
                 continue
@@ -357,7 +377,11 @@ def find_op_findings(cmd):
             "1Password check fell back to a regex\n"
         )
         return _crude_op_findings(cmd)
-    return find_op_item_reads(cmd, R)
+    try:
+        return find_op_item_reads(cmd, R)
+    except Exception:  # noqa: BLE001 -- a parser bug must not fail open
+        sys.stderr.write("secret-leak hook: 1Password parser failed; used regex\n")
+        return _crude_op_findings(cmd)
 
 
 def main():
