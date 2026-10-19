@@ -306,6 +306,26 @@ _case "a path component named cd is not a cd" 0 "" "${PERSONAL}" \
 _case "{ cd B; commit; } still follows the cd" 2 "no Pangram check ran" "${PERSONAL}" \
   "{ cd ${BEACON}; git commit -F ${TXT}; }"
 
+# The word cd inside an inert gh title or body value is text, not a cd: it
+# routes like any other title. Anything that could run still counts.
+_norec
+_case "cd in a single-quoted -R title routes by the repo" 2 "no Pangram check ran" "${PERSONAL}" \
+  "gh issue create -R beacon-biosignals/x --title 'relative cd in scripts' --body-file ${TXT}"
+_case "cd in a double-quoted title with no -R routes by the cwd (pangram)" 2 "no Pangram check ran" "${BEACON}" \
+  "gh issue create --title \"about cd\" --body-file ${TXT}"
+_case "cd in a --title= value routes by the cwd (visual)" 0 "" "${PERSONAL}" \
+  "gh issue create --title='about cd' --body-file ${TXT}"
+_case "cd in an inline -b body is text too" 2 "text given inline" "${PERSONAL}" \
+  "gh issue comment 1 -b 'run cd first'"
+_case "a real unresolved cd before gh -R still denies" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "cd \$X && gh issue create -R twistedmelonman/y --title t --body-file ${TXT}"
+_case "cd inside \$(...) in a double-quoted title still counts" 2 "" "${PERSONAL}" \
+  "gh issue create --title \"x \$(cd ${BEACON} && pwd)\" --body-file ${TXT}"
+_case "an inert title does not hide a cd later in the command" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue create --title 'cd' --body-file ${TXT}; bash -c 'cd ${BEACON} && git commit -F ${TXT}'"
+_case "ssh -t with a quoted cd still denies (not a gh title)" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "ssh -t 'cd ${BEACON}' && git commit -F ${TXT}"
+
 # Final review I3: several -C options deny.
 _case "two git -C options deny" 2 "more than one git -C" "${TMP}" \
   "git -C personal -C ../beacon commit -F ${TXT}"
