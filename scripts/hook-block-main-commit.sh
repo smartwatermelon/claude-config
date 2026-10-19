@@ -47,7 +47,8 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # the `then`/`do` keywords, an opening quote of any kind, `env`/`command`/
 # `sudo` wrappers, a leading path on the git binary (`/usr/bin/git`, `./git`),
 # and global options before the subcommand (`-C <path>`, `-c k=v`,
-# `--no-pager`, ...).
+# `--no-pager`, ...). Since #637 also env options (`env -i`, `env -C <dir>`),
+# and `xargs ... git commit`, which is denied on any branch.
 #
 # NOT handled, and not closeable at this layer: aliases and shell functions
 # resolving to git, obfuscation through variables (`G=git; $G commit`), and any
@@ -76,7 +77,27 @@ bt=$(printf '\140')
 readonly bt
 _optval="(\"[^\"]*\"[[:space:]]+|'[^']*'[[:space:]]+|[^-][^|;&${bt}[:space:]]*[[:space:]]+)?"
 readonly _optval
-commit_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do)[[:space:]]*((env|command|sudo)[[:space:]]+)*([^[:space:]|;&(){${bt}]*/)?git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*commit([[:space:]]|$)"
+sq=$(printf '\047')
+tilde=$(printf '\176')
+readonly sq tilde
+_aval="([^[:space:]\"${sq}]|\"[^\"]*\"|${sq}[^${sq}]*${sq})*"
+readonly _aval
+_assign="[A-Za-z_][A-Za-z0-9_]*=${_aval}[[:space:]]+"
+readonly _assign
+
+# env options before git (#637). Value-taking options are named, so no generic arm can swallow `git`.
+_word="(\"[^\"]*\"|${sq}[^${sq}]*${sq}|\\$\\([^)]*\\)|${bt}[^${bt}]*${bt}|[^[:space:]|;&${bt}\"${sq}]+)"
+_envtok="(-[CuSPa][[:space:]]+${_word}|--(chdir|unset|split-string|argv0|env0-from)[[:space:]]+${_word}|-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=${_aval})"
+readonly _word _envtok
+_env_arm="([^[:space:]|;&(){${bt}]*/)?env([[:space:]]+${_envtok})*"
+readonly _env_arm
+_git_commit="([^[:space:]|;&(){${bt}]*/)?git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*commit([[:space:]]|$)"
+readonly _git_commit
+commit_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do)[[:space:]]*((${_env_arm}|command|sudo)[[:space:]]+)*${_git_commit}"
+
+# xargs in command position or opening a quote, then git commit (#637): args come from stdin, so the repo is unknown.
+xargs_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do)[[:space:]]*((${_env_arm}|command|sudo)[[:space:]]+)*([^[:space:]|;&(){${bt}]*/)?xargs([[:space:]][^|;&${bt}]*)?[[:space:]\"${sq}]${_git_commit}"
+readonly xargs_re
 
 # `env FOO=1 git commit` puts an assignment between the wrapper and git, which
 # the wrapper arm above does not consume. Normalize an `env` wrapper down to
@@ -90,13 +111,7 @@ commit_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do
 #
 # A value may be quoted and hold spaces (`FOO="a b" git commit`), so the value
 # pattern steps over quoted runs. The single quote is spelled via ${sq}: it
-# cannot appear inside a single-quoted sed script.
-sq=$(printf '\047')
-readonly sq
-_aval="([^[:space:]\"${sq}]|\"[^\"]*\"|${sq}[^${sq}]*${sq})*"
-readonly _aval
-_assign="[A-Za-z_][A-Za-z0-9_]*=${_aval}[[:space:]]+"
-readonly _assign
+# cannot appear inside a single-quoted sed script. All three are defined above.
 _scan=$(printf '%s\n' "${cmd}" | sed -E "s/(^|[[:space:]])env[[:space:]]+(${_assign})*/\\1env /g")
 
 # A bare leading assignment (`SKIP=x git commit`, #651) sits between the
@@ -104,34 +119,76 @@ _scan=$(printf '%s\n' "${cmd}" | sed -E "s/(^|[[:space:]])env[[:space:]]+(${_ass
 # command separator, the same approach hook-block-personify.sh uses.
 _scan=$(printf '%s\n' "${_scan}" | sed -E "s/(^|&&|\\|\\||;|\\||&|\\(|\\{)[[:space:]]*(${_assign})+/\\1 /g")
 
-if printf '%s\n' "${_scan}" | grep -qE "${commit_re}"; then
-  # Prefer the repo the command names. Only the -C belonging to the matched
-  # git invocation is meaningful, so read it from the match rather than from
-  # anywhere in the line.
-  #
-  # COUPLED TO commit_re: this sed needs a space before `-C` to find it, which
-  # holds only because the pattern requires `[[:space:]]*` after the separator
-  # and `[[:space:]]+` after `git`. If the pattern is ever relaxed to accept a
-  # zero-space form (`true&&git -C /p commit`), the match could begin flush
-  # against `-C` and this extraction would come back empty, silently falling
-  # back to the cwd guess for a command that named its repo explicitly. Re-check
-  # this extraction alongside any change to commit_re.
-  # A quoted path may contain spaces, so try the quoted forms before falling
-  # back to the bare-token form. Without this, `-C "/path with spaces"` yields
-  # `"/path` and resolution fails to `unknown` -- which does not equal main, so
-  # a real commit to main would be allowed through.
-  match=$(printf '%s\n' "${_scan}" | grep -oE "${commit_re}" | head -1)
-  git_dir=$(printf '%s\n' "${match}" | sed -En 's/.*[[:space:]]-C[[:space:]]+"([^"]*)".*/\1/p')
-  if [[ -z "${git_dir}" ]]; then
-    git_dir=$(printf '%s\n' "${match}" | sed -En "s/.*[[:space:]]-C[[:space:]]+'([^']*)'.*/\\1/p")
-  fi
-  if [[ -z "${git_dir}" ]]; then
-    git_dir=$(printf '%s\n' "${match}" | sed -En 's/.*[[:space:]]-C[[:space:]]+([^[:space:]]+).*/\1/p')
-  fi
+_deny_unknown_repo() {
+  echo "🛑 BLOCKED: $1 hides which repo this commit goes to, so its branch cannot be checked." >&2
+  echo '' >&2
+  echo 'Run the commit directly, with a literal path:' >&2
+  echo '  git -C /absolute/path/to/repo commit ...' >&2
+  exit 2
+}
 
-  if [[ -n "${git_dir}" ]]; then
-    branch=$(git -C "${git_dir}" symbolic-ref --short HEAD 2>/dev/null || echo 'unknown')
-    basis="repo named by -C: ${git_dir}"
+if printf '%s\n' "${_scan}" | grep -qE "${xargs_re}"; then
+  _deny_unknown_repo 'xargs'
+fi
+
+# Backstop (#637): env -C <$... or `...`> then git commit denies unparsed; a nested $( ) defeats the env arm.
+_env_subst_re="(^|[^[:alnum:]_.-])env[[:space:]]([^|;&]*[[:space:]])?(-C|--chdir)(=|[[:space:]]+)?[\"${sq}]?[\$${bt}].*git[[:space:]](.*[[:space:]])?commit([[:space:]]|$)"
+if printf '%s\n' "${_scan}" | grep -qE "${_env_subst_re}"; then
+  _deny_unknown_repo 'env -C with a substituted directory'
+fi
+
+# One -C/--chdir value (quoted, bare, -C/p, --chdir=/p). Needs a space before -C, which commit_re guarantees.
+_dir_re="(^|[[:space:]])(-C|--chdir)(=|[[:space:]]+)?(\"([^\"]*)\"|${sq}([^${sq}]*)${sq}|([^[:space:]]+))"
+readonly _dir_re
+
+# Print every -C/--chdir value in $1, in order, one per line.
+_dirs_in() {
+  local rest="$1"
+  while [[ "${rest}" =~ ${_dir_re} ]]; do
+    printf '%s\n' "${BASH_REMATCH[5]}${BASH_REMATCH[6]}${BASH_REMATCH[7]}"
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+  done
+}
+
+if printf '%s\n' "${_scan}" | grep -qE "${commit_re}"; then
+  # env -C dirs, then git -C dirs, in order: git composes several -C values, so this reproduces where it runs (#637).
+  match=$(printf '%s\n' "${_scan}" | grep -oE "${commit_re}" | head -1)
+  git_part="${match}"
+  if [[ "${match}" =~ ${_git_commit}$ ]]; then
+    git_part="${BASH_REMATCH[0]}"
+  fi
+  wrap_part="${match%"${git_part}"}"
+
+  found=$(_dirs_in "${wrap_part}")
+  env_dirs=()
+  while IFS= read -r d; do
+    if [[ -n "${d}" ]]; then env_dirs+=("${d}"); fi
+  done <<<"${found}"
+  found=$(_dirs_in "${git_part}")
+  git_dirs=()
+  while IFS= read -r d; do
+    if [[ -n "${d}" ]]; then git_dirs+=("${d}"); fi
+  done <<<"${found}"
+
+  # An env -C dir the hook cannot read ($X, $(...), {}) denies. git -C "$X" keeps its old behaviour: unknown, allowed.
+  for d in ${env_dirs[@]+"${env_dirs[@]}"}; do
+    if [[ "${d}" == *'$'* || "${d}" == *"${bt}"* || "${d}" == *'{}'* ]]; then
+      _deny_unknown_repo "env -C ${d}"
+    fi
+  done
+
+  cargs=()
+  shown=''
+  for d in ${env_dirs[@]+"${env_dirs[@]}"} ${git_dirs[@]+"${git_dirs[@]}"}; do
+    # A leading ~ is expanded by the shell before git sees it.
+    if [[ "${d}" == "${tilde}" || "${d}" == "${tilde}/"* ]]; then d="${HOME}${d:1}"; fi
+    cargs+=(-C "${d}")
+    shown="${shown:+${shown} then }${d}"
+  done
+
+  if [[ "${#cargs[@]}" -gt 0 ]]; then
+    branch=$(git "${cargs[@]}" symbolic-ref --short HEAD 2>/dev/null || echo 'unknown')
+    basis="directory named by -C/--chdir: ${shown}"
   else
     branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo 'unknown')
     basis="current directory: $(pwd)"
