@@ -89,7 +89,13 @@ git@GitHub.com:o/r.git|github.com
 https://user@github.com/o/r|github.com
 github.com:o/r.git|github.com
 git@gitlab.com:o/r.git|gitlab.com
-git@github-beacon:o/r.git|github-beacon
+git@github-beacon:o/r.git|github.com
+git@GitHub-SmartWatermelon:o/r.git|github.com
+ssh://git@github-smartwatermelon/o/r.git|github.com
+git@github-x.example:o/r.git|github-x.example
+https://github-smartwatermelon/o/r|github-smartwatermelon
+git@github:o/r.git|github
+git@github-:o/r.git|github-
 https://github.com.evil.example/o/r|github.com.evil.example
 https://github.com@evil.example/o/r|evil.example
 file:///srv/git/o/r.git|
@@ -129,7 +135,8 @@ for url in \
   "git@github.com:smartwatermelon/x.git" \
   "https://github.com/smartwatermelon/x" \
   "https://github.com/SmartWatermelon/x.git" \
-  "ssh://git@github.com/smartwatermelon/x.git"; do
+  "ssh://git@github.com/smartwatermelon/x.git" \
+  "git@github-smartwatermelon:smartwatermelon/x.git"; do
   i=$((i + 1))
   mkrepo "swm${i}" "${url}"
   run_cli --dir "${TMP}/swm${i}"
@@ -151,6 +158,8 @@ gitlab|git@gitlab.com:smartwatermelon/x.git
 lookalike|https://github.com.evil.example/smartwatermelon/x
 userinfo|https://github.com@evil.example/smartwatermelon/x
 filepath|file:///srv/smartwatermelon/x.git
+dotalias|git@github-x.example:smartwatermelon/x.git
+httpsalias|https://github-smartwatermelon/smartwatermelon/x
 URLS
 
 # --repo is gh's owner/name, which names a github.com repository.

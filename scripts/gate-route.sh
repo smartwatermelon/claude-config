@@ -17,7 +17,8 @@
 # owner=<login> matches the owner part of an owner/name destination, exactly
 # and case-insensitively, and only when the destination host is github.com.
 # A --repo value (gh's owner/name) counts as github.com; a --dir origin must
-# name github.com itself. Any other host, or none, falls through (fail closed).
+# name github.com itself, or an SSH alias github-<account> for it. Any other
+# host, or none, falls through (fail closed).
 # author= cannot do this job: the gh wrapper maps every unknown owner to
 # twistedmelonman, so it cannot tell a personal repo from someone else's.
 #
@@ -240,7 +241,13 @@ _host_from_dir() {
   else
     return 0
   fi
-  [[ -n "${host}" ]] && printf '%s\n' "${host,,}"
+  host="${host,,}"
+  # SSH alias github-<account> (per-account key) is github.com. Not for https.
+  if [[ "${host}" =~ ^github-[a-z0-9_-]+$ ]] &&
+    [[ "${url,,}" == ssh://* || ! "${url}" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*:// ]]; then
+    host="github.com"
+  fi
+  [[ -n "${host}" ]] && printf '%s\n' "${host}"
   return 0
 }
 
