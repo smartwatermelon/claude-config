@@ -131,6 +131,12 @@ if printf '%s\n' "${_scan}" | grep -qE "${xargs_re}"; then
   _deny_unknown_repo 'xargs'
 fi
 
+# Backstop (#637): env -C <$... or `...`> then git commit denies unparsed; a nested $( ) defeats the env arm.
+_env_subst_re="(^|[^[:alnum:]_.-])env[[:space:]]([^|;&]*[[:space:]])?(-C|--chdir)(=|[[:space:]]+)?[\"${sq}]?[\$${bt}].*git[[:space:]](.*[[:space:]])?commit([[:space:]]|$)"
+if printf '%s\n' "${_scan}" | grep -qE "${_env_subst_re}"; then
+  _deny_unknown_repo 'env -C with a substituted directory'
+fi
+
 # One -C/--chdir value (quoted, bare, -C/p, --chdir=/p). Needs a space before -C, which commit_re guarantees.
 _dir_re="(^|[[:space:]])(-C|--chdir)(=|[[:space:]]+)?(\"([^\"]*)\"|${sq}([^${sq}]*)${sq}|([^[:space:]]+))"
 readonly _dir_re

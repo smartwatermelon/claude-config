@@ -266,6 +266,10 @@ check_from "env -C \$(echo <main repo>) git commit (substitution with a space)" 
   "env -C \$(echo ${REPO_MAIN}) git commit -m msg"
 check_from "env -C \`echo <main repo>\` git commit (backticks)" 2 "${REPO_FEATURE}" \
   "env -C \`echo ${REPO_MAIN}\` git commit -m msg"
+check_from "env -C \$(dirname \$(echo <main repo>/x)) git commit (nested)" 2 "${REPO_FEATURE}" \
+  "env -C \$(dirname \$(echo ${REPO_MAIN}/x)) git commit -m msg"
+check_from "env -C \"\$(dirname \$(pwd))\" git commit (quoted nested)" 2 "${REPO_FEATURE}" \
+  "env -C \"\$(dirname \$(pwd))\" git commit -m msg"
 
 echo "--- MUST BLOCK: xargs before git commit, on any branch (#637) ---"
 # xargs builds arguments from stdin, so the hook cannot tell which repo is used.
@@ -298,6 +302,8 @@ check "xargs on an unrelated command" 0 'echo a | xargs echo'
 check "commit word after xargs echo" 0 'git log -p | xargs echo commit'
 check "git log piped into xargs echo" 0 'git log -1 | xargs echo'
 check "env -C on a non-commit git command" 0 "env -C ${REPO_MAIN} git status"
+check_from "env -C \$(...) on a non-commit git command" 0 "${REPO_FEATURE}" \
+  "env -C \$(dirname \$(pwd)) git status"
 # Only xargs in command position counts, not the word in the middle of a quoted argument.
 check_from "grep for the text 'run xargs git commit'" 0 "${REPO_FEATURE}" \
   "grep -rn 'run xargs git commit' docs/"
