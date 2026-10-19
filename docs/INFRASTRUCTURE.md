@@ -54,7 +54,7 @@ entries are omitted here.
 
 `hook-block-all.sh` runs these in order and stops at the first block:
 
-1. `hook-block-secret-leak.sh` (first on purpose: the others log the full command when they block)
+1. `hook-block-secret-leak.sh` (first on purpose: the others log the full command when they block). Also denies 1Password forms that print whole items: `op item get` with `--format json`, `--reveal`, `--fields` or `--otp`, `op document get` without `--out-file`, and `op item list --format json` piped into `op item get`. Use `op read op://vault/item/field` instead (#731)
 2. `hook-block-gate-dir-write.sh` (Bash-path writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf`, `copy-paths.conf` and personify's `route-command`)
 3. `hook-block-no-verify.sh`
 4. `hook-block-short-no-verify.sh`

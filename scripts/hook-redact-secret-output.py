@@ -280,10 +280,59 @@ def _positionals(args, value_flags=frozenset()):
     return out
 
 
-def emitter_label(argv):
+def _op_flag_value(args, name):
+    """Value of `name` given as `name VALUE` or `name=VALUE`, else None."""
+    for i, a in enumerate(args):
+        if a == name:
+            return args[i + 1] if i + 1 < len(args) else ""
+        if a.startswith(name + "="):
+            return a.split("=", 1)[1]
+    return None
+
+
+def op_json_output(argv, assigns=()):
+    """True unless the format (--format, or OP_FORMAT as prefix or in env)
+    is unset or human-readable, the only form that conceals values."""
+    fmt = _op_flag_value(argv[1:], "--format")
+    if fmt is None:
+        for a in assigns:
+            if a.startswith("OP_FORMAT="):
+                fmt = a.split("=", 1)[1]
+    if fmt is None:
+        fmt = os.environ.get("OP_FORMAT") or None
+    return fmt is not None and fmt.strip().lower() != "human-readable"
+
+
+def op_value_form(argv, assigns=()):
+    """Name the `op` form in argv that prints item field values, or None.
+
+    #731: JSON output prints concealed fields with no --reveal. `op get
+    item` is the v1 spelling, always JSON.
+    """
+    if not argv or os.path.basename(argv[0]) != "op":
+        return None
+    args = argv[1:]
+    pos = _positionals(args, OP_VALUE_FLAGS)
+    flags = set(a.split("=", 1)[0] for a in args if a.startswith("-"))
+    if pos[:2] in (["item", "get"], ["get", "item"]):
+        shown = sorted(flags & {"--reveal", "--fields", "--otp"})
+        if shown:
+            return "op item get %s" % shown[0]
+        if op_json_output(argv, assigns):
+            return "op item get --format json"
+        if pos[0] == "get":
+            return "op get item"
+    if pos[:2] in (["document", "get"], ["get", "document"]) and not (
+            flags & {"-o", "--out-file"}):
+        return "op document get"
+    return None
+
+
+def emitter_label(argv, assigns=()):
     """Name the credential-printing command argv is, or None.
 
     argv[0] is the program (already stripped of wrappers and assignments).
+    assigns holds the `NAME=value` words that preceded it.
     """
     if not argv:
         return None
@@ -298,8 +347,9 @@ def emitter_label(argv):
         # `op inject -o FILE` writes the rendered secrets to a file.
         if pos[0] == "inject" and not flags & {"-o", "--out-file"}:
             return "op inject"
-        if pos[:2] == ["item", "get"] and flags & {"--reveal", "--fields"}:
-            return "op item get"
+        label = op_value_form(argv, assigns)
+        if label:
+            return label
         if pos[0] == "signin" and "--raw" in flags:
             return "op signin --raw"
     if prog == "security" and pos[:1] in (["find-generic-password"],
@@ -410,6 +460,11 @@ def _strip_prefix(words):
     return words[i:]
 
 
+def prefix_assigns(words, argv):
+    """The `NAME=value` words _strip_prefix dropped ahead of argv."""
+    return [w for w in words[:len(words) - len(argv)] if ASSIGN_RE.match(w)]
+
+
 def credential_commands(cmd, _depth=0):
     """Credential-printing commands in cmd whose output reaches the transcript.
 
@@ -437,7 +492,9 @@ def credential_commands(cmd, _depth=0):
     if tokens is None:
         hits = []
         for part in re.split(r"[;&|\n()]+", cmd):
-            label = emitter_label(_strip_prefix(part.split()))
+            words = part.split()
+            argv = _strip_prefix(words)
+            label = emitter_label(argv, prefix_assigns(words, argv))
             if label:
                 hits.append((label, {"stdout", "stderr"}))
         return hits
@@ -467,7 +524,7 @@ def credential_commands(cmd, _depth=0):
             if not argv:
                 continue
             prog = os.path.basename(argv[0])
-            label = emitter_label(argv)
+            label = emitter_label(argv, prefix_assigns(simple["words"], argv))
             streams = {"stdout"}
             if label is None and prog in SHELLS and "-c" in argv:
                 c_at = argv.index("-c")
