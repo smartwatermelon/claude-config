@@ -59,14 +59,35 @@ done <<<"${verdict}"
 
 printf '🛑 BLOCKED: this command would print a live secret into the transcript.\n' >&2
 printf '\n' >&2
+op_hit=0
+env_hit=0
 while IFS=$'\t' read -r varname label; do
   [[ -n "${varname}" ]] || continue
+  if [[ "${varname}" == "<1password>" ]]; then
+    op_hit=1
+  else
+    env_hit=1
+  fi
   printf '  %-32s %s\n' "${varname}" "${label}" >&2
 done <<<"${verdict}"
 printf '\n' >&2
 printf 'A transcript is durable. Once a secret is written to one, rotating it is\n' >&2
 printf 'the only remedy -- so this is blocked before it runs, not after.\n' >&2
 printf '\n' >&2
+
+if [[ "${op_hit}" -eq 1 ]]; then
+  # smartwatermelon/claude-config#731: JSON output of `op item get` prints
+  # concealed fields in plaintext, so a whole item is never fetched.
+  printf 'This form prints a whole 1Password item (or a document) to output.\n' >&2
+  printf 'Get one secret at a time instead, consumed by a pipe or a capture:\n' >&2
+  printf '  op read op://vault/item/field\n' >&2
+  printf 'To see an item'"'"'s field names without values, run op item get ITEM\n' >&2
+  printf 'with no --format, --reveal, --fields or --otp. To save a document,\n' >&2
+  printf 'use op document get DOC --out-file PATH.\n' >&2
+  [[ "${env_hit}" -eq 1 ]] || exit 2
+  printf '\n' >&2
+fi
+
 printf 'To check whether a variable is set, use a form that cannot print it:\n' >&2
 # `D` holds a dollar sign so these examples can be written without single
 # quotes; they are documentation text and must never be expanded.
