@@ -86,7 +86,7 @@ _assign="[A-Za-z_][A-Za-z0-9_]*=${_aval}[[:space:]]+"
 readonly _assign
 
 # env options before git (#637). Value-taking options are named, so no generic arm can swallow `git`.
-_word="(\"[^\"]*\"|${sq}[^${sq}]*${sq}|[^[:space:]|;&${bt}\"${sq}]+)"
+_word="(\"[^\"]*\"|${sq}[^${sq}]*${sq}|\\$\\([^)]*\\)|${bt}[^${bt}]*${bt}|[^[:space:]|;&${bt}\"${sq}]+)"
 _envtok="(-[CuSPa][[:space:]]+${_word}|--(chdir|unset|split-string|argv0|env0-from)[[:space:]]+${_word}|-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=${_aval})"
 readonly _word _envtok
 _env_arm="([^[:space:]|;&(){${bt}]*/)?env([[:space:]]+${_envtok})*"

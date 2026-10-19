@@ -262,6 +262,10 @@ check_from "env -C \"\$D\" git commit (unexpanded dir)" 2 "${REPO_FEATURE}" \
   "env -C \"\$D\" git commit -m msg"
 check_from "env -C \$(pwd) git commit (unexpanded dir)" 2 "${REPO_FEATURE}" \
   "env -C \$(pwd) git commit -m msg"
+check_from "env -C \$(echo <main repo>) git commit (substitution with a space)" 2 "${REPO_FEATURE}" \
+  "env -C \$(echo ${REPO_MAIN}) git commit -m msg"
+check_from "env -C \`echo <main repo>\` git commit (backticks)" 2 "${REPO_FEATURE}" \
+  "env -C \`echo ${REPO_MAIN}\` git commit -m msg"
 
 echo "--- MUST BLOCK: xargs before git commit, on any branch (#637) ---"
 # xargs builds arguments from stdin, so the hook cannot tell which repo is used.
@@ -279,6 +283,8 @@ check_from "sh -c 'xargs git commit'" 2 "${REPO_FEATURE}" \
   "echo x | sh -c 'xargs git commit -m x'"
 check_from "sh -c \"xargs git commit\"" 2 "${REPO_FEATURE}" \
   "echo x | sh -c \"xargs git commit -m x\""
+check_from "xargs git commit on its own line" 2 "${REPO_FEATURE}" \
+  "$(printf 'echo x\nxargs git commit -m x')"
 check_from "path-qualified xargs git commit" 2 "${REPO_FEATURE}" \
   'echo x | /usr/bin/xargs git commit -m x'
 
