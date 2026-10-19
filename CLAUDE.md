@@ -71,7 +71,6 @@ Run `date` before reporting it. Never state a date you did not check.
 
 **CWD discipline** (a standing rule, not a per-session recital):
 
-- NEVER use shell `cd` — Bash tool cwd is stateful
 - ALWAYS use `git -C /absolute/path` for git commands
 - ALWAYS use package manager `--dir` or `--filter` flags with absolute path
 - `git rev-parse --git-dir` is cwd-relative; use `--absolute-git-dir`
