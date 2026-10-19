@@ -306,6 +306,40 @@ _case "a path component named cd is not a cd" 0 "" "${PERSONAL}" \
 _case "{ cd B; commit; } still follows the cd" 2 "no Pangram check ran" "${PERSONAL}" \
   "{ cd ${BEACON}; git commit -F ${TXT}; }"
 
+# The word cd inside an inert gh title or body value is text, not a cd: it
+# routes like any other title. Anything that could run still counts.
+_norec
+_case "cd in a single-quoted -R title routes by the repo" 2 "no Pangram check ran" "${PERSONAL}" \
+  "gh issue create -R beacon-biosignals/x --title 'relative cd in scripts' --body-file ${TXT}"
+_case "cd in a double-quoted title with no -R routes by the cwd (pangram)" 2 "no Pangram check ran" "${BEACON}" \
+  "gh issue create --title \"about cd\" --body-file ${TXT}"
+_case "cd in a --title= value routes by the cwd (visual)" 0 "" "${PERSONAL}" \
+  "gh issue create --title='about cd' --body-file ${TXT}"
+_case "cd in an inline -b body is text too" 2 "text given inline" "${PERSONAL}" \
+  "gh issue comment 1 -b 'run cd first'"
+_case "a real unresolved cd before gh -R still denies" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "cd \$X && gh issue create -R twistedmelonman/y --title t --body-file ${TXT}"
+_case "cd inside \$(...) in a double-quoted title still counts" 2 "" "${PERSONAL}" \
+  "gh issue create --title \"x \$(cd ${BEACON} && pwd)\" --body-file ${TXT}"
+_case "an inert title does not hide a cd later in the command" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue create --title 'cd' --body-file ${TXT}; bash -c 'cd ${BEACON} && git commit -F ${TXT}'"
+_case "ssh -t with a quoted cd still denies (not a gh title)" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "ssh -t 'cd ${BEACON}' && git commit -F ${TXT}"
+# Commit-review finding: a -t inside one literal must not pair with the next
+# literal's quote and swallow a live cd between them.
+_case "a -t inside a literal does not swallow a live \$(cd ...)" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue create --title t --body-file ${TXT} 'a -t ' \$(cd ${BEACON} && git commit -F ${TXT}) ' b'"
+_case "a -t inside a literal does not swallow a cd after a separator" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue comment 1 -b \"q\" -t \"x\" ' -t ' ; echo \$(cd ${BEACON}) ; echo ' '"
+_case "a literal -t pairs only with its own quote" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue create --body-file ${TXT} 'x -t ' cd ' y' ; echo \$(cd ${BEACON})"
+_case "a -t inside a literal does not swallow a backtick cd" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue create --title t --body-file ${TXT} 'a -t ' \`cd ${BEACON} && git commit -F ${TXT}\` ' b'"
+_case "a -t inside a literal does not swallow a double-quoted \$(cd ...)" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue create --title t --body-file ${TXT} 'a -t ' \"\$(cd ${BEACON} && git commit -F ${TXT})\" ' b'"
+_case "an escaped quote in a double-quoted title does not desync the scan" 2 "cd the hook cannot resolve" "${PERSONAL}" \
+  "gh issue create --title \"a\\\" -b 'x\" ; echo \$(cd ${BEACON}) ; echo '\" --body-file ${TXT}"
+
 # Final review I3: several -C options deny.
 _case "two git -C options deny" 2 "more than one git -C" "${TMP}" \
   "git -C personal -C ../beacon commit -F ${TXT}"

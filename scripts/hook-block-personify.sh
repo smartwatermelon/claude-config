@@ -1435,13 +1435,55 @@ _suspended() {
 # CD_TRACKED counts the ones _track_cd followed. Any word it did not follow
 # (inside `$(...)`, backticks or `bash -c "..."`, after `!`, `if`, `builtin`
 # or `command`, and every popd) makes the destination unknown, and
-# _destination_for_segment denies. A quoted title that says "cd" denies too;
-# that is the fail-closed direction.
+# _destination_for_segment denies.
+#
+# Minus those in a literal gh title or body (no $, backtick or \): such text cannot move the cwd.
+_cd_word_count() {
+  tr -c '[:alnum:]_./-' '\n' | grep -cxE 'cd|pushd|popd' || true
+}
+_inert_gh_values() {
+  local seg segs
+  segs="$(_quoted_segments 1 "${_joined}")"
+  while IFS= read -r seg; do
+    printf '%s\n' "${seg}" | grep -qE "${gh_re}" || continue
+    # Nested quoting would defeat the quote scan below; such a segment keeps every cd word.
+    case "${seg}" in
+      *"${bt}"* | *"\$("* | *"\${"* | *"\$'"* | *"\$\""* | *"<("* | *">("*) continue ;;
+      *) ;;
+    esac
+    # A flag counts only outside quotes; a rejected value is scanned as normal text, never skipped.
+    printf '%s\n' "${seg}" | LC_ALL=C awk '
+      {
+        s = $0; n = length(s); q = 0; i = 1
+        while (i <= n) {
+          c = substr(s, i, 1)
+          if (q == 1) { if (c == "\047") q = 0; i++; continue }
+          if (c == "\\") { i += 2; continue }
+          if (q == 2) { if (c == "\"") q = 0; i++; continue }
+          if (c == "\047") { q = 1; i++; continue }
+          if (c == "\"") { q = 2; i++; continue }
+          if (c ~ /[ \t]/ && match(substr(s, i), /^[ \t]+(-t|--title|-b|--body)(=|[ \t]+)/)) {
+            j = i + RLENGTH; o = substr(s, j, 1)
+            if (o == "\047" || o == "\"") {
+              k = index(substr(s, j + 1), o)
+              v = substr(s, j + 1, k - 1)
+              if (k > 0 && !index(v, "$") && !index(v, "\140") && !index(v, "\\")) {
+                print v; i = j + k + 1; continue
+              }
+            }
+            i = j; continue
+          }
+          i++
+        }
+      }'
+  done <<<"${segs}"
+}
 CD_DIR=""
 CD_UNRESOLVED=0
 CD_SEEN=0
 CD_TRACKED=0
-CD_WORDS="$(printf '%s\n' "${_joined}" | tr -c '[:alnum:]_./-' '\n' | grep -cxE 'cd|pushd|popd' || true)"
+CD_WORDS="$(printf '%s\n' "${_joined}" | _cd_word_count)"
+CD_WORDS=$((CD_WORDS - $(_inert_gh_values | _cd_word_count)))
 _track_cd() {
   local seg="$1" rest arg
   rest="$(printf '%s\n' "${seg}" | sed -E 's/^[[:space:]({]*((then|do)[[:space:]]+)?//')"
@@ -1533,11 +1575,12 @@ _gate_segment() {
   return 0
 }
 
+pieces="$(_segments)"
 while IFS= read -r seg; do
   [[ -n "${seg}" ]] || continue
   _track_cd "${seg}"
   _gate_segment "${seg}"
-done < <(_segments)
+done <<<"${pieces}"
 
 # Whole segments whose quoted arguments hold a separator (claude-config#626).
 # No _track_cd here: the pieces above already counted every cd, and counting

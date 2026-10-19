@@ -114,6 +114,8 @@ _case "graphql body in an exempt cwd blocks" 2 "GraphQL mutation" "${EXEMPT}" \
   "gh api graphql -f query='mutation { addComment(input: {subjectId: \"x\", body: \"hi\"}) { clientMutationId } }'"
 _case "unresolvable cd blocks" 2 "cd the hook cannot resolve" "${EXEMPT}" \
   "cd \$X && git commit -m x"
+_case "exempt -R with cd in the title passes" 0 "" "${GATED}" \
+  "gh issue create -R smartwatermelon/z --title 'relative cd in scripts' --body-file ${EXEMPT}/msg.txt"
 
 # A broken rules file is a router failure, not an exemption.
 printf 'not-a-rule\n' >"${GATE_RULES_FILE}"
