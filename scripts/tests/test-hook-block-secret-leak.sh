@@ -261,6 +261,10 @@ check 'op item list --format=json piped into op item get' 2 \
   'op item list --format=json | op item get - --vault Automation'
 check 'export OP_FORMAT=json earlier in the command' 2 \
   'export OP_FORMAT=json; op item get X'
+check 'export OP_FORMAT=json with no space before ;' 2 \
+  'export OP_FORMAT=json;op item get X'
+check 'inline OP_FORMAT=json overrides an exported human-readable' 2 \
+  'export OP_FORMAT=human-readable; OP_FORMAT=json op item get X'
 check 'bash -lc (combined flag cluster)' 2 "bash -lc 'op item get X --reveal'"
 
 # An unbalanced quote makes the parser give up; the regex fallback runs.
@@ -290,6 +294,8 @@ check 'op vault list' 0 'op vault list'
 check 'OP_FORMAT=human-readable op item get' 0 \
   'OP_FORMAT=human-readable op item get X'
 check 'fallback: unparsable op read' 0 'op read "op://v/i/f'
+check 'export OP_FORMAT=human-readable;op item get X' 0 \
+  'export OP_FORMAT=human-readable;op item get X'
 check 'grep for the phrase op item get' 0 "grep -rn 'op item get' notes.md"
 check 'echo naming the command' 0 'echo "never run op item get --format json"'
 

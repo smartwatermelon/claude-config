@@ -248,7 +248,7 @@ _CRUDE_ITEM = re.compile(
 )
 
 # `export OP_FORMAT=json; op item get X` sets the format for later commands.
-_OP_FORMAT_SET = re.compile(r"(?<![\w])OP_FORMAT=(\S*)")
+_OP_FORMAT_SET = re.compile(r"(?<![\w])OP_FORMAT=([^\s;&|<>()`]*)")
 
 # `bash -c`, `bash -lc`, `sh -ec`: a short-option cluster holding c.
 _SHELL_C = re.compile(r"-[A-Za-z]*c[A-Za-z]*")
@@ -304,8 +304,8 @@ def find_op_item_reads(cmd, R, _depth=0, _set=()):
     if _depth > 5 or not cmd:
         return []
     raw = cmd
-    # An OP_FORMAT set anywhere applies to every op call after it. Quotes are
-    # stripped so `OP_FORMAT="human-readable"` still reads as the table.
+    # An OP_FORMAT set anywhere counts for every op call in the command (the
+    # safe side). Inline prefixes come last, so they win.
     _set = list(_set) + [
         "OP_FORMAT=" + v.strip("\"'") for v in _OP_FORMAT_SET.findall(raw)
     ]
