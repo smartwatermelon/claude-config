@@ -243,6 +243,8 @@ check "env -i git commit" 2 'env -i git commit -m msg'
 check "env -u FOO git commit" 2 'env -u FOO git commit -m msg'
 check "env --unset=FOO git commit" 2 'env --unset=FOO git commit -m msg'
 check "env -i FOO=1 git commit (assignment after an option)" 2 'env -i FOO=1 git commit -m msg'
+check "env -a x git commit (GNU argv0)" 2 'env -a x git commit -m msg'
+check "env --argv0 x git commit" 2 'env --argv0 x git commit -m msg'
 # git composes successive -C values, so a relative git -C resolves against env's
 # dir, and an absolute one replaces it.
 check_from "env -C <main repo> git -C . commit" 2 "${REPO_FEATURE}" \
@@ -273,6 +275,12 @@ check_from "xargs env -C {} git commit" 2 "${REPO_FEATURE}" \
   "echo ${REPO_MAIN} | xargs -I{} env -C {} git commit -m x"
 check_from "xargs sh -c 'git commit'" 2 "${REPO_FEATURE}" \
   "echo x | xargs sh -c 'git commit -m x'"
+check_from "sh -c 'xargs git commit'" 2 "${REPO_FEATURE}" \
+  "echo x | sh -c 'xargs git commit -m x'"
+check_from "sh -c \"xargs git commit\"" 2 "${REPO_FEATURE}" \
+  "echo x | sh -c \"xargs git commit -m x\""
+check_from "path-qualified xargs git commit" 2 "${REPO_FEATURE}" \
+  'echo x | /usr/bin/xargs git commit -m x'
 
 echo "--- MUST NOT BLOCK: env and xargs that do not commit to main (#637) ---"
 check_from "env -C <feature repo> git commit, run from main" 0 "${REPO_MAIN}" \
@@ -284,6 +292,12 @@ check "xargs on an unrelated command" 0 'echo a | xargs echo'
 check "commit word after xargs echo" 0 'git log -p | xargs echo commit'
 check "git log piped into xargs echo" 0 'git log -1 | xargs echo'
 check "env -C on a non-commit git command" 0 "env -C ${REPO_MAIN} git status"
+# Only xargs in command position counts, not the word in the middle of a quoted argument.
+check_from "grep for the text 'run xargs git commit'" 0 "${REPO_FEATURE}" \
+  "grep -rn 'run xargs git commit' docs/"
+# A quote closing right after commit ends no match, as in commit_re, so this pattern text passes.
+check_from "grep for the text 'xargs git commit'" 0 "${REPO_FEATURE}" \
+  "grep -rn 'xargs git commit' docs/"
 
 echo "--- MUST NOT BLOCK: 'commit' inside a longer token ---"
 # The subcommand must be exactly `commit`; these carry it as a prefix of a

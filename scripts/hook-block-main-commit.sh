@@ -87,7 +87,7 @@ readonly _assign
 
 # env options before git (#637). Value-taking options are named, so no generic arm can swallow `git`.
 _word="(\"[^\"]*\"|${sq}[^${sq}]*${sq}|[^[:space:]|;&${bt}\"${sq}]+)"
-_envtok="(-[CuSP][[:space:]]+${_word}|--(chdir|unset|split-string)[[:space:]]+${_word}|-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=${_aval})"
+_envtok="(-[CuSPa][[:space:]]+${_word}|--(chdir|unset|split-string|argv0|env0-from)[[:space:]]+${_word}|-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=${_aval})"
 readonly _word _envtok
 _env_arm="([^[:space:]|;&(){${bt}]*/)?env([[:space:]]+${_envtok})*"
 readonly _env_arm
@@ -95,8 +95,8 @@ _git_commit="([^[:space:]|;&(){${bt}]*/)?git[[:space:]]+(-[^[:space:]]+[[:space:
 readonly _git_commit
 commit_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do)[[:space:]]*((${_env_arm}|command|sudo)[[:space:]]+)*${_git_commit}"
 
-# xargs before git commit (#637): its arguments come from stdin, so the repo is unknown. Deny on any branch.
-xargs_re="(^|[^[:alnum:]_.-])xargs([[:space:]][^|;&${bt}]*)?[[:space:]\"${sq}]${_git_commit}"
+# xargs in command position or opening a quote, then git commit (#637): args come from stdin, so the repo is unknown.
+xargs_re="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|'|\"|[[:space:]]then|[[:space:]]do)[[:space:]]*((${_env_arm}|command|sudo)[[:space:]]+)*([^[:space:]|;&(){${bt}]*/)?xargs([[:space:]][^|;&${bt}]*)?[[:space:]\"${sq}]${_git_commit}"
 readonly xargs_re
 
 # `env FOO=1 git commit` puts an assignment between the wrapper and git, which
