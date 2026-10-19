@@ -222,6 +222,69 @@ check "git --git-dir= commit" 2 'git --git-dir=.git commit -m x'
 check "command-wrapped git commit" 2 'command git commit -m x'
 check "sudo-wrapped git commit" 2 'sudo git commit -m x'
 
+echo "--- MUST BLOCK: env with options, and env -C <dir> (#637) ---"
+# env -C moves git into <dir>, so the branch must come from there. Run from the feature repo, a cwd fallback allows these.
+check_from "env -C <main repo> git commit" 2 "${REPO_FEATURE}" \
+  "env -C ${REPO_MAIN} git commit -m msg"
+check_from "env --chdir=<main repo> git commit" 2 "${REPO_FEATURE}" \
+  "env --chdir=${REPO_MAIN} git commit -m msg"
+check_from "env --chdir <main repo> git commit" 2 "${REPO_FEATURE}" \
+  "env --chdir ${REPO_MAIN} git commit -m msg"
+check_from "env -C<main repo> attached" 2 "${REPO_FEATURE}" \
+  "env -C${REPO_MAIN} git commit -m msg"
+check_from "env -i -C <main repo> git commit" 2 "${REPO_FEATURE}" \
+  "env -i -C ${REPO_MAIN} git commit -m msg"
+check_from "env -C \"<spaced main repo>\" git commit" 2 "${REPO_FEATURE}" \
+  "env -C \"${REPO_SPACED}\" git commit -m msg"
+check_from "/usr/bin/env -C <main repo> git commit" 2 "${REPO_FEATURE}" \
+  "/usr/bin/env -C ${REPO_MAIN} git commit -m msg"
+check "env -C . git commit" 2 'env -C . git commit -m msg'
+check "env -i git commit" 2 'env -i git commit -m msg'
+check "env -u FOO git commit" 2 'env -u FOO git commit -m msg'
+check "env --unset=FOO git commit" 2 'env --unset=FOO git commit -m msg'
+check "env -i FOO=1 git commit (assignment after an option)" 2 'env -i FOO=1 git commit -m msg'
+# git composes successive -C values, so a relative git -C resolves against env's
+# dir, and an absolute one replaces it.
+check_from "env -C <main repo> git -C . commit" 2 "${REPO_FEATURE}" \
+  "env -C ${REPO_MAIN} git -C . commit -m msg"
+check_from "env -C <feature repo> git -C <main repo> commit" 2 "${REPO_FEATURE}" \
+  "env -C ${REPO_FEATURE} git -C ${REPO_MAIN} commit -m msg"
+# The shell expands a leading ~ before env sees it, so the hook must too.
+saved_home="${HOME}"
+HOME="$(dirname "${REPO_MAIN}")"
+check_from "env -C ~/<main repo> git commit" 2 "${REPO_FEATURE}" \
+  "env -C ~/$(basename "${REPO_MAIN}") git commit -m msg"
+HOME="${saved_home}"
+# A dir the hook cannot read denies on any branch.
+check_from "env -C \"\$D\" git commit (unexpanded dir)" 2 "${REPO_FEATURE}" \
+  "env -C \"\$D\" git commit -m msg"
+check_from "env -C \$(pwd) git commit (unexpanded dir)" 2 "${REPO_FEATURE}" \
+  "env -C \$(pwd) git commit -m msg"
+
+echo "--- MUST BLOCK: xargs before git commit, on any branch (#637) ---"
+# xargs builds arguments from stdin, so the hook cannot tell which repo is used.
+check "xargs -I{} git -C {} commit, from main" 2 \
+  "echo ${REPO_MAIN} | xargs -I{} git -C {} commit -m x"
+check_from "xargs -I{} git -C {} commit, from feature" 2 "${REPO_FEATURE}" \
+  "echo ${REPO_MAIN} | xargs -I{} git -C {} commit -m x"
+check_from "git output piped to xargs git commit" 2 "${REPO_FEATURE}" \
+  'git rev-parse HEAD | xargs git commit -m x'
+check_from "xargs env -C {} git commit" 2 "${REPO_FEATURE}" \
+  "echo ${REPO_MAIN} | xargs -I{} env -C {} git commit -m x"
+check_from "xargs sh -c 'git commit'" 2 "${REPO_FEATURE}" \
+  "echo x | xargs sh -c 'git commit -m x'"
+
+echo "--- MUST NOT BLOCK: env and xargs that do not commit to main (#637) ---"
+check_from "env -C <feature repo> git commit, run from main" 0 "${REPO_MAIN}" \
+  "env -C ${REPO_FEATURE} git commit -m msg"
+check_from "env -i git commit on a feature branch" 0 "${REPO_FEATURE}" 'env -i git commit -m msg'
+check_from "env -C <main repo> git -C <feature repo> commit" 0 "${REPO_MAIN}" \
+  "env -C ${REPO_MAIN} git -C ${REPO_FEATURE} commit -m msg"
+check "xargs on an unrelated command" 0 'echo a | xargs echo'
+check "commit word after xargs echo" 0 'git log -p | xargs echo commit'
+check "git log piped into xargs echo" 0 'git log -1 | xargs echo'
+check "env -C on a non-commit git command" 0 "env -C ${REPO_MAIN} git status"
+
 echo "--- MUST NOT BLOCK: 'commit' inside a longer token ---"
 # The subcommand must be exactly `commit`; these carry it as a prefix of a
 # config key or an option value, not as the subcommand itself.
