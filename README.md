@@ -115,6 +115,56 @@ to the personal-dev default, leave everything enabled and don't add a row
 just to say so. Add a row only when a machine's plugin set actually diverges
 from the tracked default.
 
+### Shared vs machine settings
+
+`~/.claude/settings.json` is a symlink into this repo, so every key in it
+ships to every machine. Settings that describe one machine go in
+`~/.config/claude-code/machine-settings.json` instead. That file is in no
+repo. A launcher passes it to Claude Code with `--settings`:
+
+- `claude-wrapper` from
+  [smartwatermelon/claude-wrapper](https://github.com/smartwatermelon/claude-wrapper)
+  does this through `lib/machine-settings.sh`.
+- `bin/claude-wrapper-lite` in the same repo (claude-wrapper#143) uses the
+  same library but loads no secrets, sets no git identity, and starts no
+  remote control. Link it as `~/.local/bin/claude-wrapper-lite`; dotfiles'
+  `aliases.sh` prefers it when the full wrapper is absent. See
+  `docs/plans/2026-10-20-machine-settings-launcher.md`.
+
+`lib/machine-settings.sh` adds the file only to interactive sessions, only
+when no `--settings` is already on the command line, only when you own the
+file and it is not writable by group or others, and only when `jq` reads it
+as a JSON object. Otherwise the session starts with the shared settings only.
+
+Two places look right and are not:
+
+- `~/.claude/settings.local.json` is not a user-level file. It is local
+  (project) scope for `~`, so it loads only in sessions started in `~` itself.
+- `autoMode` is read only from `~/.claude/settings.json`, managed settings,
+  and `--settings`. Claude Code ignores `autoMode` in any project
+  `.claude/settings*.json`
+  ([docs](https://code.claude.com/docs/en/auto-mode-config)).
+
+`/auto-mode-setup` and the `/permissions` Auto mode tab write `autoMode` into
+`~/.claude/settings.json`, which is this repo. Move that block to
+`machine-settings.json` before you commit. `tests/test_settings_no_automode.bats`
+fails if `settings.json` has a top-level `autoMode`. Also, `/auto-mode-setup`
+writes `environment` without `"$defaults"`. The draft spells out the built-in
+entries as they were at setup time, so that list stops inheriting new
+built-in entries from later releases.
+
+How `--settings` merges with `settings.json` (measured on Claude Code
+2.1.305, 2026-10-20):
+
+| Case | Result |
+| --- | --- |
+| Same 25-entry `autoMode.environment` in `settings.json` and `--settings` | 50 entries: arrays concatenate |
+| `--settings '{"env":{"OVERLAY_PROBE":"yes"}}'` | `BASH_DEFAULT_TIMEOUT_MS` from `settings.json` still set: objects merge by key |
+| `--settings a.json --settings b.json` | only `b.json` applied: the flag does not stack, last one wins |
+
+So an overlay can add array entries but cannot remove them. It can override
+single object keys. It must be one file.
+
 ## Architecture
 
 ### Plugin Loading
