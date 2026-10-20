@@ -63,9 +63,11 @@ setup() {
   # ${MOCK_DIR}/arbiter-fail (FAIL), arbiter-empty (exit 0, no output) or
   # arbiter-error (exit 1) exists. Every call's argv is appended to
   # ${ARGV_RECORD} as one line, each argument in brackets, so [--tools][]
-  # is distinguishable from [--tools][Read,Grep,Glob].
+  # is distinguishable from [--tools][Read,Grep,Glob]. The arbiter's prompt
+  # (stdin) is saved to ${ARBITER_PROMPT}, overwritten on each arbiter call.
   export AGENT_RECORD="${MOCK_DIR}/agents-invoked"
   export ARGV_RECORD="${MOCK_DIR}/argv-invoked"
+  export ARBITER_PROMPT="${MOCK_DIR}/arbiter-prompt"
   cat >"${MOCK_DIR}/claude" <<EOF
 #!/usr/bin/env bash
 agent=""
@@ -83,8 +85,8 @@ for a in "\$@"; do
   prev="\$a"
 done
 printf '%s\n' "\${argv_line}" >>"${ARGV_RECORD}"
-cat >/dev/null
 if [[ "\${is_arbiter}" == true ]]; then
+  cat >"${ARBITER_PROMPT}"
   printf 'arbiter:%s\n' "\${agent}" >>"${AGENT_RECORD}"
   [[ -f "${MOCK_DIR}/arbiter-error" ]] && exit 1
   [[ -f "${MOCK_DIR}/arbiter-empty" ]] && exit 0
@@ -99,6 +101,7 @@ if [[ "\${is_arbiter}" == true ]]; then
   fi
   exit 0
 fi
+cat >/dev/null
 printf '%s\n' "\${agent}" >>"${AGENT_RECORD}"
 [[ -f "${MOCK_DIR}/error-\${agent}" ]] && exit 1
 if [[ -f "${MOCK_DIR}/fail-\${agent}" ]]; then
@@ -470,4 +473,28 @@ _stage_one_blocking_file() {
   grep -q 'chunked: INCOMPLETE' "${EXPECTED_LOG}"
   # The unreviewed file was not sent to the arbiter.
   [ "$(grep -cx 'arbiter:adversarial-reviewer' "${AGENT_RECORD}")" -eq 1 ]
+}
+
+# #683: a cached adversarial PASS carries no reasoning. The arbiter prompt must
+# say so with the fixed evidence text, not pass on the bare cache marker.
+@test "#683: a cached adversarial PASS reaches the arbiter as the fixed evidence text" {
+  _stage_one_blocking_file
+  # Run 1: adversarial passes live and is cached; the arbiter upholds the block,
+  # so the commit fails and the diff is not cached as a whole.
+  touch "${MOCK_DIR}/arbiter-fail"
+  run _run_review
+  [ "$status" -ne 0 ]
+
+  # Run 2: same diff, so the adversarial result now comes from cache.
+  rm -f "${MOCK_DIR}/arbiter-fail" "${AGENT_RECORD}" "${ARBITER_PROMPT}"
+  run _run_review
+  [ "$status" -eq 0 ]
+  ! grep -qx 'adversarial-reviewer' "${AGENT_RECORD}" || false
+  [ "$(grep -cx 'arbiter:adversarial-reviewer' "${AGENT_RECORD}")" -eq 1 ]
+
+  local evidence
+  evidence=$(sed -n '/^=== WHOLE-DIFF ADVERSARIAL REVIEWER/,/^=== DIFF OF/p' "${ARBITER_PROMPT}")
+  [[ "${evidence}" == *"cached result from an earlier run on this identical diff; no reasoning is available"* ]]
+  [[ "${evidence}" == *"Rely on the file."* ]]
+  ! grep -qx 'VERDICT: PASS (cached)' <<<"${evidence}" || false
 }
