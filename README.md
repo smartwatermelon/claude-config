@@ -125,9 +125,11 @@ repo. A launcher passes it to Claude Code with `--settings`:
 - `claude-wrapper` from
   [smartwatermelon/claude-wrapper](https://github.com/smartwatermelon/claude-wrapper)
   does this through `lib/machine-settings.sh`.
-- `claude-wrapper-lite`, a planned launcher in the same repo, uses the same
-  library but loads no secrets, sets no git identity, and starts no remote
-  control. See `docs/plans/2026-10-20-machine-settings-launcher.md`.
+- `bin/claude-wrapper-lite` in the same repo (claude-wrapper#143) uses the
+  same library but loads no secrets, sets no git identity, and starts no
+  remote control. Link it as `~/.local/bin/claude-wrapper-lite`; dotfiles'
+  `aliases.sh` prefers it when the full wrapper is absent. See
+  `docs/plans/2026-10-20-machine-settings-launcher.md`.
 
 `lib/machine-settings.sh` adds the file only to interactive sessions, only
 when no `--settings` is already on the command line, only when you own the
