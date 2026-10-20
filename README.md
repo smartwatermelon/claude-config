@@ -126,12 +126,13 @@ repo. A launcher passes it to Claude Code with `--settings`:
   [smartwatermelon/claude-wrapper](https://github.com/smartwatermelon/claude-wrapper)
   does this through `lib/machine-settings.sh`.
 - `claude-wrapper-lite`, a planned launcher in the same repo, uses the same
-  library without the 1Password, identity, and remote-session parts. See
-  `docs/plans/2026-10-20-machine-settings-launcher.md`.
+  library but loads no secrets, sets no git identity, and starts no remote
+  control. See `docs/plans/2026-10-20-machine-settings-launcher.md`.
 
 `lib/machine-settings.sh` adds the file only to interactive sessions, only
-when no `--settings` is already on the command line, and only when you own
-the file and it is not writable by group or others.
+when no `--settings` is already on the command line, only when you own the
+file and it is not writable by group or others, and only when `jq` reads it
+as a JSON object. Otherwise the session starts with the shared settings only.
 
 Two places look right and are not:
 
