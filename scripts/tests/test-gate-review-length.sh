@@ -284,8 +284,15 @@ _measure_case "measure: a title starting with - is a value, not a flag" 0 "" /de
 _measure_case "measure: a body on stdin under the cap fits" 0 "" "${B200}" --kind pr
 _measure_case "measure: a body on stdin over the cap" 1 "gate-review: pr-comment body: 200/140" \
   "${B200}" --kind pr-comment
-_measure_case "measure: no text at all is a usage error" 1 "no text" /dev/null --kind pr
-_measure_case "measure: no --kind fails" 1 "--kind is required" /dev/null --title x
+# Usage errors exit 64, so a caller can tell them from an overrun (1) by code.
+_measure_case "measure: no text at all is a usage error" 64 "no text" /dev/null --kind pr
+_measure_case "measure: no --kind fails" 64 "--kind is required" /dev/null --title x
+_measure_case "measure: an unexpected argument is a usage error" 64 "unexpected argument" \
+  /dev/null --kind pr --title x extra
+# Two kinds in one word are not a kind: refused here, not passed to the checker.
+_measure_case "measure: --kind 'pr issue' is an unknown kind" 64 "unknown --kind 'pr issue'" \
+  /dev/null --kind "pr issue" --title x
+_measure_case "measure: --kind 'pr' alone is still known" 0 "" /dev/null --kind pr --title x
 _measure_case "measure: exempt destination is not measured" 0 "" /dev/null \
   --kind pr --title "${T71}" --dir "${EX}"
 _measure_case "measure: visual destination is measured" 1 "over by 1" /dev/null \
@@ -310,6 +317,44 @@ if ((rc == 2)) && [[ "${out}" == *"personify is not installed"* ]]; then
   _ok "measure: no personify is exit 2, a checker error"
 else
   _no "measure: no personify is exit 2, a checker error (rc=${rc}): ${out}"
+fi
+
+# TERM mid-check must not leak measure's temp files: a mktemp shim logs each path.
+SHIM="${TMP}/shim"
+SLOW="${TMP}/slow"
+mkdir -p "${SHIM}" "${SLOW}/scripts" "${TMP}/slow-cfg/plugins"
+MKTEMP_REAL="$(command -v mktemp)"
+MKTEMP_LOG="${TMP}/mktemp.log"
+export MKTEMP_REAL MKTEMP_LOG
+cat >"${SHIM}/mktemp" <<'SHIM'
+#!/bin/bash
+out="$("${MKTEMP_REAL}" "$@")" || exit $?
+printf '%s\n' "${out}" >>"${MKTEMP_LOG}"
+printf '%s\n' "${out}"
+SHIM
+chmod +x "${SHIM}/mktemp"
+: >"${SLOW}/scripts/pangram_check.py"
+# The checker sleeps so the TERM lands mid-run; bash runs the trap once it returns.
+printf 'import time\ntime.sleep(2)\n' >"${SLOW}/scripts/length_check.py"
+jq -n --arg p "${SLOW}" '{plugins:{"personify@personify":[{installPath:$p}]}}' \
+  >"${TMP}/slow-cfg/plugins/installed_plugins.json"
+: >"${MKTEMP_LOG}"
+CLAUDE_CONFIG_DIR="${TMP}/slow-cfg" PATH="${SHIM}:${PATH}" bash "${GATE}" measure --kind pr <"${B200}" 2>/dev/null &
+pid=$!
+sleep 1
+kill -TERM "${pid}"
+wait "${pid}"
+rc=$?
+made=0
+leaked=""
+while IFS= read -r f; do
+  made=$((made + 1))
+  [[ ! -e "${f}" ]] || leaked+=" ${f}"
+done <"${MKTEMP_LOG}"
+if ((rc == 143 && made >= 2)) && [[ -z "${leaked}" ]]; then
+  _ok "measure: TERM mid-check removes its temp files"
+else
+  _no "measure: TERM mid-check removes its temp files (rc=${rc}, made=${made}, leaked:${leaked})"
 fi
 
 echo ""

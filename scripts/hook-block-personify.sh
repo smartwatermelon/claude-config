@@ -29,7 +29,7 @@
 #
 # All of this is for gated routes only: the route is asked first, and exempt text passes in any form (#698).
 #
-# PR and issue TITLES need no visual approval; they get a length check only. `gh pr edit` is
+# PR and issue TITLES get only a length check. `gh pr edit` is
 # gated only when it carries a body flag, so label and title edits pass.
 # `gh pr review` follows the same rule: `--approve` alone passes, a review
 # body is gated.
@@ -1470,8 +1470,8 @@ _check_titles() {
 }
 
 # One `gate-review.sh measure` call for a title; every outcome but 0 denies.
-# Exit 1 with no "over by" line is a usage error, not an overrun, so it is
-# labeled a checker error like any other failure.
+# measure: 1 is over the cap, 64 a usage error. A 1 with no " over by " line
+# is an errexit failure, so a checker error.
 _measure_title() {
   local kind="$1" value="$2" surface="$3" err rc=0 line reason="" over
   shift 3

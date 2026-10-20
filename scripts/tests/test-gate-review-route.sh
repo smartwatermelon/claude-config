@@ -31,13 +31,9 @@ export GATE_REVIEW_DIR="${TMP}/gate"
 GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
 export GATE_GH
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
-# A stub length_check.py that passes everything: CI has no personify checkout, and test-*-length.sh use the real one.
-_stub_personify() { # <config dir> <install dir>
-  mkdir -p "$1/plugins" "$2/scripts"
-  : >"$2/scripts/pangram_check.py"
-  printf 'import sys\nsys.exit(0)\n' >"$2/scripts/length_check.py"
-  jq -n --arg p "$2" '{plugins:{"personify@personify":[{installPath:$p}]}}' >"$1/plugins/installed_plugins.json"
-}
+# _stub_personify: a length_check.py that passes everything.
+# shellcheck source=/dev/null
+source "${GATE_GH%/*}/stub-personify.sh"
 export CLAUDE_CONFIG_DIR="${HOME}/.claude"
 _stub_personify "${CLAUDE_CONFIG_DIR}" "${TMP}/personify"
 
