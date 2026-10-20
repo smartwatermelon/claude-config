@@ -382,6 +382,52 @@ _case "--kind copy before a ; with no space: still blocked" 2 "shell syntax" "${
   "${PC} --kind copy < ${OUTSIDE};echo hi"
 _case "quoted --dir, no copy: untouched" 0 "" "${TMP}" "${PC} --kind pr --dir \"${SITE}\" < ${OUTSIDE}"
 
+echo "--- route guard: a ~ is only shell syntax at a word start (claude-config#744) ---"
+# A claude.ai-synced plugin lives in personify~gN; bash expands ~ only at a word start (and after = or :).
+SYNCED="${TMP}/synced/u1_u2/personify~g2/scripts"
+mkdir -p "${SYNCED}"
+: >"${SYNCED}/pangram_check.py"
+_case "synced personify~g2 path, copy extract: allowed" 0 "" "${TMP}" \
+  "python3 ${SYNCED}/pangram_check.py --kind copy < ${GOOD}"
+_case "synced personify~g2 path, outside file: blocked" 2 "not a copy extract" "${TMP}" \
+  "python3 ${SYNCED}/pangram_check.py --kind copy < ${OUTSIDE}"
+_case "leading ~/ in the script path: blocked" 2 "shell syntax" "${TMP}" "python3 ~/x/pangram_check.py --kind copy < ${GOOD}"
+_case "~user script path: blocked" 2 "shell syntax" "${TMP}" "python3 ~root/pangram_check.py --kind copy < ${GOOD}"
+_case "< ~/ stdin path: blocked" 2 "shell syntax" "${TMP}" "${PC} --kind copy < ~/x.txt"
+_case "<~/ stdin path, no space: blocked" 2 "shell syntax" "${TMP}" "${PC} --kind copy <~/x.txt"
+_case "--dir=~/ value: blocked" 2 "shell syntax" "${TMP}" "${PC} --kind copy --dir=~/x < ${GOOD}"
+_case "--dir a:~/ value: blocked" 2 "shell syntax" "${TMP}" "${PC} --kind copy --dir a:~/x < ${GOOD}"
+
+echo "--- route guard: a -k flag with no possible copy value does not arm it (claude-config#744) ---"
+# Seen 2026-10-19: sort's -t\$'\t' held a \$ and its -k2 read as a kind flag whose value was the |.
+_case "sort -t\$'\\t' -k2 in a pipeline: untouched" 0 "" "${TMP}" \
+  "bash ${TMP}/s.sh | sort -t\$'\\t' -k2 | tee ${TMP}/out.tsv"
+_case "sort -k 1,1n after a variable: untouched" 0 "" "${TMP}" "sort -k 1,1n \$F"
+_case "curl with a variable URL and -k: untouched" 0 "" "${TMP}" "curl \$URL -k"
+_case "make with a variable target, then -k: untouched" 0 "" "${TMP}" "make \$TARGET -k"
+_case "curl with a variable URL, -k then -o: untouched" 0 "" "${TMP}" "curl \$URL -k -o ${TMP}/o"
+_case "-k with no value after the script: untouched" 0 "" "${TMP}" "${PC} -k"
+_case "-k2 after the script: untouched" 0 "" "${TMP}" "${PC} -k2 < ${OUTSIDE}"
+_case "-k then -kcopy: blocked" 2 "unexpected argument" "${TMP}" "${PC} -k -kcopy < ${OUTSIDE}"
+_case "-k=2 after the script: blocked" 2 "unexpected argument" "${TMP}" "${PC} -k=2 < ${OUTSIDE}"
+# Any word that can hide the script name still arms the guard, whatever wrapper runs it.
+_case "script name in a variable after timeout: blocked" 2 "shell syntax" "${TMP}" \
+  "timeout 5 \$S --kind copy < ${OUTSIDE}"
+_case "script name in a variable after nice -n: blocked" 2 "shell syntax" "${TMP}" \
+  "nice -n 5 \$S --kind copy < ${OUTSIDE}"
+_case "script name in a variable after eval: blocked" 2 "shell syntax" "${TMP}" "eval \$S --kind copy < ${OUTSIDE}"
+_case "script name in a variable after if: blocked" 2 "shell syntax" "${TMP}" "if \$S --kind copy < ${OUTSIDE}"
+_case "script name in a variable after uv run: blocked" 2 "shell syntax" "${TMP}" \
+  "uv run \$S --kind copy < ${OUTSIDE}"
+_case "script name in a variable at command start: blocked" 2 "shell syntax" "${TMP}" \
+  "\$S --kind copy < ${OUTSIDE}"
+_case "script name in a variable after env and an assignment: blocked" 2 "shell syntax" "${TMP}" \
+  "env A=1 \$S --kind copy < ${OUTSIDE}"
+_case "script name in a variable after python3 -I: blocked" 2 "shell syntax" "${TMP}" \
+  "python3 -I \$S --kind copy < ${OUTSIDE}"
+_case "module name in -m\$M: blocked" 2 "shell syntax" "${TMP}" "python3 -m\$M --kind copy < ${OUTSIDE}"
+_case "-k with a variable value after the script: blocked" 2 "shell syntax" "${TMP}" "${PC} -k \$K < ${OUTSIDE}"
+
 echo ""
 echo "${pass} passed, ${fail} failed"
 ((fail == 0))

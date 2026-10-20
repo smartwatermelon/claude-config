@@ -452,6 +452,10 @@ for i, word in enumerate(words):
             name, eq, value = arg.partition("=")
             if not eq:
                 value = rest[j + 1] if j + 1 < len(rest) else ""
+            # (#744) The value of -kX is X. None, or one led by a digit or - (sort -k2), can never become copy.
+            given = arg[2:] if not arg.startswith("--") and len(arg) > 2 else value
+            if not given or set(given) <= set(";&|") or given[0].isdigit() or given[0] == "-":
+                continue
             plain = value.replace("-", "").isalpha()
             if name != "--kind" or value == "copy" or not plain:
                 asked = 1
@@ -470,11 +474,15 @@ _pangram_copy_guard() {
 
   [[ "${text}" != *$'\n'* ]] || _deny_pangram_copy "more than one line"
   case "${text}" in
-    *[\;\&\|\$\`\(\)\{\}\>\\\"\'\*\?\[\]\~\!\#]*)
-      _deny_pangram_copy "shell syntax this hook cannot follow (separators, pipes, quotes, variables, globs, or ~)"
+    *[\;\&\|\$\`\(\)\{\}\>\\\"\'\*\?\[\]\!\#]*)
+      _deny_pangram_copy "shell syntax this hook cannot follow (separators, pipes, quotes, variables, globs, or a leading ~)"
       ;;
     *) ;;
   esac
+  # (#744) bash expands ~ only at a word start or after = or :, so personify~g2 in a synced plugin path is literal.
+  local lead_tilde='(^|[[:space:]<=:])~'
+  [[ ! "${text}" =~ ${lead_tilde} ]] ||
+    _deny_pangram_copy "shell syntax this hook cannot follow (separators, pipes, quotes, variables, globs, or a leading ~)"
   n="$(printf '%s' "${text}" | tr -cd '<' | wc -c | tr -d ' ')"
   ((n == 1)) || _deny_pangram_copy "stdin must be one < redirect from a file (found ${n} '<')"
 
