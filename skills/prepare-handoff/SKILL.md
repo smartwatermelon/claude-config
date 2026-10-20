@@ -1,7 +1,7 @@
 ---
 name: prepare-handoff
-description: Use when the user explicitly says "prepare handoff," "wrap up for handoff," or asks to save the current session's state so another session can resume the work. Writes a dense, structured export — not a prose summary — as a Markdown file in the locally synced Google Drive `Claude Handoff` folder so a later session can resume with minimal re-derivation. Verifies every path, branch, and identifier it records before writing, so the next session does not inherit stale pointers. Do not trigger on generic session-ending language like "thanks" or "bye."
-version: 2.0.1
+description: Use when the user explicitly says "prepare handoff," "wrap up for handoff," or asks to save the current session's state so another session can resume the work. Writes a dense, structured export — not a prose summary — as a Markdown file in the locally synced Google Drive `Claude Handoff` folder (or `~/.claude/handoffs/` on a host with no Drive mount) so a later session can resume with minimal re-derivation. Verifies every path, branch, and identifier it records before writing, so the next session does not inherit stale pointers. Do not trigger on generic session-ending language like "thanks" or "bye."
+version: 2.1.0
 ---
 
 # Prepare Handoff
@@ -44,16 +44,26 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
 
 - Exactly one match → use it.
 - More than one (two synced Google accounts) → ask which one, and list them.
-- None → this machine has no synced Drive. Skip to the fallback in
-  **Constraints**.
+- None → this machine has no synced Drive. Use the local fallback folder
+  `~/.claude/handoffs/` in place of `<mount>/Claude Handoff` everywhere
+  below. `receive-handoff` reads that folder too, so a handoff written there
+  is found by a later session **on this same host**. It does not sync to any
+  other machine.
+
+The fallback is one fixed path so that both skills agree on it. Do not write
+a handoff anywhere else (`~/.claude/plans/`, the repo, the scratchpad): the
+receiving skill does not look there, and reports "no handoff" when one
+exists. That happened on 2026-09-23 on a host with no Drive mount.
 
 ## What to do
 
 1. Identify the workstream. List the existing handoffs first, so that a
-   continuing workstream keeps its exact spelling:
+   continuing workstream keeps its exact spelling. List the local fallback
+   too, if it exists; an earlier handoff can be there:
 
    ```bash
    ls -1 "<mount>/Claude Handoff"
+   ls -1 ~/.claude/handoffs 2>/dev/null
    ```
 
    If the user already named a workstream this session, match it against that
@@ -71,8 +81,9 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
    A workstream name must not contain `/` or `:`. The first makes the path a
    subdirectory; macOS displays the second as `/`.
 
-2. The folder is `<mount>/Claude Handoff`. Confirm it exists with `ls -d`; if
-   it does not, create it with `mkdir`. No folder id is needed. (Before 2.0.0
+2. The folder is `<mount>/Claude Handoff`, or `~/.claude/handoffs` when there
+   is no mount. Confirm it exists with `ls -d`; if it does not, create it
+   with `mkdir`. No folder id is needed. (Before 2.0.0
    this step searched the Drive API for a folder id, which a Docs-only
    connector could not return, so two handoffs landed in My Drive root.)
 
@@ -337,7 +348,7 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
    confident wrong path is not.
 
 5. Write the export in Markdown with `Write`, to the absolute path
-   `<mount>/Claude Handoff/<filename from step 1>`. The file is read back
+   `<folder from step 2>/<filename from step 1>`. The file is read back
    exactly as written, so write identifiers, paths, and PR numbers normally.
    Then confirm it landed:
 
@@ -348,7 +359,7 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
    A non-zero byte count at that path is what "saved" means. A `Write` call
    that did not error is not the same claim. This proves the file is on the
    local mount, which is what a session on this machine reads; Drive uploads
-   it afterward.
+   it afterward. A file in `~/.claude/handoffs` is never uploaded.
 
    Write the new file **before** retiring the old one. If the write fails,
    the previous handoff must still be the newest valid file.
@@ -356,8 +367,11 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
 6. Retire the previous handoff file for this workstream. List the matches
    with a glob anchored on the timestamp:
 
+   Run it in each folder from step 1 that exists, the Drive folder and the
+   local fallback, so a handoff left in the other one is retired too:
+
    ```bash
-   DIR="<mount>/Claude Handoff"; WS="<workstream>"
+   DIR="<folder>"; WS="<workstream>"
    ls -1 "$DIR/Claude Handoff - $WS - "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ [0-9][0-9][0-9][0-9].md
    ```
 
@@ -376,7 +390,8 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
    2026-09-22: a handoff retired with `rm` was in the web trash two hours
    later. The local `<mount's parent>/.Trash/` is only a staging area that
    Drive clears once the deletion syncs, so an empty one there does not mean
-   the file is gone.
+   the file is gone. An `rm` in `~/.claude/handoffs` is permanent: there is
+   no trash to recover it from.
 
    Also run the same glob with `.gdoc` in place of `.md`. A match is a legacy
    handoff from before 2.0.0, when handoffs were native Google Docs. Do not
@@ -388,6 +403,9 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
    agent selects the newest file by the timestamp in its name regardless.
 
 7. Confirm to the user in one line: the filename, and the folder it went to.
+   If the folder is `~/.claude/handoffs`, say plainly in the same line that
+   the handoff is local to this host, does not sync to other machines, and
+   must be resumed on this host.
    Do not restate the export — they already saw it composed. If step 6 left
    any file un-retired, state that in the same breath. If any pointer
    went out with an `UNVERIFIED:` prefix, name those too — the user is the
@@ -432,7 +450,9 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
   files/KB pointers themselves. If a fact is available by following a pointer,
   point to it instead of copying it in. The sole exception is a client-scoped
   store (memory, Project instructions) — inline those, per step 3.
-- If no synced Drive mount exists or the write fails, say so plainly and
+- If no synced Drive mount exists, write to `~/.claude/handoffs/` (see
+  **Before you start**) and say that it does not sync. If the write fails
+  in whichever folder you chose, say so plainly and
   offer the export as plain text for the user to paste manually instead. Do
   not fall back to creating a Google Doc through a connector: the Doc
   conversion backslash-escapes identifiers, which is the failure 2.0.0
