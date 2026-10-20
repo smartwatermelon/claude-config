@@ -396,6 +396,40 @@ _case "printf with a quoted -v is never exempt" 2 "cd the hook cannot resolve" "
 _case "env echo is not exempt (first word only)" 2 "cd the hook cannot resolve" "${PERSONAL}" \
   "env echo 'cd x' > ${TMP}/m.txt; git commit -F ${TXT}"
 
+# #747: a quoted '; cd <dir>' is text. Inert echo text routes by the cwd; any other carrier denies.
+_norec
+_case "#747 reproducer: quoted '; cd <dir>' does not move the route" 2 "no Pangram check ran" "${BEACON}" \
+  "echo 'x; cd ${PERSONAL} '; git commit -F ${TXT}"
+_case "#747: double-quoted '&& cd <dir>' does not move the route" 2 "no Pangram check ran" "${BEACON}" \
+  "echo \"x && cd ${PERSONAL} \"; git commit -F ${TXT}"
+_case "#747: a quoted cd after a real cd keeps the real target" 2 "no Pangram check ran" "${PERSONAL}" \
+  "cd ${BEACON}; echo 'x; cd ${PERSONAL}'; git commit -F ${TXT}"
+_case "#747: a quoted pangram cd does not move a visual cwd either" 0 "" "${PERSONAL}" \
+  "echo 'x; cd ${BEACON} '; git commit -F ${TXT}"
+_case "#747: a quoted cd in a non-echo argument denies" 2 "cd the hook cannot resolve" "${BEACON}" \
+  "ssh h 'x; cd ${PERSONAL} '; git commit -F ${TXT}"
+_case "#747: a quoted cd after the gated segment denies" 2 "cd the hook cannot resolve" "${BEACON}" \
+  "git commit -F ${TXT}; ssh h 'x; cd ${PERSONAL}'"
+_case "#747: a cd in a heredoc body does not move the route" 2 "cd the hook cannot resolve" "${BEACON}" \
+  "cat <<EOF >${TMP}/h"$'\n'"cd ${PERSONAL}"$'\n'"EOF"$'\n'"git commit -F ${TXT}"
+_case "#747: an escaped ; before cd is text too" 2 "cd the hook cannot resolve" "${BEACON}" \
+  "echo x\\; cd ${PERSONAL}; git commit -F ${TXT}"
+_case "#747: a quoted newline before cd is text too" 2 "cd the hook cannot resolve" "${BEACON}" \
+  "echo 'x"$'\n'"cd ${PERSONAL}'; git commit -F ${TXT}"
+_case "#747: an escaped quote in \$'...' does not desync the scan" 2 "cd the hook cannot resolve" "${BEACON}" \
+  "echo \$'\\'' 'x; cd ${PERSONAL}'; git commit -F ${TXT}"
+_case "#747: a commented-out cd does not move the route" 2 "cd the hook cannot resolve" "${BEACON}" \
+  "git commit -F ${TXT} # ; cd ${PERSONAL}"
+_case "#747: an unquoted cd still routes by its target (visual)" 0 "" "${BEACON}" \
+  "cd ${PERSONAL}; git commit -F ${TXT}"
+_case "#747: an unquoted cd still routes by its target (pangram)" 2 "no Pangram check ran" "${PERSONAL}" \
+  "cd ${BEACON}; git commit -F ${TXT}"
+# The start flags must line up with _segments, or every cd would deny (its fail-closed fallback).
+_case "#747: a real cd still routes past multibyte text" 2 "no Pangram check ran" "${PERSONAL}" \
+  "cd ${BEACON} && gh pr create --title 'é ✗ a' --body-file ${TXT}"
+_case "#747: a real cd after a heredoc still routes by its target" 0 "" "${BEACON}" \
+  "cat <<'EOF' >${TMP}/h"$'\n'"a; b"$'\n'"EOF"$'\n'"cd ${PERSONAL} && git commit -F ${TXT}"
+
 # Final review I3: several -C options deny.
 _case "two git -C options deny" 2 "more than one git -C" "${TMP}" \
   "git -C personal -C ../beacon commit -F ${TXT}"
