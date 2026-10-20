@@ -123,7 +123,11 @@ scope() {
 # The skip is safe only while no suite reads known-runtime.txt. A suite that starts to must update the script first.
 
 @test "no test suite reads known-runtime.txt or runs update-tools.sh" {
-  local hits
+  local hits dir
+  # grep errors are swallowed below, so prove every searched path exists; a missing one would pass silently.
+  for dir in tests scripts/tests hooks/tests test-pre-merge-review.sh; do
+    [ -e "${REPO_ROOT}/${dir}" ]
+  done
   hits="$(grep -rnE 'known-runtime|update-tools\.sh' "${REPO_ROOT}/tests" "${REPO_ROOT}/scripts/tests" \
     "${REPO_ROOT}/hooks/tests" "${REPO_ROOT}/test-pre-merge-review.sh" \
     | grep -v '/tests/test_ci_tests_scope\.bats:' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
