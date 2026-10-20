@@ -63,3 +63,4 @@ remote-settings.json
 gh-pr-status-cache.json
 policy-limits.json.stamp.json
 remote-settings.json.synced-at
+# fast-path proof for #732; throwaway, do not merge
