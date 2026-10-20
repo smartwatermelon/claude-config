@@ -1,6 +1,6 @@
 # Plan: per-machine settings without the full claude-wrapper
 
-**Status:** in progress
+**Status:** done — claude-wrapper#143, dotfiles#448, claude-config#759 merged 2026-10-20
 **Date:** 2026-10-20
 **Author:** arich (drafted by Claude Code)
 
