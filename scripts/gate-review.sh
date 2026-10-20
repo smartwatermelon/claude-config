@@ -391,6 +391,8 @@ _cmd_stage() {
   [[ -n "${name}" && -n "${file}" ]] || _die "usage: gate-review.sh stage --kind <kind> <name> <file>"
   [[ -f "${file}" ]] || _die "no such file: ${file}"
   [[ "${name}" =~ ^[A-Za-z0-9._-]+$ ]] || _die "bad artifact name: ${name}"
+  # Say so before any check or review is spent on text the gate may not need (#642). Notice only; staging goes on.
+  _cmd_suspended || true
   _prune_expired
   # Route by destination, from the repo this shell is in. Staging only
   # informs; the publish-time hook recomputes the outcome from the real
@@ -624,6 +626,8 @@ _prune_stale_buffers() {
 _cmd_open() {
   local batch count waited=0 nonce status
 
+  # Before the editor opens, as in stage (#642). Notice only; the review goes on.
+  _cmd_suspended || true
   _use_key
   _note_legacy_pending
   count=$(find "${PENDING}" -maxdepth 1 -type f | wc -l | tr -d ' ')
@@ -836,24 +840,30 @@ _cmd_open() {
       ;;
   esac
 
-  _split_batch "${batch}" "${nonce}"
+  # --only: approve just the items this batch presented (claude-config#553).
+  _split_batch "${batch}" "${nonce}" --only "${batch_items[@]}"
   # Only this batch's own file, and only once its text is in approved/. Every
   # other exit leaves it for the next open to carry forward; its nonce is
   # never reused, so it cannot be split as approved by another run.
   rm -f "${batch}"
   KEPT_BATCH=""
+  # Count what this split wrote, not all of approved/<key> (#553).
+  local item earlier written="${#SPLIT_WRITTEN[@]}"
   # The word actually read, so a fuzzy accept is visible rather than silent.
-  # The count is this key's approved/ only; other keys' approvals are not
-  # this batch's business.
-  local approved_count item
-  approved_count="$(find "${APPROVED}" -type f | wc -l | tr -d ' ')"
   printf "approved %s item(s) (STATUS read as '%s'%s)\n" \
-    "${approved_count}" "${status}" "${CLASS_WHY:+; ${CLASS_WHY}}"
+    "${written}" "${status}" "${CLASS_WHY:+; ${CLASS_WHY}}"
   # The approved copies now sit under this key, so give the exact paths to
   # commit or post from rather than leave the caller to build them.
-  for item in "${batch_items[@]}"; do
-    [[ -f "${APPROVED}/${item}" ]] && printf 'approved: %s\n' "${APPROVED}/${item}"
+  for item in "${SPLIT_WRITTEN[@]}"; do
+    printf 'approved: %s\n' "${APPROVED}/${item}"
   done
+  # Older approvals still match in check (never consumed), so name them apart.
+  earlier="$(find "${APPROVED}" -maxdepth 1 -type f | wc -l | tr -d ' ')"
+  earlier=$((earlier - written))
+  if ((earlier > 0)); then
+    printf '%s earlier approval(s) for %s still stand, not in this batch or its count\n' \
+      "${earlier}" "${GATE_KEY}"
+  fi
   return 0
 }
 
@@ -971,10 +981,23 @@ _refuse_if_open() {
   exit 1
 }
 
+# [--only names...]: a section not named is skipped, never approved (#553). SPLIT_WRITTEN gets the names written.
+SPLIT_WRITTEN=()
+
 # Split the saved buffer back into per-artifact approvals, so each commit is
 # checked against its own text rather than the batch as a whole.
 _split_batch() {
-  local batch="$1" want_nonce="${2:-}" name="" body="" got_nonce
+  local batch="$1" want_nonce="${2:-}" name="" body="" got_nonce only=0 skip=0
+  local -A allowed=()
+  SPLIT_WRITTEN=()
+  if (($# >= 3)) && [[ "$3" == "--only" ]]; then
+    only=1
+    shift 3
+    for name in "$@"; do
+      [[ -z "${name}" ]] || allowed["${name}"]=1
+    done
+    name=""
+  fi
   # Only split the buffer this process wrote. Without this, a concurrent or
   # stale run splits whatever it finds and reports it approved.
   if [[ -n "${want_nonce}" ]]; then
@@ -999,10 +1022,16 @@ _split_batch() {
   while IFS= read -r line || [[ -n "${line}" ]]; do
     case "${line}" in
       '=== '*' ===')
-        [[ -n "${name}" ]] && _write_approved "${name}" "${body}"
+        [[ -n "${name}" ]] && ((skip == 0)) && _write_approved "${name}" "${body}"
         name="${line#=== }"
         name="${name% ===}"
         body=""
+        skip=0
+        # An empty name (`===  ===`) is checked first: bash aborts on an empty subscript.
+        if ((only == 1)) && [[ -z "${name}" || -z "${allowed["${name}"]:-}" ]]; then
+          skip=1
+          printf "gate-review: section '%s' was not in this batch; skipped, not approved\n" "${name}" >&2
+        fi
         ;;
       # Strip `#` lines only in the framing header, before the first artifact.
       # Inside a body they are content: a markdown heading, a shebang, a
@@ -1012,7 +1041,7 @@ _split_batch() {
       *) [[ -n "${name}" ]] && body+="${line}"$'\n' ;;
     esac
   done <"${batch}"
-  [[ -n "${name}" ]] && _write_approved "${name}" "${body}"
+  [[ -n "${name}" ]] && ((skip == 0)) && _write_approved "${name}" "${body}"
   return 0
 }
 
@@ -1023,10 +1052,17 @@ _write_approved() {
   # set, so it must revoke; returning early without this rm would leave the
   # previous approval standing and read as "still approved".
   rm -f "${APPROVED:?}/${name}"
+  # A name repeated in one buffer is written once, by its last section.
+  local kept=() w
+  for w in "${SPLIT_WRITTEN[@]}"; do
+    [[ "${w}" == "${name}" ]] || kept+=("${w}")
+  done
+  SPLIT_WRITTEN=("${kept[@]}")
   # An item emptied in the editor is a deliberate abort, not an approval.
   trimmed="$(printf '%s' "${body}" | sed -e '/^[[:space:]]*$/d')"
   [[ -n "${trimmed}" ]] || return 0
   printf '%s' "${body}" >"${APPROVED}/${name}"
+  SPLIT_WRITTEN+=("${name}")
   _remove_pending "${PENDING}" "${name}"
 }
 
