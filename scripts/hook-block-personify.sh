@@ -311,9 +311,9 @@ _segment_starts() {
           prev = (i == 1) ? "" : substr(line, i - 1, 1)
           top[i] = (q == 0 && !cmt)
           if (cmt) { i++; continue }
-          if (q == 1 || q == 3) { if (c == "\047") q = 0; i++; continue }
+          if (q == 1) { if (c == "\047") q = 0; i++; continue }
           if (c == "\\") { i += 2; continue }
-          if (q == 2) { if (c == "\"") q = 0; i++; continue }
+          if (q == 3 || q == 2) { if (c == (q == 3 ? "\047" : "\"")) q = 0; i++; continue }
           if (c == "#" && (prev == "" || prev ~ /[[:space:];&|()<>]/)) { cmt = 1; top[i] = 0; i++; continue }
           if (c == "\047") { q = 1; i++; continue }
           if (c == "\"") { q = 2; i++; continue }

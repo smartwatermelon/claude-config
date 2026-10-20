@@ -416,6 +416,8 @@ _case "#747: an escaped ; before cd is text too" 2 "cd the hook cannot resolve" 
   "echo x\\; cd ${PERSONAL}; git commit -F ${TXT}"
 _case "#747: a quoted newline before cd is text too" 2 "cd the hook cannot resolve" "${BEACON}" \
   "echo 'x"$'\n'"cd ${PERSONAL}'; git commit -F ${TXT}"
+_case "#747: an escaped quote in \$'...' does not desync the scan" 2 "cd the hook cannot resolve" "${BEACON}" \
+  "echo \$'\\'' 'x; cd ${PERSONAL}'; git commit -F ${TXT}"
 _case "#747: a commented-out cd does not move the route" 2 "cd the hook cannot resolve" "${BEACON}" \
   "git commit -F ${TXT} # ; cd ${PERSONAL}"
 _case "#747: an unquoted cd still routes by its target (visual)" 0 "" "${BEACON}" \
