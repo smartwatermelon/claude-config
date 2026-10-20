@@ -19,18 +19,33 @@ jobs:
         with:
           persist-credentials: false
 
+      # The job always runs, so the required check always reports. Only the suite steps skip (#732).
+      - name: Decide test scope
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/ci-tests-scope.sh >>"${GITHUB_OUTPUT}"
+
+      - name: Note skipped suite
+        if: steps.scope.outputs.skip == 'true'
+        run: echo "::notice::Full suite skipped; only scripts/known-runtime.txt changed and no suite reads it (#732)."
+
       # Several suites exercise dotfiles' gh-wrapper.sh through GH_WRAPPER_LIB.
       # Tracks dotfiles main rather than a pinned SHA on purpose: the installed
       # system runs against main, so a dotfiles change that breaks these
       # suites is a real failure, not noise. Cloned outside the workspace so no
       # repo-wide scan in a suite picks it up.
       - name: Clone dotfiles
+        if: steps.scope.outputs.skip != 'true'
         run: git clone --depth 1 https://github.com/twistedmelonman/dotfiles.git "${RUNNER_TEMP}/dotfiles"
 
       # The length suites run personify's real length_check.py and, under
       # CI=true, fail rather than skip when it is absent (claude-config#649).
       # Public repo; tracks main like dotfiles above.
       - name: Checkout personify
+        if: steps.scope.outputs.skip != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: smartwatermelon/personify
@@ -38,12 +53,14 @@ jobs:
           persist-credentials: false
 
       - name: Install bats
+        if: steps.scope.outputs.skip != 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq bats
           bats --version
 
       - name: Run tests
+        if: steps.scope.outputs.skip != 'true'
         env:
           GH_WRAPPER_LIB: ${{ runner.temp }}/dotfiles/bash/gh-wrapper.sh
           PERSONIFY_CHECKOUT: ${{ github.workspace }}/personify
