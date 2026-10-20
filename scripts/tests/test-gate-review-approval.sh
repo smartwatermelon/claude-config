@@ -1270,5 +1270,96 @@ fi
 rm -f "${PENDING_ROOT:?}/${KA}"
 POLL_TIMEOUT=6
 
+# --- an approval covers only the items the batch presented (#553) ----------
+
+# Batch 2 of 2 items said "approved 4". Batch 1's approvals must stand, but not be counted, rewritten, or listed.
+rm -rf "${PENDING_ROOT:?}"/* "${APPROVED_ROOT:?}"/* "${GATE_REVIEW_DIR}"/batches/*
+STUB_STATUS=APPROVED
+_stage_in "${TMP}/repos/alpha" commit-31 'fix(a): first batch commit'
+_stage_in "${TMP}/repos/alpha" pr-31 'fix(a): first batch pr'
+_open_in "${TMP}/repos/alpha" || true
+if grep -q "^approved 2 item(s)" "${OUT606}"; then
+  _ok "553: the first batch reports its own 2 items"
+else
+  _no "553: the first batch reports its own 2 items"
+  grep '^approved ' "${OUT606}" || true
+fi
+# Age the first batch's approvals, so a rewrite by the second batch shows.
+_age_minutes "${APPROVED_ROOT}/${KA}/commit-31" 5
+_age_minutes "${APPROVED_ROOT}/${KA}/pr-31" 5
+before31="$(ls -l "${APPROVED_ROOT}/${KA}/commit-31" "${APPROVED_ROOT}/${KA}/pr-31")"
+_stage_in "${TMP}/repos/alpha" commit-32 'fix(a): second batch commit'
+_stage_in "${TMP}/repos/alpha" pr-32 'fix(a): second batch pr'
+_open_in "${TMP}/repos/alpha" || true
+if grep -q "^approved 2 item(s)" "${OUT606}"; then
+  _ok "553: a second batch of 2 reports 2, not the 4 under the key"
+else
+  _no "553: a second batch of 2 reports 2, not the 4 under the key"
+  grep '^approved ' "${OUT606}" || true
+fi
+if grep -q "^approved: .*/commit-32$" "${OUT606}" && grep -q "^approved: .*/pr-32$" "${OUT606}" &&
+  ! grep -q -- "-31$" "${OUT606}"; then
+  _ok "553: the second batch lists only its own approved paths"
+else
+  _no "553: the second batch lists only its own approved paths"
+fi
+after31="$(ls -l "${APPROVED_ROOT}/${KA}/commit-31" "${APPROVED_ROOT}/${KA}/pr-31" 2>&1)" || after31="missing"
+if [[ "${after31}" == "${before31}" ]] &&
+  bash "${GATE}" check "${TMP}/stage-commit-31-alpha.txt"; then
+  _ok "553: the first batch's approvals stand, untouched by the second batch"
+else
+  _no "553: the first batch's approvals stand, untouched by the second batch"
+fi
+if grep -q "2 earlier approval(s) for ${KA} still stand" "${OUT606}"; then
+  _ok "553: open says how many earlier approvals still stand outside the count"
+else
+  _no "553: open says how many earlier approvals still stand outside the count"
+fi
+
+# A section the batch did not show (a header added to the buffer) is named and skipped, never approved.
+rm -rf "${APPROVED_ROOT:?}"/*
+APPROVED="${APPROVED_ROOT}"
+PENDING="${PENDING_ROOT}"
+printf '# STATUS: APPROVED\n# BATCH: only\n\n=== shown ===\nshown text\n\n=== intruder ===\nnot shown\n' >"${BUF}"
+got="$(_split_batch "${BUF}" only --only shown 2>&1 >/dev/null)"
+if [[ -f "${APPROVED}/shown" && ! -e "${APPROVED}/intruder" ]]; then
+  _ok "553: split approves a presented item and not one the batch did not show"
+else
+  _no "553: split approves a presented item and not one the batch did not show"
+fi
+if [[ "${got}" == *"intruder"*"not in this batch"* ]]; then
+  _ok "553: split names the section it skipped"
+else
+  _no "553: split names the section it skipped (stderr: ${got})"
+fi
+printf 'stale approval of intruder\n' >"${APPROVED}/intruder"
+_split_batch "${BUF}" only --only shown >/dev/null 2>&1
+if grep -q 'stale approval' "${APPROVED}/intruder" 2>/dev/null; then
+  _ok "553: a skipped section leaves another batch's approval of that name alone"
+else
+  _no "553: a skipped section leaves another batch's approval of that name alone"
+fi
+printf '# STATUS: APPROVED\n# BATCH: only\n\n===  ===\nnameless\n\n=== shown ===\nshown text\n' >"${BUF}"
+rm -f "${APPROVED:?}"/*
+# set -e as in the script, where the bad subscript killed the split; outside any condition, which would mask -e.
+(
+  set -e
+  _split_batch "${BUF}" only --only shown
+) >/dev/null 2>&1
+rc553=$?
+if [[ "${rc553}" == 0 && -f "${APPROVED}/shown" ]]; then
+  _ok "553: an empty section name is skipped, not a mid-split abort"
+else
+  _no "553: an empty section name is skipped, not a mid-split abort"
+fi
+rm -f "${APPROVED:?}"/*
+_split_batch "${BUF}" only --only >/dev/null 2>&1
+if [[ ! -e "${APPROVED}/shown" && ! -e "${APPROVED}/intruder" ]]; then
+  _ok "553: --only with no names approves nothing"
+else
+  _no "553: --only with no names approves nothing"
+fi
+rm -f "${APPROVED:?}"/*
+
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]
