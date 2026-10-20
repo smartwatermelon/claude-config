@@ -284,6 +284,70 @@ _quoted_segments() {
   '
 }
 
+# #747: _segments' pieces, each prefixed 1 if a command starts there, else 0 (cut in quotes, \, comment, heredoc).
+_segment_starts() {
+  printf '%s\n' "${_scan}" | LC_ALL=C awk '
+    BEGIN { q = 0; hd = 0; np = 0; ar = 0 }
+    {
+      line = $0; n = length(line)
+      split("", sl); split("", top)
+      i = 1
+      while (i <= n) {
+        two = substr(line, i, 2); c = substr(line, i, 1)
+        if (two == "&&" || two == "||") { sl[i] = 2; i += 2 }
+        else if (c == ";" || c == "|") { sl[i] = 1; i++ }
+        else i++
+      }
+      if (hd) {
+        lead = 0
+        chk = line
+        if (hstrip[hd]) sub(/^\t+/, "", chk)
+        if (chk == hdelim[hd]) { hd++; if (hd > np) { hd = 0; np = 0 } }
+      } else {
+        lead = (q == 0)
+        cmt = 0; i = 1
+        while (i <= n) {
+          c = substr(line, i, 1); nx = substr(line, i + 1, 1)
+          prev = (i == 1) ? "" : substr(line, i - 1, 1)
+          top[i] = (q == 0 && !cmt)
+          if (cmt) { i++; continue }
+          if (q == 1 || q == 3) { if (c == "\047") q = 0; i++; continue }
+          if (c == "\\") { i += 2; continue }
+          if (q == 2) { if (c == "\"") q = 0; i++; continue }
+          if (c == "#" && (prev == "" || prev ~ /[[:space:];&|()<>]/)) { cmt = 1; top[i] = 0; i++; continue }
+          if (c == "\047") { q = 1; i++; continue }
+          if (c == "\"") { q = 2; i++; continue }
+          if (c == "$" && nx == "\047") { q = 3; i += 2; continue }
+          if (c == "(" && nx == "(") { ar++; top[i + 1] = 1; i += 2; continue }
+          if (c == ")" && nx == ")" && ar > 0) { ar--; top[i + 1] = 1; i += 2; continue }
+          if (ar == 0 && c == "<" && nx == "<" && prev != "<" && substr(line, i + 2, 1) != "<") {
+            rest = substr(line, i + 2); strip = 0
+            if (substr(rest, 1, 1) == "-") { strip = 1; rest = substr(rest, 2) }
+            sub(/^[ \t]+/, "", rest)
+            if (match(rest, /^[^ \t;&|()<>]+/)) {
+              w = substr(rest, 1, RLENGTH)
+              gsub(/[\047"\\]/, "", w)
+              if (w != "") { np++; hdelim[np] = w; hstrip[np] = strip }
+            }
+            top[i + 1] = 1; i += 2; continue
+          }
+          i++
+        }
+        if (q == 0 && np > 0) hd = 1
+      }
+      # A piece starts a command only where its separator was a real one (top[i] unset reads as 0).
+      start = 1; ok = lead; i = 1
+      while (i <= n) {
+        if (i in sl) {
+          print (ok ? 1 : 0) substr(line, start, i - start)
+          ok = (top[i] == 1); start = i + sl[i]; i = start
+        } else i++
+      }
+      print (ok ? 1 : 0) substr(line, start)
+    }
+  '
+}
+
 # Set while the loop over _quoted_segments runs; see _destination_for_segment.
 QUOTED_PASS=0
 
@@ -1553,11 +1617,13 @@ CD_TRACKED=0
 CD_WORDS="$(printf '%s\n' "${_joined}" | _cd_word_count)"
 CD_WORDS=$((CD_WORDS - $(_inert_values | _cd_word_count)))
 _track_cd() {
-  local seg="$1" rest arg
+  local seg="$1" starts="$2" rest arg
   rest="$(printf '%s\n' "${seg}" | sed -E 's/^[[:space:]({]*((then|do)[[:space:]]+)?//')"
   case "${rest}" in
     cd | cd[[:space:]]* | pushd | pushd[[:space:]]*)
       CD_SEEN=1
+      # #747: a cd in a piece that starts no command is text: left untracked, so it denies unless inert.
+      [[ "${starts}" == 1 ]] || return 0
       CD_TRACKED=$((CD_TRACKED + 1))
       ;;
     *) return 0 ;;
@@ -1644,11 +1710,18 @@ _gate_segment() {
 }
 
 pieces="$(_segments)"
+starts="$(_segment_starts)"
+# Gating still reads _segments. If the flagged pieces ever differ from it, no piece starts a command (fail closed).
+starts_text="$(printf '%s\n' "${starts}" | LC_ALL=C sed 's/^[01]//')"
+if [[ "${starts_text}" != "${pieces}" ]]; then
+  starts="$(printf '%s\n' "${pieces}" | LC_ALL=C sed 's/^/0/')"
+fi
 while IFS= read -r seg; do
+  IFS= read -r st <&3 || st=0
   [[ -n "${seg}" ]] || continue
-  _track_cd "${seg}"
+  _track_cd "${seg}" "${st:0:1}"
   _gate_segment "${seg}"
-done <<<"${pieces}"
+done <<<"${pieces}" 3<<<"${starts}"
 
 # Whole segments whose quoted arguments hold a separator (claude-config#626).
 # No _track_cd here: the pieces above already counted every cd, and counting
