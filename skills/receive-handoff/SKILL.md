@@ -1,7 +1,7 @@
 ---
 name: receive-handoff
-description: Use when the user explicitly says "receive handoff," "pick up where I left off," or starts a session continuing work saved by an earlier session. Reads the Markdown handoff export from the locally synced Google Drive `Claude Handoff` folder and loads the files and KB entries it points to, so this session starts with working context rather than a description of context. Typically the first message of a session.
-version: 2.0.0
+description: Use when the user explicitly says "receive handoff," "pick up where I left off," or starts a session continuing work saved by an earlier session. Reads the Markdown handoff export from the locally synced Google Drive `Claude Handoff` folder and the local fallback `~/.claude/handoffs/`, and loads the files and KB entries it points to, so this session starts with working context rather than a description of context. Typically the first message of a session.
+version: 2.1.0
 ---
 
 # Receive Handoff
@@ -11,31 +11,50 @@ version: 2.0.0
 Trigger only on an explicit handoff request, ideally as the first message in a
 new session.
 
-## Before you start: find the folder
+## Before you start: find the folders
 
-Handoffs are Markdown files in the `Claude Handoff` folder of a Google Drive
-that is synced to the local filesystem. Read them with ordinary file tools. No
-Drive connector is needed. Find the folder with a glob, not a hardcoded path,
-because the mount path contains the Google account name:
+Handoffs are Markdown files in one of two folders. Read them with ordinary
+file tools. No Drive connector is needed.
+
+- The `Claude Handoff` folder of a Google Drive that is synced to the local
+  filesystem.
+- The local fallback `~/.claude/handoffs/`. `prepare-handoff` writes there
+  when the host has no Drive mount. A file there exists only on the host
+  that wrote it; it does not sync.
+
+Check both, every time. Find the Drive folder with a glob, not a hardcoded
+path, because the mount path contains the Google account name:
 
 ```bash
 ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive/Claude\ Handoff
+ls -d ~/.claude/handoffs
 ```
 
-- Exactly one match → that is the folder.
-- More than one (two synced Google accounts) → ask which one, and list them.
-- None → say so plainly and stop. Do not proceed as if the handoff had been
-  read. This machine has no synced Drive, or the folder does not exist yet.
+- Drive: exactly one match → that is the Drive folder. More than one (two
+  synced Google accounts) → ask which one, and list them.
+- The handoff folders are every folder that matched: the Drive folder, the
+  local fallback, or both.
+- Neither matched → say so plainly and stop. Do not proceed as if the
+  handoff had been read. Say which two locations you checked. If this host
+  has no Drive mount, add that a handoff written on another host without
+  Drive is in that host's `~/.claude/handoffs/`, not here.
+
+Do not report "no handoff" after checking only one of the two. A handoff
+that exists but is reported missing is the worst result this skill can
+produce: on 2026-09-23 a handoff written outside the Drive folder was
+reported as absent, and was found only by searching the previous session's
+transcript.
 
 ## What to do
 
 1. Identify the workstream. If the user already named one, use it.
 
-   Otherwise **list the folder before asking**. One listing usually removes
-   the need for the question entirely:
+   Otherwise **list the folders before asking**. One listing usually removes
+   the need for the question entirely. List every handoff folder found above:
 
    ```bash
-   ls -1 "<folder>"
+   ls -1 "<drive folder>"
+   ls -1 ~/.claude/handoffs
    ```
 
    A handoff filename has the form
@@ -57,12 +76,22 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive/Claude\ Handoff
    not try to read it, and do not count it as a workstream's current handoff.
 
 2. Find the file with a glob anchored on the timestamp, never a remembered
-   filename:
+   filename. Glob every handoff folder, and sort the combined list on the
+   **filename alone**:
 
    ```bash
-   DIR="<folder>"; WS="<workstream>"
-   ls -1 "$DIR/Claude Handoff - $WS - "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ [0-9][0-9][0-9][0-9].md | sort
+   WS="<workstream>"
+   for DIR in "<drive folder>" ~/.claude/handoffs; do
+     [ -d "$DIR" ] || continue
+     for f in "$DIR/Claude Handoff - $WS - "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ [0-9][0-9][0-9][0-9].md; do
+       [ -e "$f" ] && printf '%s\t%s\n' "${f##*/}" "$f"
+     done
+   done | sort | cut -f2-
    ```
+
+   Sort on the filename, not the full path. A sort on the full path orders
+   by folder first, so the last line is the newest file in whichever folder
+   sorts last, not the newest handoff.
 
    The anchor is load-bearing. A plain prefix match on
    `Claude Handoff - CLI Tooling -` also matches every file of a workstream
@@ -83,7 +112,12 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive/Claude\ Handoff
    correct whether or not that cleanup succeeded.
 
    If more than one match survives, read the newest and **report the others to
-   the user as stale copies**. Do not merge them.
+   the user as stale copies**, with the folder each one is in. Do not merge
+   them.
+
+   If the newest is in `~/.claude/handoffs` on a host that also has a Drive
+   folder, say so: it was written while this host had no mount, and it never
+   synced to other machines.
 
 3. Read the file with `Read`, using its absolute path.
 
@@ -322,7 +356,7 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive/Claude\ Handoff
   step** are not.
 - If the file does not exist, say so plainly and ask whether to start a
   new one. Do not guess at prior content.
-- If the handoff folder cannot be found, the read fails, or a referenced
+- If neither handoff folder can be found, the read fails, or a referenced
   file/KB path can't be found, say so plainly instead of proceeding as if it
   resolved. A partially loaded handoff reported as complete is worse than a
   failed one.
