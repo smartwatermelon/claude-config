@@ -1361,5 +1361,44 @@ else
 fi
 rm -f "${APPROVED:?}"/*
 
+# --- stage and open show an active suspension (#642) ------------------------
+
+# Only the publish command said so, after the review was done. The line must be _cmd_suspended's own.
+rm -rf "${PENDING_ROOT:?}"/* "${APPROVED_ROOT:?}"/* "${GATE_REVIEW_DIR}"/batches/*
+SUSP="${GATE_REVIEW_DIR}/SUSPENDED"
+TOMORROW="$(date -v+1d +%F 2>/dev/null || date -d '1 day' +%F)"
+printf '%s\n' "${TOMORROW}" >"${SUSP}"
+NOTICE="[personify-gate] SUSPENDED until ${TOMORROW} (${SUSP})"
+printf 'fix(a): staged while suspended\n' >"${TMP}/susp.txt"
+_seed_record "${TMP}/susp.txt" '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":4}'
+rc642=0
+(cd "${TMP}/repos/alpha" && bash "${GATE}" stage --kind commit susp "${TMP}/susp.txt") \
+  >"${TMP}/stage642.out" 2>"${TMP}/stage642.err" || rc642=$?
+if [[ "${rc642}" == 0 ]] && grep -qF "${NOTICE}" "${TMP}/stage642.err" &&
+  [[ -f "${PENDING_ROOT}/${KA}/susp" ]]; then
+  _ok "642: stage prints the suspension notice and still stages"
+else
+  _no "642: stage prints the suspension notice and still stages (rc ${rc642})"
+fi
+STUB_STATUS=APPROVED
+_open_in "${TMP}/repos/alpha" || true
+notice_at="$(grep -nF "${NOTICE}" "${OUT606}" | head -1 | cut -d: -f1)" || notice_at=""
+opening_at="$(grep -n '^opening ' "${OUT606}" | head -1 | cut -d: -f1)" || opening_at=""
+if [[ -n "${notice_at}" && -n "${opening_at}" ]] && ((notice_at < opening_at)); then
+  _ok "642: open prints the suspension notice before the editor opens"
+else
+  _no "642: open prints the suspension notice before the editor opens (${notice_at:-none} vs ${opening_at:-none})"
+fi
+rm -f "${SUSP}"
+rc642=0
+(cd "${TMP}/repos/alpha" && bash "${GATE}" stage --kind commit susp "${TMP}/susp.txt") \
+  >/dev/null 2>"${TMP}/stage642.err" || rc642=$?
+if [[ "${rc642}" == 0 ]] && ! grep -q 'SUSPENDED' "${TMP}/stage642.err"; then
+  _ok "642: with no suspension, stage stages and says nothing about it"
+else
+  _no "642: with no suspension, stage stages and says nothing about it (rc ${rc642})"
+fi
+rm -rf "${PENDING_ROOT:?}"/* "${APPROVED_ROOT:?}"/*
+
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]

@@ -391,6 +391,8 @@ _cmd_stage() {
   [[ -n "${name}" && -n "${file}" ]] || _die "usage: gate-review.sh stage --kind <kind> <name> <file>"
   [[ -f "${file}" ]] || _die "no such file: ${file}"
   [[ "${name}" =~ ^[A-Za-z0-9._-]+$ ]] || _die "bad artifact name: ${name}"
+  # Say so before any check or review is spent on text the gate may not need (#642). Notice only; staging goes on.
+  _cmd_suspended || true
   _prune_expired
   # Route by destination, from the repo this shell is in. Staging only
   # informs; the publish-time hook recomputes the outcome from the real
@@ -624,6 +626,8 @@ _prune_stale_buffers() {
 _cmd_open() {
   local batch count waited=0 nonce status
 
+  # Before the editor opens, as in stage (#642). Notice only; the review goes on.
+  _cmd_suspended || true
   _use_key
   _note_legacy_pending
   count=$(find "${PENDING}" -maxdepth 1 -type f | wc -l | tr -d ' ')
