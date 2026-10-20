@@ -45,6 +45,8 @@ unset CDPATH
 #                             (default: claude-sonnet-5-5, only invoked when
 #                             code-reviewer BLOCKING FAIL disagrees with an
 #                             adversarial-reviewer PASS)
+#   review.arbiterTimeout  - Chunked arbiter timeout (default: 300, or
+#                             review.timeout if larger)
 #   review.maxAttempts     - Consecutive blocked commit reviews allowed per
 #                             branch before the hook refuses to review again
 #                             (default: 3). See check_attempt_limit (#646).
@@ -156,6 +158,15 @@ done
 if [[ "${REVIEW_MODE}" == "codebase" ]]; then
   TIMEOUT_SECONDS=$(git config --get --type=int review.codebaseTimeout 2>/dev/null || echo "300")
 fi
+
+# Chunked arbiter (#682): it reads files like codebase mode, so the same 300s default, never below review.timeout.
+ARBITER_TIMEOUT_SECONDS=$(git config --get --type=int review.arbiterTimeout 2>/dev/null || echo "")
+if [[ -z "${ARBITER_TIMEOUT_SECONDS}" ]]; then
+  ARBITER_TIMEOUT_SECONDS=300
+  ((TIMEOUT_SECONDS <= ARBITER_TIMEOUT_SECONDS)) || ARBITER_TIMEOUT_SECONDS=${TIMEOUT_SECONDS}
+fi
+# `timeout 0` never fires; fall back to the default.
+[[ "${ARBITER_TIMEOUT_SECONDS}" -ge 1 ]] || ARBITER_TIMEOUT_SECONDS=300
 
 # --- Reviewer authentication ---
 # Max API credit needs ANTHROPIC_API_KEY. Child env only: exported, it bills interactive use too.
@@ -1902,7 +1913,7 @@ invoke_agent() {
     log_error ""
     log_error "Options:"
     log_error "  1. Retry the commit (review will run again)"
-    log_error "  2. Increase timeout: git config review.timeout 300"
+    log_error "  2. Increase timeout: git config ${REVIEW_TIMEOUT_HINT:-review.timeout 300}"
     log_error "  3. Split into smaller commits"
     echo "VERDICT: FAIL (timeout)"
     return 1
@@ -2553,7 +2564,7 @@ $(strip_structured_blocking "${_rout}")"
   local original_blocking_count=${blocking_count} overruled_count=0 arbiter_log=""
   if [[ ${blocking_count} -gt 0 && "${adv_status}" == "pass" ]]; then
     log_warn "${blocking_count} per-file BLOCKING result(s) disagree with adversarial-reviewer PASS - arbitrating"
-    local _adv_evidence _ai _afile _afindings _adiff _akey _aprompt _aout _averdict _asafe
+    local _adv_evidence _ai _afile _afindings _adiff _akey _aprompt _aout _averdict _asafe _atimeout
     if grep -q 'VERDICT: PASS (cached)' <<<"${adv_display}"; then
       _adv_evidence="VERDICT: PASS (cached result from an earlier run on this identical diff; no reasoning is available. Do not treat it as evidence beyond \"passed\". Rely on the file.)"
     else
@@ -2608,20 +2619,28 @@ DETAILS: [explanation and fix]"
       if [[ -n "${_akey}" ]]; then
         _akey="${CACHE_DIR}/arbiter-chunked-${DIFF_HASH}-${_asafe}-${_akey}"
       fi
-      _aout=$(invoke_agent_readonly "adversarial-reviewer" "${_aprompt}" "${_akey}" "${ARBITER_MODEL_ARGS[@]}") || true
+      # Own timeout (#682); the prefix lasts for this call only, inside $(...).
+      _aout=$(TIMEOUT_SECONDS="${ARBITER_TIMEOUT_SECONDS}" \
+        REVIEW_TIMEOUT_HINT="review.arbiterTimeout $((ARBITER_TIMEOUT_SECONDS * 2))" \
+        invoke_agent_readonly "adversarial-reviewer" "${_aprompt}" "${_akey}" "${ARBITER_MODEL_ARGS[@]}") || true
       [[ -n "${_aout//[[:space:]]/}" ]] || _aout="VERDICT: FAIL (agent error: invoke_agent produced no output)"
       # Read from the VERDICT line, as on the single-pass path; the structured
       # sentinel has no consumer here.
       _aout=$(strip_structured_blocking "${_aout}")
       _averdict=$(parse_verdict "${_aout}")
       [[ "${_averdict}" == "PASS" ]] || _averdict="FAIL"
+      # A timeout is no ruling: it fails closed, but the log says so (#682).
+      _atimeout=""
+      if grep -qx 'VERDICT: FAIL (timeout)' <<<"${_aout}"; then
+        _atimeout=" - timed out after ${ARBITER_TIMEOUT_SECONDS}s, no ruling (raise review.arbiterTimeout)"
+      fi
 
       echo "=== ARBITER: ${_afile} (per-file reviewer vs adversarial-reviewer) ===" >&2
       echo "${_aout}" >&2
       echo "" >&2
       arbiter_log="${arbiter_log}=== ARBITER: ${_afile} ===
 ${_aout}
-arbiter: ${_averdict} (${_afile})
+arbiter: ${_averdict} (${_afile})${_atimeout}
 "
       file_reviewer_disagreement_issue "${_afindings}" "${adv_display}" "${_aout}" "${_averdict}"
 
@@ -2631,6 +2650,8 @@ arbiter: ${_averdict} (${_afile})
         blocking_count=$((blocking_count - 1))
         ((warning_count += 1))
         ((overruled_count += 1))
+      elif [[ -n "${_atimeout}" ]]; then
+        log_error "Arbiter timed out on ${_afile} after ${ARBITER_TIMEOUT_SECONDS}s: no ruling, the per-file block stands"
       else
         log_error "Arbiter upheld the per-file block on ${_afile}"
       fi

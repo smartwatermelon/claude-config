@@ -228,6 +228,10 @@ If review is timing out frequently, adjust thresholds:
 # Increase review timeout (default: 120 seconds)
 git config --global review.timeout 300
 
+# Increase the chunked-path arbiter's timeout (default: 300 seconds, or
+# review.timeout if that is larger). A timed-out arbiter keeps the block.
+git config --global review.arbiterTimeout 600
+
 # Increase max lines for full review (default: 1000)
 git config --global review.maxLines 2000
 

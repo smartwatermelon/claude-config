@@ -271,6 +271,7 @@ This enforcement exists because of two incidents on 2026-02-24:
   - code-reviewer, `--mode=full-diff` and `--mode=codebase`: `claude-sonnet-5-5`
   - adversarial-reviewer: `claude-sonnet-5-5` in every mode
   - arbiter: `claude-sonnet-5-5`, invoked only when code-reviewer returns a BLOCKING FAIL and adversarial-reviewer returns PASS
+- Timeouts: `review.timeout` (default 120s) covers the reviewers and the single-pass arbiter. The chunked-path arbiter reads files, so it has its own `review.arbiterTimeout` (default 300s, or `review.timeout` if larger). When it times out, the per-file block stands and the log line reads `arbiter: FAIL (<file>) - timed out after Ns, no ruling`.
 - Size limits: `review.maxLines` (default 1000) is the full-review ceiling; above it, review is chunked per file. Above `review.skipThreshold` (default 2500) the commit is blocked and must be split.
 - Attempt limit: `review.maxAttempts` (default 3) caps consecutive blocked commit reviews per branch. At the limit the hook prints a STOP message, and later attempts are refused without review. The refusal still blocks the commit. Any passing commit resets the count. Counters live in `<git-dir>/review-attempts/<branch>`, one set per worktree. A human resets one with the `rm` command that the STOP message prints.
 - commit-msg skips review when the subject starts with `fixup!`, `squash!`, `wip:`, `WIP:`, or `wip`/`WIP` followed by whitespace
