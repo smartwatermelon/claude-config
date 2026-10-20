@@ -1118,7 +1118,7 @@ _destination_for_segment() {
     CD_UNRESOLVED=1
   fi
   if [[ "${CD_UNRESOLVED}" -eq 1 ]]; then
-    _deny_dest "this command has a cd the hook cannot resolve (bare cd, cd -, a variable or substitution, a popd, or a cd/pushd inside a command substitution, backticks, bash -c, or after !, if, builtin or command); use git -C <dir> or gh -R <owner/name> so the destination is explicit" "${surface}"
+    _deny_dest "this command has a cd the hook cannot resolve (bare cd, cd -, a variable or substitution, a popd, or a cd/pushd inside a command substitution, backticks, bash -c, or after !, if, builtin or command, or a cd inside quotes, after a backslash, in a comment or in a heredoc); use git -C <dir> or gh -R <owner/name> so the destination is explicit" "${surface}"
   fi
   if [[ "${CD_SEEN}" -eq 1 && "${_joined}" == *[\(\)]* ]]; then
     _deny_dest "a cd combined with parentheses leaves the destination unclear; use git -C <dir> or gh -R <owner/name> so it is explicit" "${surface}"
