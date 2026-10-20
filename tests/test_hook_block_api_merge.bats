@@ -236,7 +236,7 @@ _run_hook() {
   [ "$status" -eq 2 ]
   _run_hook '"/opt/homebrew/bin/gh" pr create --title t'
   [ "$status" -eq 2 ]
-  _run_hook 'echo "$(/opt/homebrew/bin/gh pr create --title t)"'
+  _run_hook "echo \"\$(/opt/homebrew/bin/gh pr create --title t)\""
   [ "$status" -eq 2 ]
 }
 
@@ -393,8 +393,55 @@ _run_hook() {
 }
 
 @test "blocks: indirect pr ready / api pulls POST hidden in a quoted command substitution" {
-  _run_hook 'echo "$(/opt/homebrew/bin/gh pr ready 1)"'
+  _run_hook "echo \"\$(/opt/homebrew/bin/gh pr ready 1)\""
   [ "$status" -eq 2 ]
-  _run_hook 'echo "$(/opt/homebrew/bin/gh api repos/o/r/pulls -f a=b)"'
+  _run_hook "echo \"\$(/opt/homebrew/bin/gh api repos/o/r/pulls -f a=b)\""
   [ "$status" -eq 2 ]
+}
+
+# --- a second indirect call hidden in a double-quoted substitution (smartwatermelon/dotfiles#391 item 3) ---
+# One visible, safe call used to satisfy the rule while the second call, inside "$(...)", was never checked.
+
+@test "blocks: safe indirect pr ready, then a second one hidden in \"\$(...)\" or backticks" {
+  _run_hook "/opt/homebrew/bin/gh pr ready 1 --undo; echo \"\$(/opt/homebrew/bin/gh pr ready 2)\""
+  [ "$status" -eq 2 ]
+  _run_hook "/opt/homebrew/bin/gh pr ready 1 --undo; echo \"\`/opt/homebrew/bin/gh pr ready 2\`\""
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: safe indirect pr create, then a second one hidden in \"\$(...)\"" {
+  _run_hook "/opt/homebrew/bin/gh pr create --draft; echo \"\$(/opt/homebrew/bin/gh pr create --title t)\""
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: safe indirect api POST pulls, then a second one hidden in \"\$(...)\"" {
+  _run_hook "/opt/homebrew/bin/gh api repos/o/r/pulls -F draft=true; echo \"\$(/opt/homebrew/bin/gh api repos/o/r/pulls -f a=b)\""
+  [ "$status" -eq 2 ]
+}
+
+@test "blocks: hidden call whose \"\$(...)\" holds its own quoted argument" {
+  _run_hook "/opt/homebrew/bin/gh pr ready 1 --undo; echo \"\$(echo \"x\"; /opt/homebrew/bin/gh pr ready 2)\""
+  [ "$status" -eq 2 ]
+  _run_hook "/opt/homebrew/bin/gh pr ready 1 --undo; echo \"\$(/opt/homebrew/bin/gh pr ready 2 --repo \"o/r\")\""
+  [ "$status" -eq 2 ]
+}
+
+@test "allows: a hidden call that is itself safe is judged on its own flags" {
+  _run_hook "/opt/homebrew/bin/gh pr ready 1 --undo; echo \"\$(/opt/homebrew/bin/gh pr ready 2 --undo)\""
+  [ "$status" -eq 0 ]
+  _run_hook "/opt/homebrew/bin/gh pr create --draft; x=\"\$(/opt/homebrew/bin/gh pr create -d --title t)\""
+  [ "$status" -eq 0 ]
+}
+
+@test "allows: trigger text in a plain quoted string, even when a substitution is elsewhere" {
+  _run_hook 'echo "gh pr ready"'
+  [ "$status" -eq 0 ]
+  _run_hook "grep 'gh pr create' file"
+  [ "$status" -eq 0 ]
+  _run_hook "/opt/homebrew/bin/gh pr ready 1 --undo; echo \"\$(date) /opt/homebrew/bin/gh pr ready 2\""
+  [ "$status" -eq 0 ]
+  _run_hook "/opt/homebrew/bin/gh pr create --draft --body \"see; /opt/homebrew/bin/gh pr create\" && echo \"\$(date)\""
+  [ "$status" -eq 0 ]
+  _run_hook "/opt/homebrew/bin/gh pr ready 1 --undo; echo '\$(/opt/homebrew/bin/gh pr ready 2)' | wc -c"
+  [ "$status" -eq 0 ]
 }

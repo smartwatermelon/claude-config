@@ -222,9 +222,42 @@ fi
 # Backslash-newline continuations are joined first so a flag on a later line is seen. Then: unquote a quoted gh
 # path, a quoted pulls endpoint, POST and draft=true; replace other quoted strings with Q (a --body may hold ; or
 # --draft); and turn every operator into a newline so each command is on its own line.
+# QUOTE_AWK keeps "$(...)" and backtick code, which runs in double quotes (dotfiles#391). Gap: a case `)` ends "$(".
+QUOTE_AWK=$(
+  cat <<'AWK'
+{
+  s = $0; n = length(s); out = ""; sp = 0; st[0] = "B"; i = 1
+  while (i <= n) {
+    c = substr(s, i, 1); t = st[sp]; open_sub = (c == "$" && substr(s, i + 1, 1) == "(")
+    if (t == "D") {
+      if (c == "\\") { i += 2; continue }
+      if (c == "\"") { sp--; i++; continue }
+      if (open_sub) { st[++sp] = "S"; out = out "$("; i += 2; continue }
+      if (c == "`") { st[++sp] = "T"; out = out c }
+      i++; continue
+    }
+    if (c == "\\") { out = out substr(s, i, 2); i += 2; continue }
+    if (c == "'" || c == "\"") {
+      j = index(substr(s, i + 1), c)
+      if (j == 0) { out = out c; i++; continue }
+      out = out "Q"
+      if (c == "'") { i += j + 1 } else { st[++sp] = "D"; i++ }
+      continue
+    }
+    if (open_sub) { st[++sp] = "S"; out = out "$("; i += 2; continue }
+    if (c == "(") { st[++sp] = "P" }
+    else if (c == ")") { if (t == "S" || t == "P") sp-- }
+    else if (c == "`") { if (t == "T") sp--; else st[++sp] = "T" }
+    out = out c; i++
+  }
+  print out
+}
+AWK
+)
 joined="${cmd//$'\\\n'/ }"
 split=$(printf '%s\n' "${joined}" \
-  | sed -E "s#[\"']([^\"'[:space:]]*/gh)[\"']#\\1#g; s#[\"'](/?repos/[^\"'[:space:]]+/pulls)[\"']#\\1#g; s#[\"']([Pp][Oo][Ss][Tt]|draft=true)[\"']#\\1#g; s/\"[^\"]*\"/Q/g; s/'[^']*'/Q/g" \
+  | sed -E "s#[\"']([^\"'[:space:]]*/gh)[\"']#\\1#g; s#[\"'](/?repos/[^\"'[:space:]]+/pulls)[\"']#\\1#g; s#[\"']([Pp][Oo][Ss][Tt]|draft=true)[\"']#\\1#g" \
+  | awk "${QUOTE_AWK}" \
   | tr ';&|()`' '\n')
 seg_re="^[[:space:]]*${ASSIGN}${GH_INDIRECT}[[:space:]]+${GF}"
 
@@ -261,6 +294,7 @@ if printf '%s\n' "${joined}" | grep -qE "${create_re}"; then
 fi
 
 # New rules block an unseen match (all quoted) only if the command holds a $( or backtick that could run it.
+# Since the quote scanner keeps "$(...)" code, an unseen match here is single-quoted text, or a known-gap form.
 has_subst=0
 [[ "${joined}" == *"\$("* ||"${joined}" == *'`'* ]] && has_subst=1
 
