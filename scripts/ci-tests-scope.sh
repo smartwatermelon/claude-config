@@ -18,7 +18,7 @@ base="${PR_BASE_SHA:-}"
 head="${PR_HEAD_SHA:-}"
 [[ -n "${repo}" && -n "${base}" && -n "${head}" ]] || run_all "GITHUB_REPOSITORY, PR_BASE_SHA or PR_HEAD_SHA is unset"
 
-# Three-dot compare at the event SHAs judges the commit under test. A rename lists both its old and new path.
+# Three-dot compare at the event SHAs lists the PR's own changes. A rename lists both its old and new path.
 if ! files="$(gh api --paginate "repos/${repo}/compare/${base}...${head}" \
   --jq '.files[] | .filename, (.previous_filename // empty)')"; then
   run_all "cannot read the changed-file list"
