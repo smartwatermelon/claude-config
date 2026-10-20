@@ -264,15 +264,17 @@ _length_check() {
   esac
 }
 
+# measure's exit code for a usage error, so its exit 1 always means over the cap.
+MEASURE_USAGE=64
+
 # measure --kind K [--title T] [--repo R] [--dir D]: the body is read from
 # stdin; give </dev/null to measure a title alone. No text at all is a usage
 # error. With --repo or --dir the destination is routed as in `check`, and an
 # `exempt` route measures nothing; with neither, the text is always measured.
 # Exit 0 fits, 1 over the cap (the checker's lines, prefixed gate-review:),
 # 2 checker error or a route that failed. This is the one path the hook uses
-# for titles, so the checker is called from _length_check only.
-# A usage error exits MEASURE_USAGE, so 1 always means over the cap.
-MEASURE_USAGE=64
+# for titles, so the checker is called from _length_check only. Usage errors
+# exit MEASURE_USAGE.
 _cmd_measure() {
   local kind="" repo="" dir="" has_title=0 title="" flagged=0 tmp rc=0 line route outcome rule reason
   while (($# > 0)); do

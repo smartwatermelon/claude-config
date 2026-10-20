@@ -1471,7 +1471,7 @@ _check_titles() {
 
 # One `gate-review.sh measure` call for a title; every outcome but 0 denies.
 # measure: 1 is over the cap, 64 a usage error. A 1 with no " over by " line
-# is an errexit failure, so a checker error.
+# means measure crashed, so it denies as a checker error.
 _measure_title() {
   local kind="$1" value="$2" surface="$3" err rc=0 line reason="" over
   shift 3
