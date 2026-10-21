@@ -218,7 +218,9 @@ GQLEOF
 )
 
 GQL_STDERR=$(mktemp /tmp/post-push-gql-err.XXXXXX)
-TMPFILE=$(mktemp /tmp/post-push-comments.XXXXXX.json)
+# Xs must be trailing: BSD mktemp leaves "XXXXXX.json" literal, so every run
+# would share one fixed path.
+TMPFILE=$(mktemp /tmp/post-push-comments.XXXXXX)
 trap 'rm -f "${GQL_STDERR}" "${TMPFILE}" "${TMPFILE}_pulls" "${TMPFILE}_issues"' EXIT
 
 CI_JSON=$(gh api graphql -f query="${GQL_QUERY}" \
