@@ -19,7 +19,8 @@
 #                                 branch checked out so `git branch -D`
 #                                 refused. Deliberately NOT path-scoped --
 #                                 see the ACCEPTED TRADE-OFF note below.
-#     ALLOWED  add <path>         ONLY when <path> is under `.claude/worktrees/`.
+#     ALLOWED  unlock             as remove; see the case below (2026-10-21).
+#     ALLOWED  add <path>        ONLY when <path> is under `.claude/worktrees/`.
 #                                 This matches the Agent tool's
 #                                 `isolation: "worktree"` convention
 #                                 (`.claude/worktrees/agent-<id>`), keeps every
@@ -27,7 +28,7 @@
 #                                 leaves `git worktree list` able to find them.
 #     BLOCKED  add <other path>   unscoped creation, which is what caused the
 #                                 "which directory is *the* checkout" confusion.
-#     BLOCKED  move, lock, unlock, repair
+#     BLOCKED  move, lock, repair
 #                                 rewrite worktree administrative state.
 #     BLOCKED  bare `git worktree`, unknown/future subcommands (fail closed).
 #
@@ -55,7 +56,7 @@
 #   in a regex hook that cannot tell one agent's path from another's.
 #
 #   What IS detected (#374): an out-of-scope `remove` is allowed but logged to
-#   ~/.claude/blocked-commands.log under an `AUDIT GIT WORKTREE REMOVE` prefix,
+#   ~/.claude/blocked-commands.log under an `AUDIT GIT WORKTREE REMOVE` (or `UNLOCK`) prefix,
 #   so the post-mortem has a trail instead of silence. This is deliberately
 #   observe-only -- it must never block, or it reintroduces the un-cleanable
 #   pre-ban worktrees described above. It does not tell whose worktree it was;
@@ -227,11 +228,11 @@ extract_path_operand() {
 # dependency. block() still reads ${cmd} directly; that predates this and its
 # four call sites are out of scope here (#397).
 warn_out_of_scope_remove() {
-  local target="${1}" offending_cmd="${2}"
-  printf '%s AUDIT GIT WORKTREE REMOVE (out of scope: %s): %s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${target}" "${offending_cmd}" \
+  local target="${1}" offending_cmd="${2}" verb="${3:-remove}"
+  printf '%s AUDIT GIT WORKTREE %s (out of scope: %s): %s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${verb^^}" "${target}" "${offending_cmd}" \
     >>"${HOME}/.claude/blocked-commands.log" || true
-  printf '⚠️  NOTE: removing a worktree outside %s/ (%s)\n' "${WORKTREE_SCOPE}" "${target}" >&2
+  printf '⚠️  NOTE: %s of a worktree outside %s/ (%s)\n' "${verb}" "${WORKTREE_SCOPE}" "${target}" >&2
   printf '   Allowed, and logged for audit. If this was a peer agent'"'"'s worktree,\n' >&2
   printf '   its uncommitted work is gone -- see %s/.claude/blocked-commands.log\n' "${HOME}" >&2
 }
@@ -243,9 +244,9 @@ block() {
   printf '🛑 BLOCKED: %s\n' "${reason}" >&2
   printf '\n' >&2
   printf 'Worktree policy (dotfiles#200):\n' >&2
-  printf '  allowed: list, --help, remove, prune\n' >&2
+  printf '  allowed: list, --help, remove, prune, unlock\n' >&2
   printf '  allowed: creation -- only under %s/\n' "${WORKTREE_SCOPE}" >&2
-  printf '  blocked: move, lock, unlock, repair\n' >&2
+  printf '  blocked: move, lock, repair\n' >&2
   printf '\n' >&2
   printf 'To create an isolated worktree, scope it to the sanctioned directory:\n' >&2
   printf '  %s/<name>\n' "${WORKTREE_SCOPE}" >&2
@@ -461,10 +462,13 @@ for match in "${matches[@]}"; do
     # leaves a trace when the target is outside scope, which is the peer-agent
     # clobbering case the header calls a real consequence (#374). `prune` takes
     # no path operand, so there is nothing to inspect.
-    remove)
+    #
+    # `unlock` too: `remove -f -f` already deletes a locked worktree, so
+    # blocking unlock protected nothing (2026-10-21).
+    remove | unlock)
       target="$(extract_path_operand "${tokens[@]:1}")"
       if [[ -n "${target}" ]] && ! path_in_scope "${target}"; then
-        warn_out_of_scope_remove "${target}" "${cmd}"
+        warn_out_of_scope_remove "${target}" "${cmd}" "${subcmd}"
       fi
       continue
       ;;
