@@ -309,6 +309,23 @@ bad_rc=0
 assert_rc "bad repo slug rejected" nonzero "${bad_rc}"
 
 echo ""
+echo "=== Test: a leftover comments temp file does not block the run ==="
+# BSD mktemp leaves "XXXXXX.json" literal; a file there broke every run.
+LITERAL_TMP="/tmp/post-push-comments.XXXXXX.json"
+created_literal=0
+if [[ ! -e "${LITERAL_TMP}" ]]; then
+  : >"${LITERAL_TMP}"
+  created_literal=1
+fi
+stale_out=$(POSTPUSH_CURRENT_COMMIT="abc123" POSTPUSH_COMMIT_TIMESTAMP="2024-01-15T10:00:00Z" \
+  bash "${SUBJECT}" 42 2>&1 || true)
+if [[ "${created_literal}" -eq 1 ]]; then
+  rm -f "${LITERAL_TMP}"
+fi
+assert_not_contains "no mkstemp collision" "mkstemp failed" "${stale_out}"
+assert_contains "findings still reported" "source=sentry[bot]" "${stale_out}"
+
+echo ""
 echo "=== Summary ==="
 echo "  Passed: ${PASS}"
 echo "  Failed: ${FAIL}"
