@@ -150,6 +150,17 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   (`personify` or `personify~g<generation>`) from that bucket's
   `manifest.json`. personify and pr-review load from claude.ai sync on
   purpose, to dogfood the upload path; they are not in `enabledPlugins`.
+- Updating a synced plugin: each CLI start syncs once in the background
+  (Claude Code docs, plugins/loading, "Sync timing in terminal sessions").
+  A sync that lands after the session started prints `Plugins changed. Run
+  /reload-plugins to activate.`; run `/reload-plugins` or start a new
+  session. Marketplace commands do not apply: a synced plugin loads as
+  `<name>@synced` with no marketplace and no install record. Disable one with
+  `claude plugin disable <name>@synced`. The docs say a restart loads the new
+  copy, but on 2026-09-30 a restart kept personify 2.0.4 after 2.1.0 synced,
+  and only `/reload-plugins` loaded it (#644). If the version looks stale,
+  run `/reload-plugins` first. MIMOLETTE has no claude.ai sync, so its
+  personify is a CLI install that updates only via `claude plugin update`.
 - `open` shows one Pangram line per item in the header, read from that
   item's check record.
 - `gate-rules.conf` (repo root, linked by `install.sh` to
