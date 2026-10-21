@@ -63,3 +63,6 @@ remote-settings.json
 gh-pr-status-cache.json
 policy-limits.json.stamp.json
 remote-settings.json.synced-at
+daemon.lock
+daemon.status.json
+policy-limits.json.signature.json
