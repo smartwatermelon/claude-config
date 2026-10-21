@@ -317,6 +317,17 @@ Banned until the PR is merged: "production ready", "ready for review", "all done
 - Creating public GitHub repositories
 - Setting `STRICT_PREPUSH=0` for a specific push when local review is genuinely blocking — ask in that specific conversation; never set it without asking, and never treat a past instance of permission as standing/reusable authorization for future pushes. Details: `~/.claude/docs/HUMAN-BYPASS.md`
 
+### Auto-Mode Classifier Denials
+
+A denial from the auto-mode classifier ("Permission for this action was denied by the Claude Code auto mode classifier") is a stop point for Andrew, not a puzzle to solve.
+
+1. Stop that line of work at once. Do not retry the action in another form, with another tool, or split into steps, even though the denial text says you may.
+2. Tell Andrew in your next message, at the top: the exact command, the classifier's stated reason, and what it was for. Send a `PushNotification` too, so he sees it away from the terminal.
+3. Give him the command in a form he can run or allow at once (`! <command>`, or the permission rule that would allow it). Then continue only with work that does not depend on it.
+4. **Subagents:** stop and put the denial (command, reason, purpose) at the top of your report, or send it to the parent at once with `SendMessage`. Never improvise past it. The parent relays it to Andrew immediately, not in an end-of-task summary.
+
+**Why:** Andrew is working to keep sessions in auto mode. Agents that route around a denial hide the friction he needs to tune the rules, and they can do the very thing the classifier stopped. He wants to grant permission right away instead.
+
 ### Verification Discipline
 
 - Test changes in `/tmp/` before applying to production code
