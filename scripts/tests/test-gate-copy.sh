@@ -148,6 +148,8 @@ _eqo "kebab-tax: fastlane text, not *_url.txt, not app source (phase 2)" \
   mobile/src/screens/Home.tsx mobile/src/config/easterEggMessages.ts
 _eqo "amelia-boone (public): posts and README, not pagefind output" $'src/data/blog/a.md\nREADME.md' \
   _real nightowlstudiollc/amelia-boone src/data/blog/a.md public/pagefind/x.html README.md
+_eqo "jordan-paddock-pitch (public): the built page and README, not assets or config" $'dist/index.html\nREADME.md' \
+  _real nightowlstudiollc/jordan-paddock-pitch dist/index.html README.md dist/assets/logo.png netlify.toml
 _eqo "any public repo: README files, nothing else" $'README.md\ndocs/readme.md' \
   _real smartwatermelon/dotfiles README.md docs/readme.md install.sh
 _eqo "vendored READMEs at any depth are not copy" "" \
