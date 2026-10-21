@@ -44,6 +44,7 @@
     "personify@synced": true,
     "react-native-3d@smartwatermelon-marketplace": false,
     "security-compliance@claude-code-workflows": false,
+    "sentry@claude-plugins-official": true,
     "slack@claude-plugins-official": false,
     "superpowers@smartwatermelon-marketplace": true,
     "tdd-workflows@claude-code-workflows": false,
