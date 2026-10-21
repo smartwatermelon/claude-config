@@ -35,8 +35,6 @@ inp="$(make_input 'git worktree move /tmp/wt /tmp/wt2')"
 check "git worktree move" 2 "${inp}"
 inp="$(make_input 'git worktree lock /tmp/wt')"
 check "git worktree lock" 2 "${inp}"
-inp="$(make_input 'git worktree unlock /tmp/wt')"
-check "git worktree unlock" 2 "${inp}"
 inp="$(make_input 'git worktree repair')"
 check "git worktree repair" 2 "${inp}"
 inp="$(make_input 'git worktree')"
@@ -67,6 +65,12 @@ check "cleanup: prune with interposed -C flag" 0 "${inp}"
 # un-cleanable-worktree problem from dotfiles#200 only half fixed.
 inp="$(make_input 'git worktree remove --force .claude/worktrees/agent-abc')"
 check "cleanup: remove --force (required for dirty worktrees)" 0 "${inp}"
+# unlock is allowed (2026-10-21): `remove -f -f` already deletes a locked
+# worktree. `lock` stays blocked.
+inp="$(make_input 'git worktree unlock .claude/worktrees/agent-abc')"
+check "cleanup: unlock (now allowed)" 0 "${inp}"
+inp="$(make_input 'git worktree remove -f -f .claude/worktrees/agent-abc')"
+check "cleanup: remove -f -f of a locked worktree (allowed)" 0 "${inp}"
 inp="$(make_input 'git worktree prune --dry-run')"
 check "cleanup: prune --dry-run" 0 "${inp}"
 # ACCEPTED TRADE-OFF (#347): cleanup is deliberately NOT path-scoped, so the
@@ -373,7 +377,7 @@ check "PERMANENT GAP: alias/function resolving to git is not detected" 0 "${inp}
 # Exit-code assertions cannot express this: the whole point is that exit stays
 # 0. These run the hook under a throwaway HOME and assert on the log instead.
 check_audit() {
-  local desc="${1}" expect_logged="${2}" input="${3}"
+  local desc="${1}" expect_logged="${2}" input="${3}" verb="${4:-remove}"
   local tmphome logfile actual=0 logged=no
   tmphome="$(mktemp -d)"
   mkdir -p "${tmphome}/.claude"
@@ -384,7 +388,7 @@ check_audit() {
   # bug that split the record apart would still pass. Match the whole shape --
   # timestamp, prefix, scope path, then the command.
   if [[ -s "${logfile}" ]] && grep -qE \
-    '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z AUDIT GIT WORKTREE REMOVE \(out of scope: [^)]+\): .*git worktree remove' \
+    "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z AUDIT GIT WORKTREE ${verb^^} \(out of scope: [^)]+\): .*git worktree ${verb}" \
     "${logfile}"; then
     logged=yes
   fi
@@ -404,6 +408,10 @@ inp="$(make_input 'git worktree remove --force /tmp/peer-agent-wt')"
 check_audit "remove --force outside scope is allowed AND audited" yes "${inp}"
 inp="$(make_input 'git worktree remove .claude/worktrees/mine')"
 check_audit "remove inside scope is allowed and NOT audited" no "${inp}"
+inp="$(make_input 'git worktree unlock /tmp/peer-agent-wt')"
+check_audit "unlock outside scope is allowed AND audited" yes "${inp}" unlock
+inp="$(make_input 'git worktree unlock .claude/worktrees/mine')"
+check_audit "unlock inside scope is allowed and NOT audited" no "${inp}" unlock
 inp="$(make_input 'git worktree prune')"
 check_audit "prune takes no path, so it is never audited" no "${inp}"
 # Bare `prune` cannot distinguish correct routing from a broken audit -- it has
