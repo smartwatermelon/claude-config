@@ -49,6 +49,7 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # and global options before the subcommand (`-C <path>`, `-c k=v`,
 # `--no-pager`, ...). Since #637 also env options (`env -i`, `env -C <dir>`),
 # and `xargs ... git commit`, which is denied on any branch.
+# #750: `"git" commit`, and `git -C "$X" commit` (denied). Backtick or nested -C values still escape.
 #
 # NOT handled, and not closeable at this layer: aliases and shell functions
 # resolving to git, obfuscation through variables (`G=git; $G commit`), and any
@@ -114,6 +115,14 @@ readonly xargs_re
 # cannot appear inside a single-quoted sed script. All three are defined above.
 _scan=$(printf '%s\n' "${cmd}" | sed -E "s/(^|[[:space:]])env[[:space:]]+(${_assign})*/\\1env /g")
 
+# A quoted git word (`"git"`, `'/usr/bin/git'`) runs git, so drop the quotes (#750). `x"git"` stays.
+_gitword="([^[:space:]\"${sq}|;&(){${bt}]*/)?git"
+_qpre="(^|[[:space:]|;&(){${bt}\"${sq}])"
+readonly _gitword _qpre
+_scan=$(printf '%s\n' "${_scan}" | sed -E \
+  -e "s#${_qpre}\"(${_gitword})\"([[:space:]]|\$)#\\1\\2\\4#g" \
+  -e "s#${_qpre}${sq}(${_gitword})${sq}([[:space:]]|\$)#\\1\\2\\4#g")
+
 # A bare leading assignment (`SKIP=x git commit`, #651) sits between the
 # separator and git, and neither wrapper arm consumes it. Strip it after any
 # command separator, the same approach hook-block-personify.sh uses.
@@ -170,10 +179,15 @@ if printf '%s\n' "${_scan}" | grep -qE "${commit_re}"; then
     if [[ -n "${d}" ]]; then git_dirs+=("${d}"); fi
   done <<<"${found}"
 
-  # An env -C dir the hook cannot read ($X, $(...), {}) denies. git -C "$X" keeps its old behaviour: unknown, allowed.
+  # A -C dir the hook cannot read ($X, $(...), {}) denies, for env and git alike (#750).
   for d in ${env_dirs[@]+"${env_dirs[@]}"}; do
     if [[ "${d}" == *'$'* || "${d}" == *"${bt}"* || "${d}" == *'{}'* ]]; then
       _deny_unknown_repo "env -C ${d}"
+    fi
+  done
+  for d in ${git_dirs[@]+"${git_dirs[@]}"}; do
+    if [[ "${d}" == *'$'* || "${d}" == *"${bt}"* || "${d}" == *'{}'* ]]; then
+      _deny_unknown_repo "git -C ${d}"
     fi
   done
 

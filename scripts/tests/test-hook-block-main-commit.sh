@@ -311,6 +311,47 @@ check_from "grep for the text 'run xargs git commit'" 0 "${REPO_FEATURE}" \
 check_from "grep for the text 'xargs git commit'" 0 "${REPO_FEATURE}" \
   "grep -rn 'xargs git commit' docs/"
 
+echo "--- MUST BLOCK: git -C <dir the hook cannot read> commit, on any branch (#750) ---"
+# The shell expands $D later, so the repo is unknown. Run from the feature repo, where a cwd fallback allows.
+for c in "git -C \"\$D\" commit -m x" "git -C \$D commit -m x" "git -C \${D} commit -m x" \
+  "git -C\"\$D\" commit -m x" "git -C \"\$D\"/sub commit -m x" "git -C \$(pwd) commit -m x" \
+  "git -C \"\$(pwd)\" commit -m x" "git --no-pager -C \"\$D\" commit -m x" \
+  "git -C . -C \"\$D\" commit -m x" "FOO=1 git -C \"\$D\" commit -m x" \
+  "env -C ${REPO_FEATURE} git -C \"\$D\" commit -m x" "\"git\" -C \"\$D\" commit -m x"; do
+  check_from "${c}" 2 "${REPO_FEATURE}" "${c}"
+done
+
+echo "--- MUST NOT BLOCK: git -C <unreadable dir> on a verb other than commit (#750) ---"
+for c in "git -C \"\$D\" status" "git -C \$(pwd) log -- commit" "git -C \"\$D\" commit-tree HEAD^{tree}"; do
+  check_from "${c}" 0 "${REPO_FEATURE}" "${c}"
+done
+
+echo "--- MUST BLOCK: a quoted git binary while on main (#750) ---"
+check "\"git\" commit" 2 '"git" commit -m x'
+check "'git' commit" 2 "'git' commit -m x"
+check "\"/usr/bin/git\" commit" 2 '"/usr/bin/git" commit -m x'
+check "\"git\" --no-pager commit" 2 '"git" --no-pager commit -m x'
+check "\"git\" commit after &&" 2 'git add f && "git" commit -m x'
+check "\"git\" commit inside sh -c" 2 "sh -c '\"git\" commit -m x'"
+check "env FOO=1 \"git\" commit" 2 'env FOO=1 "git" commit -m x'
+check "sudo 'git' commit" 2 "sudo 'git' commit -m x"
+check_from "\"git\" -C <main repo> commit" 2 "${REPO_FEATURE}" "\"git\" -C ${REPO_MAIN} commit -m x"
+check_from "xargs \"git\" commit" 2 "${REPO_FEATURE}" 'echo x | xargs "git" commit -m x'
+
+echo "--- MUST NOT BLOCK: quoted git that does not commit to main (#750) ---"
+# The quotes are removed, not denied: the branch is still resolved.
+check_from "\"git\" commit on a feature branch" 0 "${REPO_FEATURE}" '"git" commit -m x'
+check_from "\"git\" -C <feature repo> commit" 0 "${REPO_MAIN}" "\"git\" -C ${REPO_FEATURE} commit -m x"
+check "\"git\" status" 0 '"git" status'
+check "\"git\" log -- commit" 0 '"git" log -- commit'
+check "echo \"git\" commit" 0 'echo "git" commit'
+check "echo 'git' commit" 0 "echo 'git' commit"
+check "grep \"git\" commit.txt" 0 'grep "git" commit.txt'
+check "grep 'git commit' (quote closes after commit)" 0 "grep -rn 'git commit' docs/"
+check "\"gitx\" commit" 0 '"gitx" commit -m x'
+check "x\"git\" commit" 0 'x"git" commit -m x'
+check "\"git\"x commit" 0 '"git"x commit -m x'
+
 echo "--- MUST NOT BLOCK: 'commit' inside a longer token ---"
 # The subcommand must be exactly `commit`; these carry it as a prefix of a
 # config key or an option value, not as the subcommand itself.
