@@ -26,7 +26,8 @@
 #   gate-review.sh check [--kind K] <file>   exit 0 if file matches ANY approval (and fits)
 #   gate-review.sh measure --kind K [--title T] [--repo R] [--dir D] <body
 #                                        length check only; body on stdin
-#                                        (</dev/null for a title alone)
+#                                        (</dev/null for a title alone);
+#                                        exit 1 over the cap, 64 usage error
 #   gate-review.sh personify-path        print personify's dir
 #   gate-review.sh suspended             exit 0 if the gate is suspended today
 #
@@ -77,10 +78,11 @@ BUFFER_TTL="${GATE_REVIEW_BUFFER_TTL:-86400}"
 
 mkdir -p "${PENDING_ROOT}" "${APPROVED_ROOT}"
 
+# An optional $2 is the exit code; measure passes MEASURE_USAGE.
 _die() {
   printf 'gate-review: %s\n' "$1" >&2
   _kept_note
-  exit 1
+  exit "${2:-1}"
 }
 
 # Where the reviewer's text is, said on every way out of `open` that does not
@@ -197,8 +199,28 @@ LENGTH_KINDS="commit pr issue line-comment pr-comment code-comment docstring cop
 # copy: file text from gate-copy.py. No length cap, never routed: always Pangram plus approval (dev-env#206).
 COPY_ROUTE=$'pangram\tcopy\tpublic-facing copy (copy-paths.conf)'
 
+# One whole word of LENGTH_KINDS. A padded substring match let "pr issue"
+# through, and the checker then failed it as a checker error.
 _valid_kind() {
-  [[ " ${LENGTH_KINDS} " == *" $1 "* ]]
+  local k
+  for k in ${LENGTH_KINDS}; do
+    [[ "${k}" == "$1" ]] && return 0
+  done
+  return 1
+}
+
+# Temp files from _length_check and _cmd_measure, removed on exit or a signal.
+GATE_TMPFILES=()
+_tmp_cleanup() {
+  ((${#GATE_TMPFILES[@]} == 0)) || rm -f -- "${GATE_TMPFILES[@]}"
+}
+# Set by the stage, check and measure arms: test suites eval these functions
+# into a shell whose own EXIT trap must stay.
+_tmp_traps() {
+  trap _tmp_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
 }
 
 # 0 under the cap, 1 over, 2 checker error; LENGTH_OUT holds the checker's lines, or the error reason.
@@ -225,6 +247,7 @@ _length_check() {
     return 2
   fi
   errf="$(mktemp)"
+  GATE_TMPFILES+=("${errf}")
   LENGTH_OUT="$(python3 "${checker}" --kind "${kind}" "${title_arg[@]}" <"${file}" 2>"${errf}")" || rc=$?
   case "${rc}" in
     0 | 1)
@@ -241,24 +264,28 @@ _length_check() {
   esac
 }
 
+# measure's exit code for a usage error, so its exit 1 always means over the cap.
+MEASURE_USAGE=64
+
 # measure --kind K [--title T] [--repo R] [--dir D]: the body is read from
 # stdin; give </dev/null to measure a title alone. No text at all is a usage
 # error. With --repo or --dir the destination is routed as in `check`, and an
 # `exempt` route measures nothing; with neither, the text is always measured.
 # Exit 0 fits, 1 over the cap (the checker's lines, prefixed gate-review:),
 # 2 checker error or a route that failed. This is the one path the hook uses
-# for titles, so the checker is called from _length_check only.
+# for titles, so the checker is called from _length_check only. Usage errors
+# exit MEASURE_USAGE.
 _cmd_measure() {
   local kind="" repo="" dir="" has_title=0 title="" flagged=0 tmp rc=0 line route outcome rule reason
   while (($# > 0)); do
     case "$1" in
       --kind)
-        (($# >= 2)) || _die "measure: --kind needs a value"
+        (($# >= 2)) || _die "measure: --kind needs a value" "${MEASURE_USAGE}"
         kind="$2"
         shift 2
         ;;
       --title)
-        (($# >= 2)) || _die "measure: --title needs a value"
+        (($# >= 2)) || _die "measure: --title needs a value" "${MEASURE_USAGE}"
         title="$2"
         has_title=1
         shift 2
@@ -269,22 +296,22 @@ _cmd_measure() {
         shift
         ;;
       --repo)
-        (($# >= 2)) || _die "measure: --repo needs a value"
+        (($# >= 2)) || _die "measure: --repo needs a value" "${MEASURE_USAGE}"
         repo="$2"
         flagged=1
         shift 2
         ;;
       --dir)
-        (($# >= 2)) || _die "measure: --dir needs a value"
+        (($# >= 2)) || _die "measure: --dir needs a value" "${MEASURE_USAGE}"
         dir="$2"
         flagged=1
         shift 2
         ;;
-      *) _die "measure: unexpected argument: $1" ;;
+      *) _die "measure: unexpected argument: $1" "${MEASURE_USAGE}" ;;
     esac
   done
-  [[ -n "${kind}" ]] || _die "measure: --kind is required, one of: ${LENGTH_KINDS}"
-  _valid_kind "${kind}" || _die "measure: unknown --kind '${kind}'; one of: ${LENGTH_KINDS}"
+  [[ -n "${kind}" ]] || _die "measure: --kind is required, one of: ${LENGTH_KINDS}" "${MEASURE_USAGE}"
+  _valid_kind "${kind}" || _die "measure: unknown --kind '${kind}'; one of: ${LENGTH_KINDS}" "${MEASURE_USAGE}"
   if ((flagged == 1)); then
     if ! route="$(_route_line "${repo}" "${dir}" "${kind}")"; then
       echo "gate-review: measure: gate-route failed, so nothing was measured" >&2
@@ -294,10 +321,11 @@ _cmd_measure() {
     [[ "${outcome}" != "exempt" ]] || return 0
   fi
   tmp="$(mktemp)"
+  GATE_TMPFILES+=("${tmp}")
   cat >"${tmp}"
   if [[ ! -s "${tmp}" ]] && ((has_title == 0)); then
     rm -f "${tmp}"
-    _die "measure: no text; give the body on stdin, or --title with </dev/null"
+    _die "measure: no text; give the body on stdin, or --title with </dev/null" "${MEASURE_USAGE}"
   fi
   if ((has_title == 1)); then
     _length_check "${kind}" "${tmp}" "${title}" || rc=$?
@@ -1301,14 +1329,14 @@ _cmd_suspended() {
 }
 
 case "${1:-}" in
-  stage) shift; _cmd_stage "$@" ;;
+  stage) shift; _tmp_traps; _cmd_stage "$@" ;;
   open) _cmd_open ;;
   hash) shift; _hash "$1" ;;
-  check) shift; _cmd_check "$@" ;;
+  check) shift; _tmp_traps; _cmd_check "$@" ;;
   # The command that writes a check record for <file>; the Bash-tool hook
   # prints it when check blocks a Pangram-gated text for want of a record.
   hint) shift; _check_hint "${1:?usage: gate-review.sh hint <file> [--kind K] [--repo R] [--dir D]}" "${@:2}" ;;
-  measure) shift; _cmd_measure "$@" ;;
+  measure) shift; _tmp_traps; _cmd_measure "$@" ;;
   route) shift; _cmd_route "$@" ;;
   personify-path) _personify_path ;;
   suspended) _cmd_suspended ;;

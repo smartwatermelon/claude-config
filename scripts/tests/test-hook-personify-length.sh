@@ -262,6 +262,11 @@ if [[ "${err}" != *"over its length cap"* ]]; then
 else
   _no "usage-only checker error is not called an overrun: ${err}"
 fi
+# The error cases above overwrite the checker in place. Put the real one back,
+# so a case added below them still measures with it.
+cp "${CHECKER_SRC}" "${PLUG}/scripts/length_check.py"
+_case "after the error cases, the real checker measures again" 2 "pr title: 71/70 over by 1" \
+  "gh pr edit 5 --title \"${T71}\""
 
 echo ""
 echo "passed: ${pass}  failed: ${fail}"
