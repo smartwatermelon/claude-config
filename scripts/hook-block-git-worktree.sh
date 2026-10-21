@@ -234,7 +234,11 @@ warn_out_of_scope_remove() {
     >>"${HOME}/.claude/blocked-commands.log" || true
   printf '⚠️  NOTE: %s of a worktree outside %s/ (%s)\n' "${verb}" "${WORKTREE_SCOPE}" "${target}" >&2
   printf '   Allowed, and logged for audit. If this was a peer agent'"'"'s worktree,\n' >&2
-  printf '   its uncommitted work is gone -- see %s/.claude/blocked-commands.log\n' "${HOME}" >&2
+  if [[ "${verb}" == "unlock" ]]; then
+    printf '   prune or remove can now delete it -- see %s/.claude/blocked-commands.log\n' "${HOME}" >&2
+  else
+    printf '   its uncommitted work is gone -- see %s/.claude/blocked-commands.log\n' "${HOME}" >&2
+  fi
 }
 
 block() {
