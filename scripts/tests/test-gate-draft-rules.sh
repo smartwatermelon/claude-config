@@ -116,6 +116,17 @@ _case "review with event, approved: passes" 0 "" "${REVIEW}" "gh api ${EP} -f ev
 _unapprove
 _case "issue comment via api is still gated" 2 "no visual approval" "${REVIEW}" \
   "gh api repos/beacon-biosignals/x/issues/3/comments -F body=@${CLEAN}"
+mkdir -p "${TMP}/pulls/3"
+cp "${CLEAN}" "${TMP}/pulls/3/reviews"
+_case "reviews path only in the body file name: still gated" 2 "no visual approval" "${REVIEW}" \
+  "gh api repos/beacon-biosignals/x/issues/3/comments -F body=@${TMP}/pulls/3/reviews"
+_case "quote-split event key: gated" 2 "no visual approval" "${REVIEW}" "gh api ${EP} -f 'ev'ent=APPROVE -F body=@${CLEAN}"
+_case "event from a variable: gated" 2 "no visual approval" "${REVIEW}" "gh api ${EP} -f \$E -F body=@${CLEAN}"
+_case "submit a pending review (events): blocked" 2 "GitHub UI" "${REVIEW}" "gh api ${EP}/77/events -f event=COMMENT"
+_case "submit a pending review, exempt route: passes" 0 "" "${EXEMPT}" \
+  "gh api repos/twistedmelonman/y/pulls/3/reviews/77/events -f event=COMMENT"
+_case "graphql submitPullRequestReview: blocked" 2 "GitHub UI" "${REVIEW}" \
+  "gh api graphql -f query='mutation { submitPullRequestReview(input: {pullRequestReviewId: \"X\", event: COMMENT}) { clientMutationId } }'"
 
 echo ""
 echo "${pass} passed, ${fail} failed"

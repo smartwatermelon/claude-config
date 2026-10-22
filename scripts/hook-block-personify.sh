@@ -199,7 +199,6 @@ ready_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_opt
 # `-f body=`, `-fbody=`, `--field body=`, `--field=body=`, `--raw-field body=`,
 # with the key=value optionally quoted. The leading space keeps `nobody=` and
 # the like out; the value runs to the next space.
-_api_event_re="[[:space:]](-f|-F|--field|--raw-field)(=|[[:space:]]+)?[\"']?event="
 _api_body_re="[[:space:]](-f|-F|--field|--raw-field)(=|[[:space:]]+)?[\"']?body=[^[:space:]]*"
 
 # A GraphQL mutation that sets a body argument (addComment, addPullRequestReview
@@ -1221,10 +1220,7 @@ _verify_api_segment() {
   # As in _verify_segment: an exempt destination passes in any form (#698).
   _dest_exempt "${cap_kind}" && return 0
   # A review with no event stays pending, seen only by Andrew until he submits it: lint only.
-  if [[ "${seg}" =~ /pulls/[0-9]+/reviews([[:space:]\"\'?]|$) ]] &&
-    ! printf '%s\n' "${seg}" | grep -qE -- "${_api_event_re}"; then
-    LINT_ONLY=1
-  fi
+  _api_pending_review "${seg}" && LINT_ONLY=1
   matches="$(printf '%s\n' "${seg}" | grep -oE -- "${_api_body_re}" || true)"
   while IFS= read -r m; do
     [[ -n "${m}" ]] || continue
@@ -1240,6 +1236,23 @@ _verify_api_segment() {
       _deny "text given inline; only -F body=@<absolute path> can be verified" "${surface}"
     _verify_path "${val#@}" "${surface}" "${cap_kind}"
   done <<<"${matches}"
+}
+
+# The endpoint words of a gh api segment (repos/...), never a field value or file path.
+_api_endpoints() {
+  printf '%s\n' "$1" | grep -oE -- "(^|[[:space:]])[\"']?(https?://[^/[:space:]\"']+)?/?repos/[^[:space:]\"']*" || true
+}
+
+# 0 if the endpoint creates a review and nothing could be an event field. Quotes, $ and ` fail closed.
+_api_pending_review() {
+  local flat="${1//[\"\'\\]/}"
+  [[ "${flat}" != *event* && "${flat}" != *[\$\`]* ]] || return 1
+  _api_endpoints "$1" | grep -qE '/pulls/[0-9]+/reviews/?([?]|$)'
+}
+
+# 0 if the endpoint submits a pending review (POST .../reviews/ID/events).
+_api_submits_review() {
+  _api_endpoints "$1" | grep -qE '/pulls/[0-9]+/reviews/[0-9]+/events/?([?]|$)'
 }
 
 # Endpoint words only, as in _gh_destination, so a body file path cannot pick the looser cap.
@@ -1618,6 +1631,15 @@ _gate_segment() {
     _dest_exempt pr && return 0
     _deny "gh pr ready on a review route; Andrew clicks Ready for review in the GitHub UI" "PR ready for review"
   elif printf '%s\n' "${seg}" | grep -qE "${api_re}"; then
+    # Submitting a pending review publishes its text; graphql has no route, so it never passes.
+    if _api_submits_review "${seg}" || [[ "${seg}" == *graphql* && "${_scan_flat}" == *submitPullRequestReview* ]]; then
+      _suspended && exit 0
+      if _api_submits_review "${seg}"; then
+        _destination_for_segment "${seg}" api "review submission"
+        _dest_exempt pr-comment && return 0
+      fi
+      _deny "submitting a review on a review route; Andrew clicks Submit review in the GitHub UI" "review submission"
+    fi
     if _api_is_gated "${seg}"; then
       _suspended && exit 0
       _verify_api_segment "${seg}"
