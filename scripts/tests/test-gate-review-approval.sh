@@ -30,11 +30,9 @@ export GATE_GH
 source "${GATE_GH%/*}/stub-personify.sh"
 export CLAUDE_CONFIG_DIR="${TMP}/stub-claude"
 _stub_personify "${CLAUDE_CONFIG_DIR}" "${TMP}/personify"
-# stage routes by destination. These cases predate routing and assume every
-# stage needs a check record, so pin the rules to that; the routing itself is
-# covered by test-gate-review-route.sh.
+# Every destination is review here; routing is test-gate-review-route.sh's job.
 export GATE_RULES_FILE="${TMP}/rules.conf"
-printf '* pangram\n' >"${GATE_RULES_FILE}"
+printf '* review\n' >"${GATE_RULES_FILE}"
 export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-/Users/andrewrich/Developer/dotfiles/bash/gh-wrapper.sh}"
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
 # The buffer the _split_batch cases hand it directly. Any path works: the
@@ -283,190 +281,144 @@ else
   _ok "emptying an item revokes its earlier approval"
 fi
 
-# --- check records: stage requires one, open shows it -----------------------
+# --- no check record needed; personify is found by length_check.py ----------
 
+# Pangram left the gate (2026-10-22): a gated stage needs no check record.
 export XDG_CONFIG_HOME="${TMP}/xdg"
-CHECKS="${XDG_CONFIG_HOME}/personify/checks"
-mkdir -p "${CHECKS}"
-
-_seed_record() {
-  local file="$1" json="$2" sha
-  sha="$(sha256sum "${file}" | cut -d' ' -f1)"
-  printf '%s\n' "${json}" >"${CHECKS}/${sha}.json"
-}
-
 UNCHECKED="${TMP}/unchecked.txt"
 printf 'fix(x): nobody ran the check on this\n' >"${UNCHECKED}"
 rm -f "${PENDING:?}"/*
-if (_cmd_stage --kind commit unchecked "${UNCHECKED}") >/dev/null 2>&1; then
-  _no "stage refuses a file with no check record"
+STAGE_HERE="${TMP}/stage-here"
+mkdir -p "${STAGE_HERE}"
+got="$( (cd "${STAGE_HERE}" && _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null)"
+rc=$?
+if ((rc == 0)) && cmp -s "${UNCHECKED}" "${PENDING_ROOT}/batch/unchecked" && [[ "${got}" != *Pangram* ]]; then
+  _ok "stage accepts a review-routed file with no check record"
 else
-  _ok "stage refuses a file with no check record"
+  _no "stage accepts a review-routed file with no check record (rc=${rc}): ${got}"
 fi
-if [[ ! -e "${PENDING}/unchecked" ]] && ! compgen -G "${PENDING_ROOT}/*/unchecked" >/dev/null; then
+if [[ ! -e "${PENDING_ROOT}/unchecked" ]]; then
+  _ok "stage writes under the caller's key, not flat in pending/"
+else
+  _no "stage writes under the caller's key, not flat in pending/"
+fi
+if [[ ! -e "${XDG_CONFIG_HOME}/personify/checks" ]]; then
+  _ok "stage writes no check record"
+else
+  _no "stage writes no check record"
+fi
+rm -rf "${PENDING_ROOT:?}/batch" "${APPROVED_ROOT:?}/batch"
+
+# _personify_path names the INSTALLED personify, never an older cached one.
+# Marker: length_check.py; pangram_check.py alone is no install.
+PLUGINS="${TMP}/claude/plugins"
+LC="${TMP}/personify/scripts/length_check.py"
+mkdir -p "${PLUGINS}/cache/personify/2.0.1/scripts" "${PLUGINS}/cache/personify/2.0.3/scripts"
+cp "${LC}" "${PLUGINS}/cache/personify/2.0.1/scripts/"
+cp "${LC}" "${PLUGINS}/cache/personify/2.0.3/scripts/"
+printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
+  "${PLUGINS}/cache/personify/2.0.3" >"${PLUGINS}/installed_plugins.json"
+got="$(CLAUDE_CONFIG_DIR="${TMP}/claude" _personify_path 2>&1)"
+if [[ "${got}" == "${PLUGINS}/cache/personify/2.0.3" ]]; then
+  _ok "personify-path names the installed version"
+else
+  _no "personify-path names the installed version: ${got}"
+fi
+
+# An install with pangram_check.py but no length_check.py is not one.
+mkdir -p "${PLUGINS}/cache/personify/3.0.0/scripts"
+touch "${PLUGINS}/cache/personify/3.0.0/scripts/pangram_check.py"
+printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
+  "${PLUGINS}/cache/personify/3.0.0" >"${PLUGINS}/installed_plugins.json"
+got="$(CLAUDE_CONFIG_DIR="${TMP}/claude" _personify_path 2>&1)"
+if [[ "${got}" == *"personify is not installed"* && "${got}" == *"length_check.py"* ]]; then
+  _ok "personify-path keys on length_check.py, not pangram_check.py"
+else
+  _no "personify-path keys on length_check.py, not pangram_check.py: ${got}"
+fi
+# ... and one with length_check.py but no pangram_check.py is.
+printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
+  "${PLUGINS}/cache/personify/2.0.1" >"${PLUGINS}/installed_plugins.json"
+got="$(CLAUDE_CONFIG_DIR="${TMP}/claude" _personify_path 2>&1)"
+if [[ "${got}" == "${PLUGINS}/cache/personify/2.0.1" ]]; then
+  _ok "personify-path needs no pangram_check.py"
+else
+  _no "personify-path needs no pangram_check.py: ${got}"
+fi
+
+# No personify entry: say so. A gated stage then refuses as a checker error.
+printf '{"plugins":{}}\n' >"${PLUGINS}/installed_plugins.json"
+got="$( (cd "${STAGE_HERE}" && CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+if [[ "${got}" == *"length checker error"* && "${got}" == *"personify is not installed"* ]]; then
+  _ok "stage refuses when personify is not installed"
+else
+  _no "stage refuses when personify is not installed: ${got}"
+fi
+if ! compgen -G "${PENDING_ROOT}/*/unchecked" >/dev/null; then
   _ok "a refused stage leaves nothing pending"
 else
   _no "a refused stage leaves nothing pending"
 fi
 
-# The refusal names the INSTALLED personify, not a placeholder. The cache keeps
-# old versions beside it, and on 2026-09-24 a guessed 2.0.1 (no Keychain
-# lookup) reported a missing key that the installed 2.0.3 found.
-PLUGINS="${TMP}/claude/plugins"
-mkdir -p "${PLUGINS}/cache/personify/2.0.1/scripts" "${PLUGINS}/cache/personify/2.0.3/scripts"
-touch "${PLUGINS}/cache/personify/2.0.1/scripts/pangram_check.py" \
-  "${PLUGINS}/cache/personify/2.0.3/scripts/pangram_check.py"
-cp "${TMP}/personify/scripts/length_check.py" "${PLUGINS}/cache/personify/2.0.3/scripts/"
-printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
-  "${PLUGINS}/cache/personify/2.0.3" >"${PLUGINS}/installed_plugins.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
-if [[ "${got}" == *"python3 ${PLUGINS}/cache/personify/2.0.3/scripts/pangram_check.py --kind commit --dir "*" < ${UNCHECKED}"* ]]; then
-  _ok "refusal names the installed pangram_check.py"
-else
-  _no "refusal names the installed pangram_check.py: ${got}"
-fi
-if [[ "${got}" != *"2.0.1"* && "${got}" != *"<personify skill dir>"* ]]; then
-  _ok "refusal names no other version and no placeholder"
-else
-  _no "refusal names no other version and no placeholder: ${got}"
-fi
-
-# No personify entry: say so, rather than print a command that cannot run.
-printf '{"plugins":{}}\n' >"${PLUGINS}/installed_plugins.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
-if [[ "${got}" == *"personify is not installed"* && "${got}" != *"python3 "* ]]; then
-  _ok "refusal says personify is not installed when it is not"
-else
-  _no "refusal says personify is not installed when it is not: ${got}"
-fi
-
 # An entry whose directory is gone counts as not installed too.
 printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
   "${PLUGINS}/cache/personify/9.9.9" >"${PLUGINS}/installed_plugins.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
+got="$(CLAUDE_CONFIG_DIR="${TMP}/claude" _personify_path 2>&1)"
 if [[ "${got}" == *"personify is not installed"* ]]; then
-  _ok "refusal says not installed when installPath is missing"
+  _ok "personify-path says not installed when installPath is missing"
 else
-  _no "refusal says not installed when installPath is missing: ${got}"
+  _no "personify-path says not installed when installPath is missing: ${got}"
 fi
 
-# No local install, but personify synced from claude.ai: the refusal names the
-# synced copy. The manifest, not a glob, picks the directory: a re-upload
-# leaves the old one beside it (pr-review and pr-review~g2 both existed on
-# 2026-09-29) and only `generation` says which one Claude Code loads.
+# No local install: the synced copy, picked by the manifest's `generation`
+# (a re-upload leaves the old directory beside it).
 SYNCED="${PLUGINS}/synced/bucket-a"
 mkdir -p "${SYNCED}/personify/scripts" "${SYNCED}/personify~g2/scripts"
-touch "${SYNCED}/personify/scripts/pangram_check.py" \
-  "${SYNCED}/personify~g2/scripts/pangram_check.py"
-cp "${TMP}/personify/scripts/length_check.py" "${SYNCED}/personify/scripts/"
-cp "${TMP}/personify/scripts/length_check.py" "${SYNCED}/personify~g2/scripts/"
+cp "${LC}" "${SYNCED}/personify/scripts/"
+cp "${LC}" "${SYNCED}/personify~g2/scripts/"
 printf '{"plugins":{}}\n' >"${PLUGINS}/installed_plugins.json"
 printf '{"plugins":[{"name":"personify"}]}\n' >"${SYNCED}/manifest.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
-if [[ "${got}" == *"python3 ${SYNCED}/personify/scripts/pangram_check.py --kind commit --dir "*" < ${UNCHECKED}"* ]]; then
-  _ok "refusal names the synced pangram_check.py when nothing is installed locally"
+got="$(CLAUDE_CONFIG_DIR="${TMP}/claude" _personify_path 2>&1)"
+if [[ "${got}" == "${SYNCED}/personify" ]]; then
+  _ok "personify-path names the synced copy when nothing is installed locally"
 else
-  _no "refusal names the synced pangram_check.py when nothing is installed locally: ${got}"
+  _no "personify-path names the synced copy when nothing is installed locally: ${got}"
 fi
 
 printf '{"plugins":[{"name":"personify","generation":2}]}\n' >"${SYNCED}/manifest.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
-if [[ "${got}" == *"python3 ${SYNCED}/personify~g2/scripts/pangram_check.py --kind commit --dir "*" < ${UNCHECKED}"* ]]; then
-  _ok "refusal names the synced generation the manifest lists"
+got="$(CLAUDE_CONFIG_DIR="${TMP}/claude" _personify_path 2>&1)"
+if [[ "${got}" == "${SYNCED}/personify~g2" ]]; then
+  _ok "personify-path names the synced generation the manifest lists"
 else
-  _no "refusal names the synced generation the manifest lists: ${got}"
+  _no "personify-path names the synced generation the manifest lists: ${got}"
 fi
 
 # Both present: the local install wins, because Claude Code loads it and skips
 # the synced copy ("... on this machine has the same name and takes
-# precedence"). The hint must name the copy that actually loads.
+# precedence").
 printf '{"plugins":{"personify@personify":[{"installPath":"%s"}]}}\n' \
   "${PLUGINS}/cache/personify/2.0.3" >"${PLUGINS}/installed_plugins.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
-if [[ "${got}" == *"python3 ${PLUGINS}/cache/personify/2.0.3/scripts/pangram_check.py"* &&
-  "${got}" != *"synced"* ]]; then
-  _ok "refusal prefers the local install over the synced copy"
+got="$(CLAUDE_CONFIG_DIR="${TMP}/claude" _personify_path 2>&1)"
+if [[ "${got}" == "${PLUGINS}/cache/personify/2.0.3" ]]; then
+  _ok "personify-path prefers the local install over the synced copy"
 else
-  _no "refusal prefers the local install over the synced copy: ${got}"
+  _no "personify-path prefers the local install over the synced copy: ${got}"
 fi
 
 # A manifest entry whose directory is gone is not a fallback.
 printf '{"plugins":{}}\n' >"${PLUGINS}/installed_plugins.json"
 printf '{"plugins":[{"name":"personify","generation":7}]}\n' >"${SYNCED}/manifest.json"
-got="$( (CLAUDE_CONFIG_DIR="${TMP}/claude" _cmd_stage --kind commit unchecked "${UNCHECKED}") 2>&1 >/dev/null || true)"
-if [[ "${got}" == *"personify is not installed"* && "${got}" != *"python3 "* ]]; then
-  _ok "refusal says not installed when the synced directory is missing"
+got="$(CLAUDE_CONFIG_DIR="${TMP}/claude" _personify_path 2>&1)"
+if [[ "${got}" == *"personify is not installed"* ]]; then
+  _ok "personify-path says not installed when the synced directory is missing"
 else
-  _no "refusal says not installed when the synced directory is missing: ${got}"
+  _no "personify-path says not installed when the synced directory is missing: ${got}"
 fi
 rm -rf "${PLUGINS}/synced"
 
-CHECKED="${TMP}/checked.txt"
-printf 'fix(x): trailing whitespace is part of the key   \n\n' >"${CHECKED}"
-_seed_record "${CHECKED}" '{"status":"FAIL","verdict":"AI","fraction_ai":0.97,"word_count":212}'
-# stage keys by the caller's repo and branch, so run it from a fixed place
-# rather than wherever this test was started. Outside any repo the key is
-# `batch`.
-STAGE_HERE="${TMP}/stage-here"
-mkdir -p "${STAGE_HERE}"
-if (cd "${STAGE_HERE}" && _cmd_stage --kind commit checked "${CHECKED}") >/dev/null 2>&1 &&
-  cmp -s "${CHECKED}" "${PENDING_ROOT}/batch/checked"; then
-  _ok "stage accepts a FAIL record keyed by the raw bytes"
-else
-  _no "stage accepts a FAIL record keyed by the raw bytes"
-fi
-if [[ ! -e "${PENDING_ROOT}/checked" ]]; then
-  _ok "stage writes under the caller's key, not flat in pending/"
-else
-  _no "stage writes under the caller's key, not flat in pending/"
-fi
-rm -rf "${PENDING_ROOT:?}/batch" "${APPROVED_ROOT:?}/batch"
-
-got="$(_verdict_line checked "${CHECKED}")"
-if [[ "${got}" == "# checked: FAIL (AI, fraction_ai 0.97, 212 words)" ]]; then
-  _ok "verdict line for a classified record"
-else
-  _no "verdict line for a classified record: ${got}"
-fi
-
-SHORT="${TMP}/short.txt"
-printf 'fix(x): short\n' >"${SHORT}"
-_seed_record "${SHORT}" '{"status":"SKIPPED","verdict":null,"fraction_ai":null,"word_count":2}'
-got="$(_verdict_line short "${SHORT}")"
-if [[ "${got}" == "# short: SKIPPED (2 words, under the floor)" ]]; then
-  _ok "verdict line for a skipped record"
-else
-  _no "verdict line for a skipped record: ${got}"
-fi
-
-got="$(_verdict_line unchecked "${UNCHECKED}")"
-if [[ "${got}" == "# unchecked: NO RECORD" ]]; then
-  _ok "verdict line when the record is gone"
-else
-  _no "verdict line when the record is gone"
-fi
-
-BROKEN="${TMP}/broken.txt"
-printf 'fix(x): record is not json\n' >"${BROKEN}"
-_seed_record "${BROKEN}" 'not json {'
-got="$(_verdict_line broken "${BROKEN}")"
-if [[ "${got}" == "# broken: UNREADABLE RECORD" ]]; then
-  _ok "verdict line for a malformed record"
-else
-  _no "verdict line for a malformed record"
-fi
-
-# An empty XDG_CONFIG_HOME falls back to ~/.config, as pangram_check.py does.
-got="$(XDG_CONFIG_HOME='' _checks_dir)"
-if [[ "${got}" == "${HOME}/.config/personify/checks" ]]; then
-  _ok "empty XDG_CONFIG_HOME falls back to ~/.config"
-else
-  _no "empty XDG_CONFIG_HOME falls back to ~/.config"
-fi
-
-# Verdict lines sit in the framing header and must not reach approved bytes.
+# Comment lines in the framing header must not reach approved bytes.
 V="${TMP}/v.txt"
-printf 'fix(v): body under a verdict header\n' >"${V}"
+printf 'fix(v): body under a commented header\n' >"${V}"
 rm -f "${APPROVED:?}"/*
 {
   echo "# STATUS: APPROVED"
@@ -479,9 +431,9 @@ rm -f "${APPROVED:?}"/*
 } >"${BUF}"
 _split_batch "${BUF}" vh >/dev/null 2>&1
 if _cmd_check "${V}"; then
-  _ok "verdict header lines leave approved bytes unchanged"
+  _ok "header comment lines leave approved bytes unchanged"
 else
-  _no "verdict header lines leave approved bytes unchanged"
+  _no "header comment lines leave approved bytes unchanged"
 fi
 
 # --- approvals expire after APPROVAL_TTL -------------------------------------
@@ -555,7 +507,6 @@ rm -f "${APPROVED:?}"/* "${PENDING:?}"/*
 printf 'stale\n' >"${APPROVED}/stale"
 _age_minutes "${APPROVED}/stale" 31
 printf 'fresh\n' >"${APPROVED}/fresh"
-_seed_record "${TTL_BODY}" '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":4}'
 # One more pair under another key: the sweep covers every key, not only the
 # caller's.
 mkdir -p "${APPROVED_ROOT}/other-main"
@@ -1088,7 +1039,6 @@ _stage_in() {
   local dir="$1" name="$2" text="$3" f
   f="${TMP}/stage-${name}-${dir##*/}.txt"
   printf '%s\n' "${text}" >"${f}"
-  _seed_record "${f}" '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":6}'
   (cd "${dir}" && bash "${GATE}" stage --kind commit "${name}" "${f}") >/dev/null 2>&1
 }
 
@@ -1366,7 +1316,6 @@ TOMORROW="$(date -v+1d +%F 2>/dev/null || date -d '1 day' +%F)"
 printf '%s\n' "${TOMORROW}" >"${SUSP}"
 NOTICE="[personify-gate] SUSPENDED until ${TOMORROW} (${SUSP})"
 printf 'fix(a): staged while suspended\n' >"${TMP}/susp.txt"
-_seed_record "${TMP}/susp.txt" '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":4}'
 rc642=0
 (cd "${TMP}/repos/alpha" && bash "${GATE}" stage --kind commit susp "${TMP}/susp.txt") \
   >"${TMP}/stage642.out" 2>"${TMP}/stage642.err" || rc642=$?

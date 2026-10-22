@@ -34,7 +34,7 @@ mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved/k1"
 export GATE_RULES_FILE="${TMP}/rules.conf"
 cat >"${GATE_RULES_FILE}" <<'RULES'
 owner=smartwatermelon exempt
-* visual
+* review
 RULES
 
 pass=0

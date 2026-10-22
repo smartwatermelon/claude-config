@@ -348,39 +348,38 @@ _eqr "pending: bad mode is a usage error (2)" 2 _pend both -- .
 
 echo "--- gate-review.sh copy kind ---"
 printf 'Some copy text.\n' >"${TMP}/extract.txt"
-_eqo "route --kind copy ignores gate-rules (exempt repo)" "pangram" \
+_eqo "route --kind copy ignores gate-rules (exempt repo)" "review" \
   _first "${GATE}" route --kind copy --dir "${REPO}"
-_eqo "route --kind copy with no destination is still pangram" "pangram" \
+_eqo "route --kind copy with no destination is still review" "review" \
   _first "${GATE}" route --kind copy
 # The whole line, not just the first field: personify's route-command client
-# reads it, and calls Pangram only when field 1 is pangram.
-_eqo "route --kind copy prints the full copy route line" $'pangram\tcopy\tpublic-facing copy (copy-paths.conf)' \
+# reads it, and calls Pangram only when field 1 is pangram, which copy never is.
+_eqo "route --kind copy prints the full copy route line" $'review\tcopy\tpublic-facing copy (copy-paths.conf)' \
   "${GATE}" route --kind copy
-_eqo "route --kind copy --repo prints the copy route too" $'pangram\tcopy\tpublic-facing copy (copy-paths.conf)' \
+_eqo "route --kind copy --repo prints the copy route too" $'review\tcopy\tpublic-facing copy (copy-paths.conf)' \
   "${GATE}" route --kind copy --repo o/site
 _eqo "route --kind commit in the same repo is exempt (control)" $'gate-route: author unresolved\nexempt' \
   _first "${GATE}" route --kind commit --dir "${REPO}"
 err="$("${GATE}" check "${TMP}/extract.txt" --kind copy --dir "${REPO}" 2>&1)"
 _eq "check --kind copy in an exempt repo: not approved (1)" 1 "$?"
-_has "  ... says no Pangram check ran" "no Pangram check ran" "${err}"
+_has "  ... says no approval matches" "rule copy (review): no visual approval matches" "${err}"
+_hasnt "  ... and says nothing of Pangram" "Pangram" "${err}"
 err="$(cd "${REPO}" && "${GATE}" stage --kind copy c1 "${TMP}/extract.txt" 2>&1)"
-_eq "stage --kind copy without a record: refused" 1 "$?"
-_has "  ... asks for the Pangram check" "no Pangram check record" "${err}"
-_has "  ... and its hint carries --kind copy, the copy destination" \
-  "pangram_check.py --kind copy < ${TMP}/extract.txt" "${err}"
-_hasnt "  ... and no --dir: copy is routed by kind alone" "--dir" "${err}"
-hint="$("${GATE}" hint "${TMP}/extract.txt" --kind pr --repo o/site 2>&1)" || hint="hint failed: ${hint}"
-_has "hint passes --repo through" "pangram_check.py --kind pr --repo o/site < ${TMP}/extract.txt" "${hint}"
-sha="$(_sha "${TMP}/extract.txt")"
-printf '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":3}\n' \
-  >"${XDG_CONFIG_HOME}/personify/checks/${sha}.json"
-err="$(cd "${REPO}" && "${GATE}" stage --kind copy c1 "${TMP}/extract.txt" 2>&1)"
-_eq "stage --kind copy with a record: staged, no length check" 0 "$?"
+_eq "stage --kind copy with no record: staged, no length check" 0 "$?"
 _hasnt "  ... never measured" "over by" "${err}"
+_hasnt "  ... and asks for no Pangram check" "Pangram" "${err}"
+_eqr "hint is gone with the Pangram check" 1 "${GATE}" hint "${TMP}/extract.txt"
+"${GATE}" check "${TMP}/extract.txt" --kind copy --dir "${REPO}" >/dev/null 2>&1
+_eq "staged but unapproved: check refuses" 1 "$?"
 mkdir -p "${GATE_REVIEW_DIR}/approved/k1"
 cp "${TMP}/extract.txt" "${GATE_REVIEW_DIR}/approved/k1/c1"
 "${GATE}" check "${TMP}/extract.txt" --kind copy --dir "${REPO}" >/dev/null 2>&1
-_eq "approved bytes plus a record: check passes" 0 "$?"
+_eq "approved bytes, no record: check passes" 0 "$?"
+if [[ -z "$(ls -A "${XDG_CONFIG_HOME}/personify/checks" 2>/dev/null)" ]]; then
+  _eq "no check record was written" 0 0
+else
+  _eq "no check record was written" 0 1
+fi
 
 echo ""
 echo "${pass} passed, ${fail} failed"

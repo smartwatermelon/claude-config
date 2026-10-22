@@ -39,10 +39,10 @@ export GATE_GH
 export COPY_PATHS_FILE="${GATE_GH%/*}/copy-paths-none.conf"
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
 # The hook now routes by destination and a missing rules file blocks. This suite
-# tests the matcher, not the routing, so every destination is one visual rule
+# tests the matcher, not the routing, so every destination is one review rule
 # (routing has its own suite: test-hook-personify-route.sh).
 export GATE_RULES_FILE="${TMP}/gate-rules.conf"
-printf '* visual\n' >"${GATE_RULES_FILE}"
+printf '* review\n' >"${GATE_RULES_FILE}"
 # _stub_personify: a length_check.py that passes everything.
 # shellcheck source=/dev/null
 source "${GATE_GH%/*}/stub-personify.sh"
@@ -702,7 +702,7 @@ _case "${DIRWRITE}" "prose containing 'vuln' near the dir" \
 _case "${DIRWRITE}" "a real rm after && is still blocked" \
   "$(_b64 "echo done \&\& rm ${HOME}/.claude/gate-review/approved/commit-1")" 2
 
-# gate-rules.conf decides which destinations skip the Pangram check, so an
+# gate-rules.conf decides which destinations skip review, so an
 # agent that can rewrite it can exempt itself. It is a FILE, not a directory,
 # so it has its own alternative in the pattern.
 _bcase "${DIRWRITE}" "cp over the deployed rules file" \
@@ -714,7 +714,7 @@ _bcase "${DIRWRITE}" "append to the deployed rules file (home spelled out)" \
 _bcase "${DIRWRITE}" "tee the deployed rules file" \
   'echo x | tee ~/.claude/gate-rules.conf' 2
 _bcase "${DIRWRITE}" "sed -i the deployed rules file" \
-  "sed -i '' s/visual/exempt/ ~/.claude/gate-rules.conf" 2
+  "sed -i '' s/review/exempt/ ~/.claude/gate-rules.conf" 2
 _bcase "${DIRWRITE}" "mv over the deployed rules file" \
   'mv /tmp/x ~/.claude/gate-rules.conf' 2
 _bcase "${DIRWRITE}" "rm the deployed rules file" \

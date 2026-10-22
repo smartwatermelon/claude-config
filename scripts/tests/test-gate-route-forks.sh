@@ -98,13 +98,13 @@ _case "twistedmelonman fork: exempt" 0 "" "${TMP}/tmfork" "git commit -F ${TXT}"
 
 # --- private repos (dev-env#206) ----------------------------------------------
 _case "private NOS repo: exempt" 0 "" "${TMP}/kebab" "git commit -F ${TXT}"
-_case "private beacon repo: gated (pangram)" 2 "no Pangram check ran" "${TMP}/bbsecret" "git commit -F ${TXT}"
+_case "private beacon repo: gated (review)" 2 "no visual approval" "${TMP}/bbsecret" "git commit -F ${TXT}"
 _case "private NOS repo, lookup fails: exempt" 0 "" "${TMP}/nosbroken" "git commit -F ${TXT}"
 _case "private NOS checkout, no -R: exempt" 0 "" "${TMP}/kebab" \
   "gh pr create --title t --body-file ${TXT}"
 _case "-R private NOS repo from a smartwatermelon checkout: exempt" 0 "" "${TMP}/swm" \
   "gh pr create -R nightowlstudiollc/kebab-tax --title t --body-file ${TXT}"
-_case "private third-party fork: commit gated (visual)" 2 "no visual approval" "${TMP}/privfork" "git commit -F ${TXT}"
+_case "private third-party fork: commit gated (review)" 2 "no visual approval" "${TMP}/privfork" "git commit -F ${TXT}"
 _case "private third-party fork checkout, no -R: gated (may post to the parent)" 2 "no visual approval" \
   "${TMP}/privfork" "gh pr create --title t --body-file ${TXT}"
 

@@ -126,26 +126,15 @@ _hash() {
   printf '%s' "$(sed -e 's/[[:space:]]*$//' "$1")" | sha256sum | cut -d' ' -f1
 }
 
-# Where personify's pangram_check.py records every result. Mirrors its
-# config_root: an empty XDG_CONFIG_HOME falls through to ~/.config. Computed
-# per call, not at load, so a test can point it at a fixture dir.
-_checks_dir() {
-  printf '%s/personify/checks' "${XDG_CONFIG_HOME:-${HOME}/.config}"
-}
-
-# The record key is the sha256 of the RAW bytes, which is what the check hashed
-# from stdin. Not _hash: stripping trailing whitespace here would miss every
-# record for a file that ends in a blank line.
-_raw_sha() {
-  sha256sum "$1" | cut -d' ' -f1
-}
-
 # The directory of the personify
 # version Claude Code has installed. The plugin cache keeps every past version
 # side by side, and a guessed one can predate a feature the check now needs:
 # 2.0.1 has no Keychain lookup, so on 2026-09-24 it reported "no Pangram API
 # key found" on a machine whose key was in the Keychain. Computed per call so a
 # test can point CLAUDE_CONFIG_DIR at a fixture.
+#
+# Marker: length_check.py, the file the gate runs. pangram_check.py may go now
+# that Pangram left the gate (2026-10-22).
 #
 # A local install wins over a copy synced from claude.ai, because that is the
 # one Claude Code loads when both exist. Without a local install, the synced
@@ -158,14 +147,14 @@ _personify_path() {
   plugins="${root}/installed_plugins.json"
   install_path="$(jq -er '.plugins["personify@personify"][0].installPath // empty' \
     "${plugins}" 2>/dev/null)" || install_path=""
-  if [[ -z "${install_path}" || ! -f "${install_path}/scripts/pangram_check.py" ]]; then
+  if [[ -z "${install_path}" || ! -f "${install_path}/scripts/length_check.py" ]]; then
     install_path=""
     for manifest in "${root}"/synced/*/manifest.json; do
       [[ -f "${manifest}" ]] || continue
       dir="$(jq -er '.plugins[] | select(.name == "personify")
           | if .generation then "personify~g\(.generation)" else "personify" end' \
         "${manifest}" 2>/dev/null | head -1)" || continue
-      if [[ -n "${dir}" && -f "${manifest%/*}/${dir}/scripts/pangram_check.py" ]]; then
+      if [[ -n "${dir}" && -f "${manifest%/*}/${dir}/scripts/length_check.py" ]]; then
         install_path="${manifest%/*}/${dir}"
         break
       fi
@@ -175,29 +164,15 @@ _personify_path() {
     printf '%s\n' "${install_path}"
     return 0
   fi
-  printf 'personify is not installed (no personify@personify with scripts/pangram_check.py in %s, and no synced copy under %s/synced); sync it from claude.ai, or install it with: claude plugin install personify@personify\n' \
+  printf 'personify is not installed (no personify@personify with scripts/length_check.py in %s, and no synced copy under %s/synced); sync it from claude.ai, or install it with: claude plugin install personify@personify\n' \
     "${plugins}" "${root}" >&2
   return 1
 }
 
-# _check_hint <file> [--kind K] [--repo R] [--dir D]: the check command, with the destination flags pangram_check.py routes by.
-_check_hint() {
-  local file="$1" install_path flags="" arg
-  shift
-  for arg in "$@"; do
-    flags+=" $(printf '%q' "${arg}")"
-  done
-  if install_path="$(_personify_path 2>&1)"; then
-    printf 'python3 %s/scripts/pangram_check.py%s < %s\n' "${install_path}" "${flags}" "${file}"
-  else
-    printf '%s\n' "${install_path}"
-  fi
-}
-
 LENGTH_KINDS="commit pr issue line-comment pr-comment code-comment docstring copy"
 
-# copy: file text from gate-copy.py. No length cap, never routed: always Pangram plus approval (dev-env#206).
-COPY_ROUTE=$'pangram\tcopy\tpublic-facing copy (copy-paths.conf)'
+# copy: file text from gate-copy.py. No length cap, never routed: always review (dev-env#206).
+COPY_ROUTE=$'review\tcopy\tpublic-facing copy (copy-paths.conf)'
 
 # One whole word of LENGTH_KINDS. A padded substring match let "pr issue"
 # through, and the checker then failed it as a checker error.
@@ -348,53 +323,15 @@ _cmd_measure() {
   esac
 }
 
-_record_path() {
-  local dir sha
-  dir="$(_checks_dir)"
-  sha="$(_raw_sha "$1")"
-  printf '%s/%s.json' "${dir}" "${sha}"
-}
-
-# One header line per item. Never fails: a missing or unreadable record is
-# shown, not fatal. A record always wins. With none, a `visual` route sidecar
-# (written by stage) turns "no record" into the banner, so the reviewer sees
-# why this item skipped the check. The line starts with `#`, so it is never
-# approved and never enters the hash.
-_verdict_line() {
-  local name="$1" file="$2" record line route outcome rule reason
-  record="$(_record_path "${file}")"
-  if [[ ! -f "${record}" ]]; then
-    route="${file%/*}/.route/${name}"
-    if [[ -f "${route}" ]]; then
-      IFS=$'\t' read -r outcome rule reason <"${route}" || true
-      if [[ "${outcome}" == "visual" ]]; then
-        printf '# %s: NOT PANGRAM REVIEWED (rule %s: %s)\n' "${name}" "${rule}" "${reason}"
-        return 0
-      fi
-    fi
-    printf '# %s: NO RECORD\n' "${name}"
-    return 0
-  fi
-  if line="$(jq -er --arg n "${name}" '
-      if .status == "SKIPPED"
-      then "# \($n): SKIPPED (\(.word_count) words, under the floor)"
-      else "# \($n): \(.status) (\(.verdict), fraction_ai \(.fraction_ai), \(.word_count) words)"
-      end' "${record}" 2>/dev/null)"; then
-    printf '%s\n' "${line}"
-  else
-    printf '# %s: UNREADABLE RECORD\n' "${name}"
-  fi
-}
-
 # Delete a pending item and its route sidecar together, so a re-staged item
-# never shows a stale banner.
+# never keeps a stale route.
 _remove_pending() {
   local dir="$1" name="$2"
   rm -f "${dir:?}/${name}" "${dir:?}/.route/${name}"
 }
 
 _cmd_stage() {
-  local name="" file="" kind="" record route outcome rule reason here line
+  local name="" file="" kind="" route outcome rule reason here line
   while (($# > 0)); do
     case "$1" in
       --kind)
@@ -428,7 +365,7 @@ _cmd_stage() {
   here="$(pwd)"
   route="$(_route_line "" "${here}" "${kind}")" || _die "gate-route failed; nothing staged"
   IFS=$'\t' read -r outcome rule reason <<<"${route}"
-  # Before the record check, so over-cap text never costs a Pangram call.
+  # Over-cap text is refused here, before anyone is asked to review it.
   if [[ "${outcome}" != "exempt" ]]; then
     _length_check "${kind}" "${file}" || case $? in
       1)
@@ -439,27 +376,6 @@ _cmd_stage() {
         ;;
       *) _die "length checker error, not a verdict on the text: ${LENGTH_OUT}. Nothing staged." ;;
     esac
-  fi
-  # The reviewer should see what Pangram said before approving, so a text the
-  # check never saw is not staged when the destination is Pangram-gated. Any
-  # result counts, FAIL and SKIPPED included: this proves the check ran, it
-  # does not require a pass.
-  # _record_path (defined above, near _verdict_line) keys on the raw bytes.
-  record="$(_record_path "${file}")"
-  if [[ "${outcome}" == "pangram" && ! -f "${record}" ]]; then
-    local hint
-    if [[ "${kind}" == "copy" ]]; then
-      hint="$(_check_hint "${file}" --kind copy)"
-    else
-      hint="$(_check_hint "${file}" --kind "${kind}" --dir "${here}")"
-    fi
-    {
-      echo "gate-review: no Pangram check record for ${file}."
-      echo "gate-review: run the personify check on this exact file, then stage again:"
-      echo "gate-review:   ${hint}"
-      echo "gate-review: PASS, FAIL, and SKIPPED all leave a record; an error does not."
-    } >&2
-    exit 1
   fi
   _use_key
   mkdir -p "${PENDING}/.route"
@@ -716,11 +632,6 @@ _cmd_open() {
     echo "# STATUS: PENDING"
     echo "#"
     echo "# REVIEW THESE ${count} ITEM(S), EDIT FREELY."
-    echo "#"
-    echo "# PANGRAM (proof the check ran; the verdict is information):"
-    for f in "${PENDING}"/*; do
-      _verdict_line "${f##*/}" "${f}"
-    done
     echo "#"
     echo "# TO APPROVE: change PENDING above to APPROVED, then save."
     echo "# TO ABORT:   change PENDING above to ABORT, then save. Your text"
@@ -1134,7 +1045,7 @@ _route_line() {
   "${ROUTE_SCRIPT}" "${route_args[@]}"
 }
 
-# route [--kind K] [--repo R] [--dir D]: the route alone, no text (#698). No flag: visual / rule 3, as in check.
+# route [--kind K] [--repo R] [--dir D]: the route alone, no text (#698). No flag: review / rule 3, as in check.
 _cmd_route() {
   local repo="" dir="" flagged=0 kind=""
   while (($# > 0)); do
@@ -1161,7 +1072,7 @@ _cmd_route() {
     esac
   done
   if ((flagged == 0)) && [[ "${kind}" != "copy" ]]; then
-    printf 'visual\t3\tdestination unresolved\n'
+    printf 'review\t3\tdestination unresolved\n'
     return 0
   fi
   _route_line "${repo}" "${dir}" "${kind}" || return 1
@@ -1174,7 +1085,7 @@ _cmd_route() {
 # age instead: an approval expires APPROVAL_TTL (30 minutes) after it was
 # written, the same window merge-lock gives a lock.
 _cmd_check() {
-  local file="" repo="" dir="" kind="" flagged=0 want route outcome rule reason record line
+  local file="" repo="" dir="" kind="" flagged=0 want route outcome rule reason line
   while (($# > 0)); do
     case "$1" in
       --kind)
@@ -1206,16 +1117,11 @@ _cmd_check() {
   _prune_expired
   [[ -f "${file}" ]] || return 1
   # Route by destination. With neither flag the destination is unresolved:
-  # rule 3 (visual), no record needed, and no router call at all, so neither the
-  # caller's cwd nor the rules file can change what existing callers see.
-  # This path hardcodes visual / rule 3 and never reads the rules file, so a
-  # future edit that makes the catch-all `* pangram` will NOT reach callers
-  # that pass no destination (gh-wrapper.sh until it passes one). Change this
-  # when the wrapper does.
+  # rule 3 (review), no router call, so neither cwd nor rules can change it.
   if [[ "${kind}" == "copy" ]]; then
     IFS=$'\t' read -r outcome rule reason <<<"${COPY_ROUTE}"
   elif ((flagged == 0)); then
-    outcome="visual"
+    outcome="review"
     rule=3
   else
     # The router's own stderr passes through: a rules error names its file
@@ -1223,7 +1129,7 @@ _cmd_check() {
     route="$(_route_line "${repo}" "${dir}" "${kind}")" || return 1
     IFS=$'\t' read -r outcome rule reason <<<"${route}"
   fi
-  # exempt skips both the check and the visual review.
+  # exempt skips the review.
   [[ "${outcome}" == "exempt" ]] && return 0
   # Measured again as the kind the caller derived from the real command, not the kind it was staged as.
   if [[ -n "${kind}" ]]; then
@@ -1253,33 +1159,10 @@ _cmd_check() {
     break
   done
   if ((matched == 0)); then
-    if [[ "${outcome}" == "pangram" ]]; then
-      _check_fail_pangram "${file}" "${rule}"
-    else
-      echo "gate-review: rule ${rule} (${outcome}): no visual approval matches" >&2
-    fi
-    return 1
-  fi
-  # _record_path (defined above, near _verdict_line) keys on the raw bytes.
-  record="$(_record_path "${file}")"
-  if [[ "${outcome}" == "pangram" && ! -f "${record}" ]]; then
-    echo "gate-review: rule ${rule} (pangram): no Pangram check ran on these bytes" >&2
+    echo "gate-review: rule ${rule} (${outcome}): no visual approval matches" >&2
     return 1
   fi
   return 0
-}
-
-# Pangram-gated and unapproved: say whether a check ran, so an unchecked text
-# and a checked one that was never approved do not read the same.
-_check_fail_pangram() {
-  local file="$1" rule="$2" record verdict
-  record="$(_record_path "${file}")"
-  if [[ -f "${record}" ]]; then
-    verdict="$(jq -er '.verdict // .status' "${record}" 2>/dev/null || echo unknown)"
-    echo "gate-review: rule ${rule} (pangram): verdict ${verdict} recorded; no visual approval matches" >&2
-  else
-    echo "gate-review: rule ${rule} (pangram): no Pangram check ran on these bytes" >&2
-  fi
 }
 
 # A real calendar date, checked in bash rather than by date(1): BSD `date -j -f`
@@ -1333,12 +1216,9 @@ case "${1:-}" in
   open) _cmd_open ;;
   hash) shift; _hash "$1" ;;
   check) shift; _tmp_traps; _cmd_check "$@" ;;
-  # The command that writes a check record for <file>; the Bash-tool hook
-  # prints it when check blocks a Pangram-gated text for want of a record.
-  hint) shift; _check_hint "${1:?usage: gate-review.sh hint <file> [--kind K] [--repo R] [--dir D]}" "${@:2}" ;;
   measure) shift; _tmp_traps; _cmd_measure "$@" ;;
   route) shift; _cmd_route "$@" ;;
   personify-path) _personify_path ;;
   suspended) _cmd_suspended ;;
-  *) _die "usage: gate-review.sh {stage --kind <kind> <name> <file>|open|hash <file>|check [--kind <kind>] <file> [--repo owner/name] [--dir path]|measure --kind <kind> [--title T] [--repo owner/name] [--dir path] <body|route [--kind <kind>] [--repo owner/name] [--dir path]|hint <file> [--kind <kind>] [--repo owner/name] [--dir path]|personify-path|suspended}" ;;
+  *) _die "usage: gate-review.sh {stage --kind <kind> <name> <file>|open|hash <file>|check [--kind <kind>] <file> [--repo owner/name] [--dir path]|measure --kind <kind> [--title T] [--repo owner/name] [--dir path] <body|route [--kind <kind>] [--repo owner/name] [--dir path]|personify-path|suspended}" ;;
 esac

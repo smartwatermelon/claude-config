@@ -40,7 +40,7 @@ export GATE_GH
 export COPY_PATHS_FILE="${GATE_GH%/*}/copy-paths-none.conf"
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved/k1"
 export GATE_RULES_FILE="${TMP}/rules.conf"
-printf 'repo=acme/ex exempt\n* visual\n' >"${GATE_RULES_FILE}"
+printf 'repo=acme/ex exempt\n* review\n' >"${GATE_RULES_FILE}"
 
 PLUG="${TMP}/plug"
 mkdir -p "${PLUG}/scripts" "${CLAUDE_CONFIG_DIR}/plugins"

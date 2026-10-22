@@ -4,7 +4,7 @@
 # Rules file: ${GATE_RULES_FILE:-${HOME}/.claude/gate-rules.conf}
 # One rule per line: "<matcher> <outcome>". First match wins.
 #   matcher: repo=<owner/name> | author=<login> | owner=<login> | fork=<login> | private=<login> | *
-#   outcome: pangram | visual | exempt
+#   outcome: review | exempt. Any other outcome is a rules error (fail closed).
 
 # fork=<login>: owner=<login> and GitHub says fork. Unknown never matches, so keep only gated rules below it.
 
@@ -87,7 +87,7 @@ _load_rules_inner() {
         ;;
     esac
     case "${outcome}" in
-      pangram | visual | exempt) ;;
+      review | exempt) ;;
       *)
         echo "gate-route: ${file}:${lineno}: unknown outcome '${outcome}'" >&2
         return 4
@@ -326,12 +326,11 @@ main() {
   printf '%s\n' "${result}"
 }
 
-# _strength <outcome>: exempt 0, visual 1, pangram 2. Anything else is treated as the strictest.
+# _strength <outcome>: exempt 0, review 1. Anything else is treated as the strictest.
 _strength() {
   case "$1" in
     exempt) printf '0\n' ;;
-    visual) printf '1\n' ;;
-    *) printf '2\n' ;;
+    *) printf '1\n' ;;
   esac
 }
 
