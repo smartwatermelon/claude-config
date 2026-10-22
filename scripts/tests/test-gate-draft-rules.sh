@@ -123,6 +123,10 @@ _case "reviews path only in the body file name: still gated" 2 "no visual approv
 _case "quote-split event key: gated" 2 "no visual approval" "${REVIEW}" "gh api ${EP} -f 'ev'ent=APPROVE -F body=@${CLEAN}"
 _case "event from a variable: gated" 2 "no visual approval" "${REVIEW}" "gh api ${EP} -f \$E -F body=@${CLEAN}"
 _case "submit a pending review (events): blocked" 2 "GitHub UI" "${REVIEW}" "gh api ${EP}/77/events -f event=COMMENT"
+_case "submit, quoted review ID: blocked" 2 "GitHub UI" "${REVIEW}" "gh api ${EP}/'77'/events -f event=COMMENT"
+_case "submit, review ID from a variable: blocked" 2 "BLOCKED" "${REVIEW}" "gh api ${EP}/\${ID}/events -f event=COMMENT"
+_case "graphql, quote-split mutation name: blocked" 2 "GitHub UI" "${REVIEW}" \
+  "gh api graphql -f query='mutation { submitPull''RequestReview(input: {pullRequestReviewId: \"X\"}) { clientMutationId } }'"
 _case "submit a pending review, exempt route: passes" 0 "" "${EXEMPT}" \
   "gh api repos/twistedmelonman/y/pulls/3/reviews/77/events -f event=COMMENT"
 _case "graphql submitPullRequestReview: blocked" 2 "GitHub UI" "${REVIEW}" \

@@ -1252,7 +1252,10 @@ _api_pending_review() {
 
 # 0 if the endpoint submits a pending review (POST .../reviews/ID/events).
 _api_submits_review() {
-  _api_endpoints "$1" | grep -qE '/pulls/[0-9]+/reviews/[0-9]+/events/?([?]|$)'
+  local flat="${1//[\"\'\\]/}" gql="${_scan_flat//[\"\'\\]/}"
+  [[ "${flat}" == *graphql* && "${gql}" == *submitPullRequestReview* ]] && return 0
+  # Anywhere in the segment, any ID token ($ID, quoted): matching too much only blocks.
+  printf '%s\n' "${flat}" | grep -qE '/pulls/[^/[:space:]]+/reviews/[^/[:space:]]+/events'
 }
 
 # Endpoint words only, as in _gh_destination, so a body file path cannot pick the looser cap.
@@ -1632,9 +1635,9 @@ _gate_segment() {
     _deny "gh pr ready on a review route; Andrew clicks Ready for review in the GitHub UI" "PR ready for review"
   elif printf '%s\n' "${seg}" | grep -qE "${api_re}"; then
     # Submitting a pending review publishes its text; graphql has no route, so it never passes.
-    if _api_submits_review "${seg}" || [[ "${seg}" == *graphql* && "${_scan_flat}" == *submitPullRequestReview* ]]; then
+    if _api_submits_review "${seg}"; then
       _suspended && exit 0
-      if _api_submits_review "${seg}"; then
+      if [[ "${seg}" != *graphql* ]]; then
         _destination_for_segment "${seg}" api "review submission"
         _dest_exempt pr-comment && return 0
       fi
