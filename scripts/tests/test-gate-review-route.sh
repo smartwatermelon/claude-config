@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
-# gate-review.sh: stage routes by destination (gate-route.sh) and shows a banner.
+# gate-review.sh: stage and check route by destination (gate-route.sh).
 #
-# A `visual` destination stages without a Pangram record and the review buffer
-# says so; a `pangram` destination still refuses. The banner is a header line,
-# so it must never reach the approved bytes or the hash.
+# Every gated route is `review` (2026-10-22): no Pangram record, no Pangram line.
 
 set -uo pipefail
 unset CDPATH GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
@@ -25,7 +23,7 @@ export XDG_CONFIG_HOME="${TMP}/xdg"
 mkdir -p "${XDG_CONFIG_HOME}/personify/checks"
 export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-/Users/andrewrich/Developer/dotfiles/bash/gh-wrapper.sh}"
 export GATE_RULES_FILE="${TMP}/rules.conf"
-printf 'repo=acme/pang pangram\n* visual\n' >"${GATE_RULES_FILE}"
+printf 'repo=acme/pang review\n* review\n' >"${GATE_RULES_FILE}"
 export GATE_REVIEW_DIR="${TMP}/gate"
 # Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
 GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
@@ -79,20 +77,20 @@ _mkrepo "${PANG}" acme/pang
 TXT="${TMP}/text.txt"
 printf 'fix(x): a visual-only text\n' >"${TXT}"
 
-# visual: stages with no record
+# review: stages with no record
 if (cd "${VIS}" && _cmd_stage --kind commit vtext "${TXT}") >/dev/null 2>&1; then
-  _ok "visual destination stages with no record"
+  _ok "review destination stages with no record"
 else
-  _no "visual destination stages with no record"
+  _no "review destination stages with no record"
 fi
 VKEY="$(cd "${VIS}" && _batch_key)"
 VPEND="${PENDING_ROOT}/${VKEY}"
 if cmp -s "${TXT}" "${VPEND}/vtext"; then
-  _ok "visual item staged byte-identical"
+  _ok "review item staged byte-identical"
 else
-  _no "visual item staged byte-identical"
+  _no "review item staged byte-identical"
 fi
-want="$(printf 'visual\t2\tno rule matched, default')"
+want="$(printf 'review\t2\tno rule matched, default')"
 sidecar="$(cat "${VPEND}/.route/vtext" 2>/dev/null || true)"
 if [[ "${sidecar}" == "${want}" ]]; then
   _ok "stage writes the route sidecar"
@@ -100,35 +98,30 @@ else
   _no "stage writes the route sidecar: ${sidecar}"
 fi
 
-# pangram: still refuses with today's message
+# A repo's own review rule stages with no record; nothing is written to checks/.
 got="$( (cd "${PANG}" && _cmd_stage --kind commit ptext "${TXT}") 2>&1 >/dev/null)"
 rc=$?
-if ((rc != 0)) && [[ "${got}" == *"no Pangram check record for ${TXT}"* ]]; then
-  _ok "pangram destination without a record refuses"
-else
-  _no "pangram destination without a record refuses (rc=${rc}): ${got}"
-fi
 PKEY="$(cd "${PANG}" && _batch_key)"
-if [[ ! -e "${PENDING_ROOT}/${PKEY}/ptext" ]]; then
-  _ok "refused pangram stage leaves nothing pending"
+if ((rc == 0)) && [[ -f "${PENDING_ROOT}/${PKEY}/ptext" && "${got}" != *Pangram* ]]; then
+  _ok "repo review rule stages with no record and no Pangram message"
 else
-  _no "refused pangram stage leaves nothing pending"
+  _no "repo review rule stages with no record and no Pangram message (rc=${rc}): ${got}"
+fi
+if [[ -z "$(ls -A "${XDG_CONFIG_HOME}/personify/checks")" ]]; then
+  _ok "staging writes no check record"
+else
+  _no "staging writes no check record"
 fi
 
-# a pangram stage with a record removes a stale visual sidecar for the name
-sha="$(sha256sum "${TXT}" | cut -d' ' -f1)"
-printf '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":120}\n' \
-  >"${XDG_CONFIG_HOME}/personify/checks/${sha}.json"
-mkdir -p "${PENDING_ROOT}/${PKEY}/.route"
-printf 'visual\t3\tstale\n' >"${PENDING_ROOT}/${PKEY}/.route/ptext"
+# a restage overwrites a stale sidecar for the name
+printf 'exempt\t3\tstale\n' >"${PENDING_ROOT}/${PKEY}/.route/ptext"
 (cd "${PANG}" && _cmd_stage --kind commit ptext "${TXT}") >/dev/null 2>&1
-first="$(cut -f1 "${PENDING_ROOT}/${PKEY}/.route/ptext" || true)"
-if [[ "${first}" == "pangram" ]]; then
+first="$(cut -f1,2 "${PENDING_ROOT}/${PKEY}/.route/ptext" || true)"
+if [[ "${first}" == "$(printf 'review\t1')" ]]; then
   _ok "restage overwrites a stale sidecar"
 else
-  _no "restage overwrites a stale sidecar"
+  _no "restage overwrites a stale sidecar: ${first}"
 fi
-rm -f "${XDG_CONFIG_HOME}/personify/checks/${sha}.json"
 
 # router error: stage exits 1 with the router's message
 mv "${GATE_RULES_FILE}" "${GATE_RULES_FILE}.bak"
@@ -141,30 +134,12 @@ else
 fi
 mv "${GATE_RULES_FILE}.bak" "${GATE_RULES_FILE}"
 
-# banner in the header line
-got="$(_verdict_line vtext "${VPEND}/vtext")"
-if [[ "${got}" == "# vtext: NOT PANGRAM REVIEWED (rule 2: no rule matched, default)" ]]; then
-  _ok "verdict line carries the banner for a visual item"
+# The review buffer carries no Pangram line: the header has no verdict section.
+open_src="$(sed -n '/^_cmd_open()/,/^}/p' "${GATE}" || true)"
+if [[ "${open_src}" != *PANGRAM* && "${open_src}" != *_verdict_line* ]]; then
+  _ok "open writes no Pangram verdict lines"
 else
-  _no "verdict line carries the banner for a visual item: ${got}"
-fi
-# a record wins over a visual sidecar
-printf '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":120}\n' \
-  >"${XDG_CONFIG_HOME}/personify/checks/$(sha256sum "${TXT}" | cut -d' ' -f1).json"
-got="$(_verdict_line vtext "${VPEND}/vtext")"
-if [[ "${got}" == "# vtext: PASS (Human, fraction_ai 0.0, 120 words)" ]]; then
-  _ok "a check record takes precedence over the banner"
-else
-  _no "a check record takes precedence over the banner: ${got}"
-fi
-rm -f "${XDG_CONFIG_HOME}"/personify/checks/*.json
-# no sidecar, no record: unchanged
-touch "${TMP}/nosidecar"
-got="$(_verdict_line nosidecar "${TMP}/nosidecar")"
-if [[ "${got}" == "# nosidecar: NO RECORD" ]]; then
-  _ok "no sidecar and no record still says NO RECORD"
-else
-  _no "no sidecar and no record still says NO RECORD: ${got}"
+  _no "open writes no Pangram verdict lines"
 fi
 
 # the sidecar is not an artifact
@@ -222,11 +197,9 @@ fi
 
 # --- check: route-aware -------------------------------------------------------
 CHK_RULES="${TMP}/check-rules.conf"
-printf 'repo=beacon-biosignals/x pangram\nrepo=andrewmrich/beacon-workspace exempt\n* visual\n' >"${CHK_RULES}"
+printf 'repo=beacon-biosignals/x review\nrepo=andrewmrich/beacon-workspace exempt\n* review\n' >"${CHK_RULES}"
 CHK_TXT="${TMP}/chk.txt"
 printf 'fix(x): approved text for check\n' >"${CHK_TXT}"
-CHK_SHA="$(_raw_sha "${CHK_TXT}")"
-CHK_REC="${XDG_CONFIG_HOME}/personify/checks/${CHK_SHA}.json"
 rm -f "${APPROVED_ROOT}"/*/* 2>/dev/null || true
 
 _approve_chk() { # approve the fixture bytes under a key
@@ -234,7 +207,6 @@ _approve_chk() { # approve the fixture bytes under a key
   cp "${CHK_TXT}" "${APPROVED_ROOT}/k1/chk"
 }
 _unapprove_chk() { rm -f "${APPROVED_ROOT}/k1/chk"; }
-_rec() { printf '{"status":"%s","verdict":"%s","fraction_ai":0.0,"word_count":120}\n' "$1" "$2" >"${CHK_REC}"; }
 # GATE_RULES_FILE is already exported at the top of this file, so the inline
 # override below reaches the router subprocess.
 _check_case() { # <label> <want-rc> <want-substring-or-empty> <args...>
@@ -250,21 +222,15 @@ _check_case() { # <label> <want-rc> <want-substring-or-empty> <args...>
 }
 
 _approve_chk
-_check_case "pangram rule, approved, no record: refused, no check ran" 1 \
-  "gate-review: rule 1 (pangram): no Pangram check ran on these bytes" --repo beacon-biosignals/x
-_rec FAIL AI
-_check_case "pangram rule, approved, FAIL record: passes" 0 "" --repo beacon-biosignals/x
+_check_case "review rule (Beacon), approved, no record: passes" 0 "" --repo beacon-biosignals/x
 _unapprove_chk
-_check_case "pangram rule, record but unapproved: verdict recorded line" 1 \
-  "gate-review: rule 1 (pangram): verdict AI recorded; no visual approval matches" --repo beacon-biosignals/x
-rm -f "${CHK_REC}"
-_check_case "pangram rule, unapproved, no record: no check ran" 1 \
-  "rule 1 (pangram): no Pangram check ran on these bytes" --repo beacon-biosignals/x
+_check_case "review rule (Beacon), unapproved: refused" 1 \
+  "gate-review: rule 1 (review): no visual approval matches" --repo beacon-biosignals/x
 _approve_chk
-_check_case "visual rule, approved, no record: passes" 0 "" --repo twistedmelonman/y
+_check_case "default review rule, approved, no record: passes" 0 "" --repo twistedmelonman/y
 _unapprove_chk
-_check_case "visual rule, unapproved: refused" 1 \
-  "gate-review: rule 3 (visual): no visual approval matches" --repo twistedmelonman/y
+_check_case "default review rule, unapproved: refused" 1 \
+  "gate-review: rule 3 (review): no visual approval matches" --repo twistedmelonman/y
 _approve_chk
 _check_case "beacon-workspace (exempt), approved, no record: passes" 0 "" --repo andrewmrich/beacon-workspace
 _unapprove_chk
@@ -280,11 +246,12 @@ else
   _no "no flags: cwd is ignored and stderr is quiet (rc=${rc}): ${out}"
 fi
 _unapprove_chk
-_check_case "no flags, unapproved: refused as visual" 1 "(visual): no visual approval matches"
-_approve_chk
+_check_case "no flags, unapproved: refused as review" 1 "rule 3 (review): no visual approval matches"
 # --dir routes by the checkout's origin
 _mkrepo "${TMP}/bb" beacon-biosignals/x
-_check_case "--dir routes by origin (pangram, no record)" 1 "no Pangram check ran" --dir "${TMP}/bb"
+_check_case "--dir routes by origin (review, unapproved)" 1 "rule 1 (review): no visual approval matches" --dir "${TMP}/bb"
+_approve_chk
+_check_case "--dir routes by origin (review, approved, no record)" 0 "" --dir "${TMP}/bb"
 # broken rules file
 printf 'repo=a/b bogus\n' >"${TMP}/bad-rules.conf"
 out="$(GATE_RULES_FILE="${TMP}/bad-rules.conf" _cmd_check "${CHK_TXT}" --repo a/b 2>&1 >/dev/null)"
@@ -294,8 +261,31 @@ if ((rc == 1)) && [[ "${out}" == *"bad-rules.conf:1"* ]]; then
 else
   _no "broken rules file: exit 1 naming the file and line (rc=${rc}): ${out}"
 fi
-rm -f "${CHK_REC}"
+# A rules file still using a retired outcome fails closed: check refuses.
+printf '* pangram\n' >"${TMP}/old-rules.conf"
+out="$(GATE_RULES_FILE="${TMP}/old-rules.conf" _cmd_check "${CHK_TXT}" --repo a/b 2>&1 >/dev/null)"
+rc=$?
+if ((rc == 1)) && [[ "${out}" == *"unknown outcome 'pangram'"* ]]; then
+  _ok "retired pangram outcome: check refuses even approved text"
+else
+  _no "retired pangram outcome: check refuses even approved text (rc=${rc}): ${out}"
+fi
+# copy is always review: approved passes with no record, unapproved refuses.
+_check_case "copy kind, approved, no record: passes" 0 "" --kind copy --dir "${TMP}/bb"
 _unapprove_chk
+_check_case "copy kind, unapproved: refused as review" 1 "rule copy (review): no visual approval matches" --kind copy --dir "${TMP}/bb"
+out="$(_cmd_route --kind copy)"
+if [[ "${out}" == "$(printf 'review\tcopy\tpublic-facing copy (copy-paths.conf)')" ]]; then
+  _ok "route --kind copy prints review"
+else
+  _no "route --kind copy prints review: ${out}"
+fi
+out="$(_cmd_route)"
+if [[ "${out}" == "$(printf 'review\t3\tdestination unresolved')" ]]; then
+  _ok "route with no destination prints review / rule 3"
+else
+  _no "route with no destination prints review / rule 3: ${out}"
+fi
 
 echo ""
 echo "passed: ${pass}  failed: ${fail}"

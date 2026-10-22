@@ -49,8 +49,7 @@ expect_load_fail() {
 }
 
 TAB=$'\t'
-V="visual"
-P="pangram"
+R="review"
 E="exempt"
 GH="github.com"
 
@@ -62,54 +61,65 @@ RULES="${ROOT}/gate-rules.conf"
   # Public sites: commit text is exempt; their pages go through copy-paths.conf.
   expect_match "projectinsomnia exempt" "${RULES}" "smartwatermelon/projectinsomnia" "twistedmelonman" "${E}${TAB}2" "${GH}"
   expect_match "crazy-larry exempt" "${RULES}" "smartwatermelon/crazy-larry" "twistedmelonman" "${E}${TAB}2" "${GH}"
-  expect_match "other repo, author" "${RULES}" "other/beacon-workspace" "andrewmrich" "${P}${TAB}7"
+  expect_match "other repo, author" "${RULES}" "other/beacon-workspace" "andrewmrich" "${R}${TAB}8"
   expect_match "twistedmelonman exempt" "${RULES}" "twistedmelonman/x" "twistedmelonman" "${E}${TAB}3" "${GH}"
-  expect_match "empty inputs" "${RULES}" "" "" "${V}${TAB}10"
-  expect_match "empty repo, github host" "${RULES}" "" "twistedmelonman" "${V}${TAB}10" "${GH}"
+  expect_match "empty inputs" "${RULES}" "" "" "${R}${TAB}11"
+  expect_match "empty repo, github host" "${RULES}" "" "twistedmelonman" "${R}${TAB}11" "${GH}"
   # owner= rules: personal owners are exempt on github.com only.
   expect_match "owner smartwatermelon" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${E}${TAB}2" "${GH}"
   expect_match "owner mixed case" "${RULES}" "SmartWatermelon/X" "twistedmelonman" "${E}${TAB}2" "GitHub.com"
   expect_match "nightowlstudiollc exempt" "${RULES}" "nightowlstudiollc/y" "twistedmelonman" "${E}${TAB}4" "${GH}"
-  expect_match "beacon-biosignals owner, author unresolved" "${RULES}" "beacon-biosignals/x" "" "${P}${TAB}8" "${GH}"
+  expect_match "beacon-biosignals owner, author unresolved" "${RULES}" "beacon-biosignals/x" "" "${R}${TAB}9" "${GH}"
   # The known-bad cases: author resolves every unknown owner to twistedmelonman,
   # so only an owner rule can tell these apart, and none may match them.
-  expect_match "third party stays gated" "${RULES}" "anthropics/claude-code" "twistedmelonman" "${V}${TAB}10" "${GH}"
-  expect_match "owner prefix only" "${RULES}" "smartwatermelonx/y" "twistedmelonman" "${V}${TAB}10" "${GH}"
-  expect_match "owner without name" "${RULES}" "smartwatermelon" "twistedmelonman" "${V}${TAB}10" "${GH}"
-  expect_match "owner with extra path" "${RULES}" "smartwatermelon/x/y" "twistedmelonman" "${V}${TAB}10" "${GH}"
+  expect_match "third party stays gated" "${RULES}" "anthropics/claude-code" "twistedmelonman" "${R}${TAB}11" "${GH}"
+  expect_match "owner prefix only" "${RULES}" "smartwatermelonx/y" "twistedmelonman" "${R}${TAB}11" "${GH}"
+  expect_match "owner without name" "${RULES}" "smartwatermelon" "twistedmelonman" "${R}${TAB}11" "${GH}"
+  expect_match "owner with extra path" "${RULES}" "smartwatermelon/x/y" "twistedmelonman" "${R}${TAB}11" "${GH}"
   # Host must be github.com; unknown or other hosts fall through.
-  expect_match "owner, no host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}10"
-  expect_match "owner, other host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}10" "gitlab.com"
-  expect_match "owner, lookalike host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${V}${TAB}10" "github.com.evil.example"
+  expect_match "owner, no host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${R}${TAB}11"
+  expect_match "owner, other host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${R}${TAB}11" "gitlab.com"
+  expect_match "owner, lookalike host" "${RULES}" "smartwatermelon/x" "twistedmelonman" "${R}${TAB}11" "github.com.evil.example"
   # fork= rules (the stub answers): a proven fork is exempt, anything else is gated.
   export GATE_TEST_FORKS="nightowlstudiollc/forked beacon-biosignals/forked andrewmrich/forked anthropics/forked"
   export GATE_TEST_GH_FAIL="nightowlstudiollc/broken beacon-biosignals/broken"
   expect_match "NOS fork exempt" "${RULES}" "nightowlstudiollc/forked" "twistedmelonman" "${E}${TAB}4" "${GH}"
   expect_match "beacon fork exempt" "${RULES}" "beacon-biosignals/forked" "andrewmrich" "${E}${TAB}5" "${GH}"
   expect_match "andrewmrich fork exempt" "${RULES}" "andrewmrich/forked" "andrewmrich" "${E}${TAB}6" "${GH}"
-  expect_match "third-party fork gated" "${RULES}" "anthropics/forked" "twistedmelonman" "${V}${TAB}10" "${GH}"
+  expect_match "third-party fork gated" "${RULES}" "anthropics/forked" "twistedmelonman" "${R}${TAB}11" "${GH}"
   expect_match "NOS fork lookup fails: owner rule, exempt" "${RULES}" "nightowlstudiollc/broken" "twistedmelonman" "${E}${TAB}4" "${GH}"
-  expect_match "beacon fork lookup fails: gated" "${RULES}" "beacon-biosignals/broken" "andrewmrich" "${P}${TAB}7" "${GH}"
+  expect_match "beacon fork lookup fails: gated" "${RULES}" "beacon-biosignals/broken" "andrewmrich" "${R}${TAB}8" "${GH}"
   expect_match "NOS non-fork exempt" "${RULES}" "nightowlstudiollc/site" "twistedmelonman" "${E}${TAB}4" "${GH}"
-  expect_match "fork rule needs github.com" "${RULES}" "nightowlstudiollc/forked" "twistedmelonman" "${V}${TAB}10" "gitlab.com"
+  expect_match "fork rule needs github.com" "${RULES}" "nightowlstudiollc/forked" "twistedmelonman" "${R}${TAB}11" "gitlab.com"
   unset GATE_TEST_FORKS GATE_TEST_GH_FAIL
   # Private repos: Beacon stays gated, NOS is exempt by owner, third parties fall to *.
   export GATE_TEST_PRIVATE="beacon-biosignals/secret nightowlstudiollc/kebab-tax andrewmrich/secret anthropics/secret smartwatermelon/secret nightowlstudiollc/broken"
   export GATE_TEST_GH_FAIL="nightowlstudiollc/broken"
-  expect_match "private beacon repo, andrewmrich: gated" "${RULES}" "beacon-biosignals/secret" "andrewmrich" "${P}${TAB}7" "${GH}"
-  expect_match "private beacon repo, author unresolved: gated" "${RULES}" "beacon-biosignals/secret" "" "${P}${TAB}8" "${GH}"
-  expect_match "private beacon repo, other author: gated" "${RULES}" "beacon-biosignals/secret" "twistedmelonman" "${P}${TAB}8" "${GH}"
-  expect_match "private andrewmrich repo: gated" "${RULES}" "andrewmrich/secret" "" "${P}${TAB}9" "${GH}"
+  expect_match "private beacon repo, andrewmrich: gated" "${RULES}" "beacon-biosignals/secret" "andrewmrich" "${R}${TAB}8" "${GH}"
+  expect_match "private beacon repo, author unresolved: gated" "${RULES}" "beacon-biosignals/secret" "" "${R}${TAB}9" "${GH}"
+  expect_match "private beacon repo, other author: gated" "${RULES}" "beacon-biosignals/secret" "twistedmelonman" "${R}${TAB}9" "${GH}"
+  # andrewmrich: exempt when GitHub says private, gated when public or unknown (Andrew, 2026-10-22).
+  expect_match "private andrewmrich repo: exempt" "${RULES}" "andrewmrich/secret" "" "${E}${TAB}7" "${GH}"
+  expect_match "private andrewmrich repo, his login: exempt" "${RULES}" "andrewmrich/secret" "andrewmrich" "${E}${TAB}7" "${GH}"
   expect_match "andrewmrich text in a NOS repo: exempt" "${RULES}" "nightowlstudiollc/kebab-tax" "andrewmrich" "${E}${TAB}4" "${GH}"
   expect_match "private NOS repo: exempt" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${E}${TAB}4" "${GH}"
   expect_match "private NOS repo, mixed case: exempt" "${RULES}" "NightOwlStudioLLC/Kebab-Tax" "twistedmelonman" "${E}${TAB}4" "${GH}"
-  expect_match "private third-party repo: gated (falls to *)" "${RULES}" "anthropics/secret" "twistedmelonman" "${V}${TAB}10" "${GH}"
+  expect_match "private third-party repo: gated (falls to *)" "${RULES}" "anthropics/secret" "twistedmelonman" "${R}${TAB}11" "${GH}"
   expect_match "public NOS repo: exempt" "${RULES}" "nightowlstudiollc/tnjcleaning" "twistedmelonman" "${E}${TAB}4" "${GH}"
   expect_match "NOS private lookup fails: exempt" "${RULES}" "nightowlstudiollc/broken" "twistedmelonman" "${E}${TAB}4" "${GH}"
-  expect_match "public third-party repo: gated" "${RULES}" "anthropics/claude-code" "twistedmelonman" "${V}${TAB}10" "${GH}"
+  expect_match "public third-party repo: gated" "${RULES}" "anthropics/claude-code" "twistedmelonman" "${R}${TAB}11" "${GH}"
   expect_match "public smartwatermelon repo: exempt as before" "${RULES}" "smartwatermelon/plain" "twistedmelonman" "${E}${TAB}2" "${GH}"
-  expect_match "private repo on another host: gated" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${V}${TAB}10" "gitlab.com"
-  expect_match "private repo, no host: gated" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${V}${TAB}10"
+  expect_match "private repo on another host: gated" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${R}${TAB}11" "gitlab.com"
+  expect_match "private repo, no host: gated" "${RULES}" "nightowlstudiollc/kebab-tax" "twistedmelonman" "${R}${TAB}11"
+  unset GATE_TEST_PRIVATE GATE_TEST_GH_FAIL
+  # andrewmrich public repos and failed lookups land on the gated rules below private=.
+  export GATE_TEST_PRIVATE="andrewmrich/secret"
+  export GATE_TEST_GH_FAIL="andrewmrich/down"
+  expect_match "public andrewmrich repo, his login: review" "${RULES}" "andrewmrich/open" "andrewmrich" "${R}${TAB}8" "${GH}"
+  expect_match "public andrewmrich repo, author unresolved: review" "${RULES}" "andrewmrich/open" "" "${R}${TAB}10" "${GH}"
+  expect_match "andrewmrich lookup fails, his login: review" "${RULES}" "andrewmrich/down" "andrewmrich" "${R}${TAB}8" "${GH}"
+  expect_match "andrewmrich lookup fails, author unresolved: review" "${RULES}" "andrewmrich/down" "" "${R}${TAB}10" "${GH}"
+  expect_match "private andrewmrich repo, other host: review" "${RULES}" "andrewmrich/secret" "andrewmrich" "${R}${TAB}8" "gitlab.com"
   unset GATE_TEST_PRIVATE GATE_TEST_GH_FAIL
   # Earlier rules still win.
   expect_match "workspace repo before author" "${RULES}" "andrewmrich/beacon-workspace" "andrewmrich" "${E}${TAB}1" "${GH}"
@@ -132,9 +142,11 @@ done
 ok
 # The Beacon rules must come before every private= rule, or a private Beacon
 # repo would be exempt.
+# Except private=andrewmrich: it never matches a beacon-biosignals repo (2026-10-22).
 vis=0 beacon_last=0
 for i in "${!RULE_KIND[@]}"; do
   case "${RULE_KIND[i]}:${RULE_VALUE[i]}" in
+    private:andrewmrich) ;;
     private:*) ((vis == 0)) && vis=$((i + 1)) ;;
     author:andrewmrich | owner:beacon-biosignals | owner:andrewmrich) beacon_last=$((i + 1)) ;;
     *) ;;
@@ -143,19 +155,19 @@ done
 if ((beacon_last > 0 && (vis == 0 || beacon_last < vis))); then ok; else bad "Beacon rules (last ${beacon_last}) not above the first private= rule (${vis})"; fi
 
 # private= takes a login, like fork=: no slash, no empty value, any case.
-printf 'private=a/b exempt\n* visual\n' >"${TMP}/privslash.conf"
+printf 'private=a/b exempt\n* review\n' >"${TMP}/privslash.conf"
 expect_load_fail "private with slash" "${TMP}/privslash.conf" "privslash.conf:1"
-printf 'private= exempt\n* visual\n' >"${TMP}/privempty.conf"
+printf 'private= exempt\n* review\n' >"${TMP}/privempty.conf"
 expect_load_fail "private empty" "${TMP}/privempty.conf" "privempty.conf:1"
-printf 'private=NightOwlStudioLLC exempt\n* visual\n' >"${TMP}/privcase.conf"
+printf 'private=NightOwlStudioLLC exempt\n* review\n' >"${TMP}/privcase.conf"
 export GATE_TEST_PRIVATE="nightowlstudiollc/kebab-tax"
 expect_match "private login case-insensitive" "${TMP}/privcase.conf" "nightowlstudiollc/kebab-tax" "" "${E}${TAB}1" "${GH}"
 # The shipped rules no longer use private=, so its fail-closed cases live here.
 export GATE_TEST_PRIVATE="nightowlstudiollc/kebab-tax nightowlstudiollc/broken"
 export GATE_TEST_GH_FAIL="nightowlstudiollc/broken"
-expect_match "private= public repo: no match" "${TMP}/privcase.conf" "nightowlstudiollc/site" "" "${V}${TAB}2" "${GH}"
-expect_match "private= lookup fails: no match" "${TMP}/privcase.conf" "nightowlstudiollc/broken" "" "${V}${TAB}2" "${GH}"
-expect_match "private= other host: no match" "${TMP}/privcase.conf" "nightowlstudiollc/kebab-tax" "" "${V}${TAB}2" "gitlab.com"
+expect_match "private= public repo: no match" "${TMP}/privcase.conf" "nightowlstudiollc/site" "" "${R}${TAB}2" "${GH}"
+expect_match "private= lookup fails: no match" "${TMP}/privcase.conf" "nightowlstudiollc/broken" "" "${R}${TAB}2" "${GH}"
+expect_match "private= other host: no match" "${TMP}/privcase.conf" "nightowlstudiollc/kebab-tax" "" "${R}${TAB}2" "gitlab.com"
 unset GATE_TEST_PRIVATE GATE_TEST_GH_FAIL
 
 # The private= cache: answers are kept under private-cache, failures are not.
@@ -189,7 +201,7 @@ _ip_rc "is-private: no repo is a usage error (2)" 2
 unset GATE_TEST_PRIVATE GATE_TEST_GH_FAIL GATE_TEST_GH_LOG
 
 # A fork= value with a slash is a parse error, like owner=.
-printf 'fork=a/b exempt\n* visual\n' >"${TMP}/slashfork.conf"
+printf 'fork=a/b exempt\n* review\n' >"${TMP}/slashfork.conf"
 expect_load_fail "fork with slash" "${TMP}/slashfork.conf" "slashfork.conf:1"
 
 # Reason strings
@@ -205,27 +217,32 @@ out="$(_match_rule "smartwatermelon/x" "z" "github.com")"
 check "reason owner" "${out##*"${TAB}"}" "matched owner=smartwatermelon"
 
 # Messy file
-printf '# comment\r\n\r\n  \t\r\nrepo=Foo/Bar\t \texempt  \r\n   # indented comment\r\n*   visual\t\r\n' >"${TMP}/messy.conf"
+printf '# comment\r\n\r\n  \t\r\nrepo=Foo/Bar\t \texempt  \r\n   # indented comment\r\n*   review\t\r\n' >"${TMP}/messy.conf"
 expect_match "messy exempt" "${TMP}/messy.conf" "foo/bar" "" "exempt${TAB}1"
-expect_match "messy default" "${TMP}/messy.conf" "a/b" "" "${V}${TAB}2"
+expect_match "messy default" "${TMP}/messy.conf" "a/b" "" "${R}${TAB}2"
 
 # Errors
-printf 'repo=a/b visual\nrepo=a/b bogus\n' >"${TMP}/badoutcome.conf"
+printf 'repo=a/b review\nrepo=a/b bogus\n' >"${TMP}/badoutcome.conf"
 expect_load_fail "unknown outcome" "${TMP}/badoutcome.conf" "badoutcome.conf:2"
-printf '# c\n\nbranch=x visual\n' >"${TMP}/badmatcher.conf"
+printf '# c\n\nbranch=x review\n' >"${TMP}/badmatcher.conf"
 expect_load_fail "unknown matcher" "${TMP}/badmatcher.conf" "badmatcher.conf:3"
-printf 'repo=a/b visual\nvisual\n' >"${TMP}/onefield.conf"
+printf 'repo=a/b review\nreview\n' >"${TMP}/onefield.conf"
 expect_load_fail "one field" "${TMP}/onefield.conf" "onefield.conf:2"
 expect_load_fail "missing file" "${TMP}/nope.conf" "nope.conf"
-printf '* visual\nowner= exempt\n' >"${TMP}/emptyowner.conf"
+# The retired outcomes are rule errors now, so an old rules file fails closed (2026-10-22).
+printf 'repo=a/b exempt\n* pangram\n' >"${TMP}/oldpangram.conf"
+expect_load_fail "retired outcome pangram" "${TMP}/oldpangram.conf" "oldpangram.conf:2: unknown outcome 'pangram'"
+printf 'repo=a/b exempt\n* visual\n' >"${TMP}/oldvisual.conf"
+expect_load_fail "retired outcome visual" "${TMP}/oldvisual.conf" "oldvisual.conf:2: unknown outcome 'visual'"
+printf '* review\nowner= exempt\n' >"${TMP}/emptyowner.conf"
 expect_load_fail "empty owner" "${TMP}/emptyowner.conf" "emptyowner.conf:2"
-printf 'owner=a/b exempt\n* visual\n' >"${TMP}/slashowner.conf"
+printf 'owner=a/b exempt\n* review\n' >"${TMP}/slashowner.conf"
 expect_load_fail "owner with slash" "${TMP}/slashowner.conf" "slashowner.conf:1"
-printf 'owner=Foo\texempt\n* visual\n' >"${TMP}/owner.conf"
+printf 'owner=Foo\texempt\n* review\n' >"${TMP}/owner.conf"
 expect_match "owner parses" "${TMP}/owner.conf" "foo/bar" "" "exempt${TAB}1" "${GH}"
 
 # No match
-printf 'repo=a/b visual\n' >"${TMP}/nostar.conf"
+printf 'repo=a/b review\n' >"${TMP}/nostar.conf"
 _load_rules "${TMP}/nostar.conf"
 err="$(_match_rule "x/y" "z" 2>&1 >/dev/null)"
 rc=$?
@@ -241,7 +258,7 @@ check "arrays reset on error" "${dump//$'\n'/;}" "declare -a RULE_KIND=();declar
 _load_rules "${ROOT}/gate-rules.conf"
 out="$(_match_rule "x/y" 2>&1)"
 IFS="${TAB}" read -r o_outcome o_rule _ <<<"${out}"
-check "one-arg match" "${o_outcome}${TAB}${o_rule}" "${V}${TAB}10"
+check "one-arg match" "${o_outcome}${TAB}${o_rule}" "${R}${TAB}11"
 
 echo "passed=${PASS} failed=${FAIL}"
 [[ ${FAIL} -eq 0 ]]

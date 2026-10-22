@@ -920,7 +920,7 @@ _public_call_ok() {
 }
 
 _deny_copy() {
-  local reason="$1" surface="$2" extract="${3:-}" hint label
+  local reason="$1" surface="$2" extract="${3:-}" label
   {
     echo '🛑 BLOCKED: this commit changes public-facing copy that has not been approved.'
     echo ''
@@ -928,7 +928,6 @@ _deny_copy() {
     echo "  repo:    ${DEST_DIR}"
     echo "  reason:  ${reason}"
     if [[ -n "${extract}" ]]; then
-      hint="$("${GATE}" hint "${extract}" --kind copy 2>/dev/null)" || hint="python3 <personify>/scripts/pangram_check.py --kind copy < ${extract}"
       label="${extract##*/}"
       label="copy-${label:0:12}"
       echo "  extract: ${extract}"
@@ -936,12 +935,11 @@ _deny_copy() {
       echo 'The extract is the added or changed text of the staged copy files'
       echo '(the whole text of a new file). Approve it like commit text:'
       echo ''
-      echo "  1. ${hint}"
-      echo "  2. ${GATE} stage --kind copy ${label} ${extract}"
-      echo "  3. ${GATE} open"
-      echo '     Run 2 and 3 from the same directory.'
-      echo '  4. Andrew reads it and types APPROVED in the STATUS line.'
-      echo '  5. Re-run the same git commit. The hook rebuilds the extract from the'
+      echo "  1. ${GATE} stage --kind copy ${label} ${extract}"
+      echo "  2. ${GATE} open"
+      echo '     Run 1 and 2 from the same directory.'
+      echo '  3. Andrew reads it and types APPROVED in the STATUS line.'
+      echo '  4. Re-run the same git commit. The hook rebuilds the extract from the'
       echo '     index; the same staged text gives the same bytes and passes.'
       echo ''
       echo 'The text approved is the extract, not the files. If Andrew edits it in'
@@ -980,7 +978,7 @@ _dest_exempt() {
 #   gh/api: see _gh_destination. DEST_DIR is the hook's cwd (or cd target).
 # A `-C` dir is resolved against the hook's cwd when relative. A value the hook
 # cannot expand (a variable or command substitution) blocks: routing it as an
-# unresolved destination would fall to the visual rule, weaker than pangram.
+# unresolved destination would guess at where the text goes.
 DEST_DIR=""
 DEST_REPO=""
 DEST_ALSO_CWD=0
@@ -1199,8 +1197,7 @@ _verify_path() {
 }
 
 # Run `gate-review.sh check` once and turn its one-line failure reason into the
-# deny. A Pangram-gated text with no check record gets the command that writes
-# the record, not the visual-approval steps, which would not help.
+# deny.
 _check_one() {
   local path="$1" surface="$2" err line reason=""
   shift 2
@@ -1218,34 +1215,11 @@ _check_one() {
   done <<<"${err}"
   [[ -z "${err}" ]] || printf '%s\n' "${err}" | grep -vxF -- "${reason:-}" >&2 || true
   case "${reason}" in
-    *'no Pangram check ran'*) _deny_unchecked "${reason}" "${path}" "${surface}" "$@" ;;
     *'gate-review: over length:'*) _deny_length "${reason}" "${surface}" ;;
     *'length checker error'*) _deny_checker "${reason}" "${surface}" ;;
     '') _deny "the bytes in ${path} do not match anything approved" "${surface}" ;;
     *) _deny "${reason}" "${surface}" ;;
   esac
-}
-
-_deny_unchecked() {
-  # The rest are the destination flags _check_one passed to check; the hint repeats them.
-  local reason="$1" path="$2" surface="$3" hint
-  shift 3
-  hint="$("${GATE}" hint "${path}" "$@" 2>/dev/null)" || hint="(gate-review.sh hint failed; run personify's scripts/pangram_check.py $* < ${path})"
-  {
-    echo '🛑 BLOCKED: this text goes to a Pangram-gated destination and no Pangram check ran on it.'
-    echo ''
-    echo "  surface: ${surface}"
-    echo "  reason:  ${reason}"
-    echo ''
-    echo 'Run the personify check on this exact file:'
-    echo ''
-    echo "  ${hint}"
-    echo ''
-    echo 'PASS, FAIL and SKIPPED all leave a record; an error does not. Then'
-    echo 're-run the same command. If these bytes were never approved, the'
-    echo 'next attempt will say so.'
-  } >&2
-  exit 2
 }
 
 _deny_length() {

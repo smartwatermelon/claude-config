@@ -2,11 +2,12 @@
 # End to end: stage -> approve -> hook, across the destinations the shipped
 # gate-rules.conf routes differently.
 #
-#   Exempt: beacon-workspace, smartwatermelon, twistedmelonman, private NOS repos. Pangram: beacon. Visual: third parties.
+#   Exempt: beacon-workspace, personal owners, NOS, private andrewmrich.
+#   Review: beacon, public andrewmrich, third parties.
 #
 # GATE_RULES_FILE points at the repo's real gate-rules.conf, so an edit that
-# changes the routing fails here. The check-records directory is a sandbox:
-# Pangram is never called.
+# changes the routing fails here. No route needs a Pangram check record
+# (2026-10-22), and none is ever written.
 
 set -uo pipefail
 unset CDPATH GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
@@ -95,23 +96,14 @@ _mkrepo "${PERSONAL}" twistedmelonman/y
 VISUAL="${TMP}/visual"
 _mkrepo "${VISUAL}" someone-else/y
 
-_rec_for() {
-  local sha
-  sha="$(sha256sum "$1" | cut -d' ' -f1)"
-  printf '{"status":"PASS","verdict":"Human","fraction_ai":0.0,"word_count":120}\n' \
-    >"${XDG_CONFIG_HOME}/personify/checks/${sha}.json"
-}
-
-# _approve <repo> <name>: stage ${TMP}/<name>.txt from inside <repo>, capture
-# the review header line, approve the way a reviewer's saved buffer does
-# (_split_batch), and leave the approved file's path in ${TMP}/<name>.path.
+# _approve <repo> <name>: stage and approve ${TMP}/<name>.txt from <repo>;
+# the approved path goes to ${TMP}/<name>.path.
 _approve() {
   local repo="$1" name="$2"
   (
     cd "${repo}" || exit 1
     _cmd_stage --kind commit "${name}" "${TMP}/${name}.txt" >/dev/null || exit 1
     _use_key
-    _verdict_line "${name}" "${PENDING}/${name}" >"${TMP}/${name}.line"
     {
       printf '# STATUS: APPROVED\n# BATCH: e2e-%s\n\n' "${name}"
       printf '=== %s ===\n' "${name}"
@@ -145,64 +137,83 @@ else
   _no "twistedmelonman: commit passes unapproved (rc=${rc}): ${err}"
 fi
 
-# --- visual destination: rule 10 --------------------------------------------
+# --- third-party destination: rule 11, review --------------------------------
 printf 'fix(y): third-party change\n' >"${TMP}/pers.txt"
 if _approve "${VISUAL}" pers; then
-  _ok "visual: stage and approve without a record"
+  _ok "third party: stage and approve without a record"
 else
-  _no "visual: stage and approve without a record"
-fi
-line="$(cat "${TMP}/pers.line" 2>/dev/null || true)"
-if [[ "${line}" == "# pers: NOT PANGRAM REVIEWED (rule 10: "* ]]; then
-  _ok "visual: review shows the rule 10 banner"
-else
-  _no "visual: review shows the rule 10 banner: ${line}"
+  _no "third party: stage and approve without a record"
 fi
 PERS_APPROVED="$(cat "${TMP}/pers.path" 2>/dev/null || true)"
 _hook "${VISUAL}" "git -C ${VISUAL} commit -F ${PERS_APPROVED}"
 if ((rc == 0)); then
-  _ok "visual: hook passes with no record"
+  _ok "third party: hook passes approved text with no record"
 else
-  _no "visual: hook passes with no record (rc=${rc}): ${err}"
+  _no "third party: hook passes approved text with no record (rc=${rc}): ${err}"
 fi
 
-# --- employer: rule 7, pangram ---------------------------------------------
+# --- employer: review, no Pangram record --------------------------------------
 printf 'fix(x): employer change\n' >"${TMP}/emp.txt"
-if (cd "${EMPLOYER}" && _cmd_stage --kind commit emp "${TMP}/emp.txt") >/dev/null 2>&1; then
-  _no "employer: stage refuses without a record"
+_hook "${EMPLOYER}" "git -C ${EMPLOYER} commit -F ${TMP}/emp.txt"
+if ((rc == 2)) && [[ "${err}" == *"(review): no visual approval matches"* && "${err}" != *Pangram* ]]; then
+  _ok "employer: hook blocks unapproved text as review, naming no Pangram step"
 else
-  _ok "employer: stage refuses without a record"
+  _no "employer: hook blocks unapproved text as review, naming no Pangram step (rc=${rc}): ${err}"
 fi
-_rec_for "${TMP}/emp.txt"
 if _approve "${EMPLOYER}" emp; then
-  _ok "employer: stage and approve once a record exists"
+  _ok "employer: stage and approve with no record"
 else
-  _no "employer: stage and approve once a record exists"
-fi
-line="$(cat "${TMP}/emp.line" 2>/dev/null || true)"
-if [[ "${line}" == "# emp: PASS (Human, "* ]]; then
-  _ok "employer: review shows the record, not a banner"
-else
-  _no "employer: review shows the record, not a banner: ${line}"
+  _no "employer: stage and approve with no record"
 fi
 EMP_APPROVED="$(cat "${TMP}/emp.path" 2>/dev/null || true)"
-# The record is keyed on the exact approved bytes; remove it to prove the block.
-SHA="$(sha256sum "${EMP_APPROVED}" | cut -d' ' -f1)"
-REC="${XDG_CONFIG_HOME}/personify/checks/${SHA}.json"
-mv "${REC}" "${REC}.hold"
-_hook "${EMPLOYER}" "git -C ${EMPLOYER} commit -F ${EMP_APPROVED}"
-if ((rc == 2)) && [[ "${err}" == *"no Pangram check ran"* ]]; then
-  _ok "employer: hook blocks with no record"
-else
-  _no "employer: hook blocks with no record (rc=${rc}): ${err}"
-fi
-mv "${REC}.hold" "${REC}"
 _hook "${EMPLOYER}" "git -C ${EMPLOYER} commit -F ${EMP_APPROVED}"
 if ((rc == 0)); then
-  _ok "employer: hook passes once the record exists"
+  _ok "employer: hook passes approved text with no record"
 else
-  _no "employer: hook passes once the record exists (rc=${rc}): ${err}"
+  _no "employer: hook passes approved text with no record (rc=${rc}): ${err}"
 fi
+if [[ -z "$(ls -A "${XDG_CONFIG_HOME}/personify/checks")" ]]; then
+  _ok "no check record was written"
+else
+  _no "no check record was written"
+fi
+
+# --- andrewmrich: exempt if private, else review ---
+# (Andrew, 2026-10-22.) The stub answers GitHub's private field.
+export GATE_TEST_PRIVATE="andrewmrich/notes"
+export GATE_TEST_GH_FAIL="andrewmrich/offline"
+AM_PRIV="${TMP}/am-priv"
+AM_PUB="${TMP}/am-pub"
+AM_DOWN="${TMP}/am-down"
+_mkrepo "${AM_PRIV}" andrewmrich/notes
+_mkrepo "${AM_PUB}" andrewmrich/site
+_mkrepo "${AM_DOWN}" andrewmrich/offline
+printf 'docs: a note nobody approved\n' >"${TMP}/am.txt"
+_hook "${AM_PRIV}" "git -C ${AM_PRIV} commit -F ${TMP}/am.txt"
+if ((rc == 0)); then
+  _ok "private andrewmrich repo: commit passes unapproved"
+else
+  _no "private andrewmrich repo: commit passes unapproved (rc=${rc}): ${err}"
+fi
+_hook "${AM_PRIV}" "gh pr create --title t --body-file ${TMP}/am.txt -R andrewmrich/notes"
+if ((rc == 0)); then
+  _ok "private andrewmrich repo: PR with -R passes unapproved"
+else
+  _no "private andrewmrich repo: PR with -R passes unapproved (rc=${rc}): ${err}"
+fi
+_hook "${AM_PUB}" "git -C ${AM_PUB} commit -F ${TMP}/am.txt"
+if ((rc == 2)) && [[ "${err}" == *"(review)"* ]]; then
+  _ok "public andrewmrich repo: commit blocks unapproved"
+else
+  _no "public andrewmrich repo: commit blocks unapproved (rc=${rc}): ${err}"
+fi
+_hook "${AM_DOWN}" "git -C ${AM_DOWN} commit -F ${TMP}/am.txt"
+if ((rc == 2)) && [[ "${err}" == *"(review)"* ]]; then
+  _ok "andrewmrich lookup fails: commit blocks unapproved"
+else
+  _no "andrewmrich lookup fails: commit blocks unapproved (rc=${rc}): ${err}"
+fi
+unset GATE_TEST_PRIVATE GATE_TEST_GH_FAIL
 
 # --- owner= rules: personal org exempt, third party still gated -------------
 # The text is never staged or approved: an exempt destination must pass it
@@ -254,9 +265,9 @@ else
 fi
 _hook "${VISUAL}" "git -C ${VISUAL} commit -F ${UNAPPROVED}"
 if ((rc == 2)); then
-  _ok "visual: commit blocks unapproved"
+  _ok "third party (someone-else): commit blocks unapproved"
 else
-  _no "visual: commit blocks unapproved (rc=${rc}): ${err}"
+  _no "third party (someone-else): commit blocks unapproved (rc=${rc}): ${err}"
 fi
 
 echo ""
