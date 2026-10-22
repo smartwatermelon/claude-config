@@ -14,15 +14,13 @@
 # (measured 2026-09-18: a stale poller approved a batch no human had read).
 # Typing one word is both detectable and unambiguous.
 #
-# GUI only, by design. `open -a` reaches the window server from a process with
-# no TTY, which is what makes this work from an agent's tool call. Over SSH
-# there is no window server, so this fails closed rather than waving text
-# through ungated. See claude-config#509 for the same unsolved remote case.
+# `open -a` works from a tool call with no TTY. With no window server (SSH, cloud), open prints each approve-code instead.
 #
 # Usage:
 #   gate-review.sh stage --kind <kind> <name> <file>   queue one artifact (under its length cap) for review
 #                 [--allow RULE --reason TEXT]...      gated routes run gate-lint.sh; these override a rule
 #   gate-review.sh open                  open the batch, wait for save
+#   gate-review.sh approve-hash <code>.. human-only (the chat hook)
 #   gate-review.sh hash <file>           print the approved-bytes hash
 #   gate-review.sh check [--kind K] <file>   exit 0 if file matches ANY approval (and fits)
 #   gate-review.sh measure --kind K [--title T] [--repo R] [--dir D] <body
@@ -67,7 +65,8 @@ if [[ -L "${_self}" ]]; then
 fi
 ROUTE_SCRIPT="$(cd "$(dirname "${_self}")" 2>/dev/null && pwd)/gate-route.sh"
 unset _self _target
-EDITOR_APP="${GATE_REVIEW_EDITOR:-BBEdit}"
+# GATE_EDITOR picks the app; when `open -a` cannot find it, `open -t` uses the default text editor.
+EDITOR_APP="${GATE_EDITOR:-${GATE_REVIEW_EDITOR:-BBEdit}}"
 POLL_TIMEOUT="${GATE_REVIEW_TIMEOUT:-1800}"
 APPROVAL_TTL="${GATE_REVIEW_APPROVAL_TTL:-1800}"
 # How long a buffer left in batches/ is kept for a later open to carry
@@ -98,18 +97,40 @@ _kept_note() {
   } >&2
 }
 
-# Aqua means a window server exists. Anything else -- SSH, a headless daemon --
-# cannot open an editor, and must not silently pass.
-_require_gui() {
-  local mgr
-  mgr="$(launchctl managername 2>/dev/null || echo unknown)"
-  [[ "${mgr}" == "Aqua" ]] && return 0
-  {
-    echo "gate-review: no GUI session (launchctl managername = ${mgr})."
-    echo "gate-review: text cannot be reviewed from here, so it is not approved."
-    echo "gate-review: run this from a desktop session on the machine."
-  } >&2
-  exit 1
+# Aqua means a window server exists. Anything else (SSH, a headless daemon) cannot open an editor.
+GUI_MGR=""
+_have_gui() {
+  GUI_MGR="$(launchctl managername 2>/dev/null || echo unknown)"
+  [[ "${GUI_MGR}" == "Aqua" ]]
+}
+
+# The short code Andrew types to approve a staged file: the start of its _hash.
+_approve_code() {
+  _hash "$1" | cut -c1-6
+}
+
+# No GUI: show each staged item with its code and return. Nothing is approved here.
+_print_inline() {
+  local f n line code last
+  echo "gate-review: no GUI session (launchctl managername = ${GUI_MGR}), so no editor opens."
+  echo "gate-review: show Andrew each item below with its code; he replies \`approve <code>\` in chat."
+  for f in "${PENDING}"/*; do
+    [[ -f "${f}" ]] || continue
+    n="${f##*/}"
+    code="$(_approve_code "${f}")"
+    echo ""
+    echo "=== ${n} (approve-code: ${code}) ==="
+    if [[ -f "${PENDING}/.lint/${n}" ]]; then
+      while IFS= read -r line; do
+        echo "# LINT OVERRIDE: ${line}"
+      done <"${PENDING}/.lint/${n}"
+    fi
+    cat "${f}"
+    last="$(tail -c1 "${f}")"
+    [[ -z "${last}" ]] || echo ""
+  done
+  echo ""
+  echo "gate-review: reply \`approve <code>\` in chat (several codes may follow one approve)."
 }
 
 # Normalize before hashing so a trailing-newline difference between what the
@@ -332,7 +353,7 @@ _remove_pending() {
 }
 
 _cmd_stage() {
-  local name="" file="" kind="" route outcome rule reason here line
+  local name="" file="" kind="" route outcome rule reason here line code
   local -a lint_allow=()
   while (($# > 0)); do
     case "$1" in
@@ -396,14 +417,52 @@ _cmd_stage() {
     rm -f "${PENDING}/.lint/${name}"
   fi
   printf 'staged: %s (for %s)\n' "${name}" "${GATE_KEY}"
+  # Andrew may approve by replying `approve <code>`; a restage with new text gets a new code.
+  code="$(_approve_code "${PENDING}/${name}")"
+  printf 'approve-code: %s\n' "${code}"
+}
+
+# approve-hash <code>...: all or nothing; each code must match exactly one staged item. Only the chat hook calls it.
+_cmd_approve_hash() {
+  local code f item h body
+  local -a plan=() hit=()
+  local -A seen=()
+  (($# > 0)) || _die "usage: gate-review.sh approve-hash <code>..."
+  _prune_expired
+  for code in "$@"; do
+    code="${code,,}"
+    [[ "${code}" =~ ^[0-9a-f]{6}$ ]] || _die "approve-hash: '${code}' is not a 6-character code; nothing approved"
+    hit=()
+    for f in "${PENDING_ROOT}"/*/*; do
+      [[ -f "${f}" ]] || continue
+      h="$(_hash "${f}")"
+      [[ "${h}" == "${code}"* ]] && hit+=("${f}")
+    done
+    case "${#hit[@]}" in
+      0) _die "approve-hash: no staged item has code ${code}; nothing approved" ;;
+      1) ;;
+      *) _die "approve-hash: code ${code} matches ${#hit[@]} staged items; nothing approved (use gate-review.sh open)" ;;
+    esac
+    [[ -n "${seen["${hit[0]}"]:-}" ]] || plan+=("${hit[0]}")
+    seen["${hit[0]}"]=1
+  done
+  for f in "${plan[@]}"; do
+    item="${f##*/}"
+    # The same write as the editor's APPROVED step, under the key the item was staged for.
+    PENDING="${f%/*}"
+    APPROVED="${APPROVED_ROOT}/${PENDING##*/}"
+    mkdir -p "${APPROVED}"
+    SPLIT_WRITTEN=()
+    body="$(cat "${f}")"
+    _write_approved "${item}" "${body}"
+    printf 'approved: %s\n' "${APPROVED}/${item}"
+  done
 }
 
 # gate-lint's "allow <Check>: <reason>" lines from the last _stage_lint, for the batch header.
 LINT_ALLOWED=""
 
-# _stage_lint <outcome> <kind> <file> [--allow R --reason T]...: a gated route blocks, exempt warns.
-
-# Any route but exempt is gated, so this works with both the review and pangram/visual names.
+# _stage_lint <outcome> <kind> <file> [--allow R --reason T]...: any route but exempt blocks; exempt warns.
 _stage_lint() {
   local outcome="$1" kind="$2" file="$3" lint out rc=0 mode=block
   shift 3
@@ -626,7 +685,10 @@ _cmd_open() {
     _die "nothing staged for ${GATE_KEY} (staging is kept per repo and branch)"
   fi
 
-  _require_gui
+  if ! _have_gui; then
+    _print_inline
+    return 0
+  fi
 
   # One review at a time, across every key: there is one reviewer and one
   # editor. Measured 2026-09-18, back when every session shared one batch.txt
@@ -778,7 +840,10 @@ _cmd_open() {
   rm -rf "${work}"
 
   printf 'opening %s item(s) in %s\n' "${count}" "${EDITOR_APP}" >&2
-  open -a "${EDITOR_APP}" "${batch}" || _die "could not open ${EDITOR_APP}"
+  if ! open -a "${EDITOR_APP}" "${batch}" 2>/dev/null; then
+    printf 'gate-review: could not open %s; using the default text editor (open -t)\n' "${EDITOR_APP}" >&2
+    open -t "${batch}" || _die "could not open ${EDITOR_APP} or the default text editor"
+  fi
 
   # `open` returns as soon as the request is dispatched, so wait on the file
   # rather than on the editor. Poll the status word: it is written only by a
@@ -1263,11 +1328,12 @@ _cmd_suspended() {
 case "${1:-}" in
   stage) shift; _tmp_traps; _cmd_stage "$@" ;;
   open) _cmd_open ;;
+  approve-hash) shift; _cmd_approve_hash "$@" ;;
   hash) shift; _hash "$1" ;;
   check) shift; _tmp_traps; _cmd_check "$@" ;;
   measure) shift; _tmp_traps; _cmd_measure "$@" ;;
   route) shift; _cmd_route "$@" ;;
   personify-path) _personify_path ;;
   suspended) _cmd_suspended ;;
-  *) _die "usage: gate-review.sh {stage --kind <kind> <name> <file>|open|hash <file>|check [--kind <kind>] <file> [--repo owner/name] [--dir path]|measure --kind <kind> [--title T] [--repo owner/name] [--dir path] <body|route [--kind <kind>] [--repo owner/name] [--dir path]|personify-path|suspended}" ;;
+  *) _die "usage: gate-review.sh {stage --kind <kind> <name> <file>|open|approve-hash <code>...|hash <file>|check [--kind <kind>] <file> [--repo owner/name] [--dir path]|measure --kind <kind> [--title T] [--repo owner/name] [--dir path] <body|route [--kind <kind>] [--repo owner/name] [--dir path]|personify-path|suspended}" ;;
 esac

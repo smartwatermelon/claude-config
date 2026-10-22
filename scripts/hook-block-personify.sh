@@ -33,6 +33,7 @@
 # gated only when it carries a body flag, so label and title edits pass.
 # `gh pr review` follows the same rule: `--approve` alone passes, a review
 # body is gated.
+# Draft PR create and pending API review (no event): clean gate-lint, no approval. gh pr ready: Andrew, in the UI.
 #
 # `gh api` is gated when it sends a field named `body` or runs a GraphQL
 # mutation with a body argument (claude-config#548). The one verifiable form
@@ -192,6 +193,7 @@ readonly _scan_flat
 commit_re="${_sep}${_wrap}${_path}git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*commit([[:space:]]|$)"
 gh_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(pr[[:space:]]+(create|comment|edit|review)|issue[[:space:]]+(create|comment|edit))([[:space:]]|$)"
 api_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*api([[:space:]]|$)"
+ready_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*pr[[:space:]]+ready([[:space:]]|$)"
 
 # A `gh api` field named exactly `body`, in every spelling gh accepts:
 # `-f body=`, `-fbody=`, `--field body=`, `--field=body=`, `--raw-field body=`,
@@ -475,140 +477,6 @@ COPY_SCRIPT="$(cd "$(dirname "${_self}")" && pwd)/gate-copy.py"
 COPY_OUT="${GATE_REVIEW_DIR:-${HOME}/.claude/gate-review}/copy"
 unset _self _target
 
-# --kind copy always routes to Pangram, so it may read only a file directly in COPY_OUT. Unparseable denies.
-_deny_pangram_copy() {
-  {
-    echo '🛑 BLOCKED: this Pangram check asks for the copy kind on text that is not a copy extract.'
-    echo ''
-    echo "  reason:  $1"
-    echo ''
-    echo '--kind copy always calls Pangram, so it is only for the extract the commit'
-    echo 'hook prints for staged public-facing copy. Run it in exactly this form:'
-    echo ''
-    echo "  python3 <personify>/scripts/pangram_check.py --kind copy < ${COPY_OUT}/<sha256>.txt"
-    echo ''
-    echo 'For any other text, name its destination instead, and the route decides'
-    echo 'whether Pangram runs:'
-    echo ''
-    echo '  python3 <personify>/scripts/pangram_check.py --kind <kind> --dir <checkout> < <file>'
-    echo '  python3 <personify>/scripts/pangram_check.py --kind <kind> --repo <owner/name> < <file>'
-  } >&2
-  exit 2
-}
-
-# 1 if pangram_check.py may get the copy kind. Reads unquoted words; odd -k flags, $, ` and bad quotes count too.
-_pangram_copy_asked() {
-  python3 - "$1" <<'PY'
-import shlex
-import sys
-
-try:
-    # Split ; & | into their own words, so `x.py ...; echo $?` ends the scan at the ;.
-    lexer = shlex.shlex(sys.argv[1], posix=True, punctuation_chars=";&|")
-    lexer.whitespace_split = True
-    words = list(lexer)
-except ValueError:
-    print(1)
-    sys.exit(0)
-asked = 0
-for i, word in enumerate(words):
-    named = word.endswith("pangram_check.py")
-    # A glob, variable or substitution may hide the script name; then only its -k flags decide.
-    hidden = any(c in word for c in "$`*?[")
-    if not (named or hidden):
-        continue
-    rest = words[i + 1:]
-    for j, arg in enumerate(rest):
-        if arg and set(arg) <= set(";&|"):
-            break
-        if named and ("$" in arg or "`" in arg):
-            asked = 1
-        if arg.startswith("-k") or arg.startswith("--k"):
-            name, eq, value = arg.partition("=")
-            if not eq:
-                value = rest[j + 1] if j + 1 < len(rest) else ""
-            # (#744) The value of -kX is X. None, or one led by a digit or - (sort -k2), can never become copy.
-            given = arg[2:] if not arg.startswith("--") and len(arg) > 2 else value
-            if not given or set(given) <= set(";&|") or given[0].isdigit() or given[0] == "-":
-                continue
-            plain = value.replace("-", "").isalpha()
-            if name != "--kind" or value == "copy" or not plain:
-                asked = 1
-print(asked)
-PY
-}
-
-_pangram_copy_guard() {
-  local text="${_joined}" stripped asked w i path dir real_out n
-  local -a words
-  # Quotes and backslashes stripped first. A -k flag alone also scans: $S or a glob can hide the name.
-  stripped="${text//[\\\"\']/}"
-  [[ "${stripped}" == *pangram* || "${stripped}" == *-k* ]] || return 0
-  asked="$(_pangram_copy_asked "${text}")" || _deny_pangram_copy "could not parse the command"
-  [[ "${asked}" == 1 ]] || return 0
-
-  [[ "${text}" != *$'\n'* ]] || _deny_pangram_copy "more than one line"
-  case "${text}" in
-    *[\;\&\|\$\`\(\)\{\}\>\\\"\'\*\?\[\]\!\#]*)
-      _deny_pangram_copy "shell syntax this hook cannot follow (separators, pipes, quotes, variables, globs, or a leading ~)"
-      ;;
-    *) ;;
-  esac
-  # (#744) bash expands ~ only at a word start or after = or :, so personify~g2 in a synced plugin path is literal.
-  local lead_tilde='(^|[[:space:]<=:])~'
-  [[ ! "${text}" =~ ${lead_tilde} ]] ||
-    _deny_pangram_copy "shell syntax this hook cannot follow (separators, pipes, quotes, variables, globs, or a leading ~)"
-  n="$(printf '%s' "${text}" | tr -cd '<' | wc -c | tr -d ' ')"
-  ((n == 1)) || _deny_pangram_copy "stdin must be one < redirect from a file (found ${n} '<')"
-
-  read -ra words <<<"${text//</ < }"
-  i=0
-  if [[ "${words[0]:-}" =~ ^(/[^[:space:]]*/)?python3(\.[0-9]+)?$ ]]; then
-    i=1
-  fi
-  [[ "${words[i]:-}" =~ (^|/)pangram_check\.py$ ]] ||
-    _deny_pangram_copy "the command must start with python3 and the path to pangram_check.py"
-  i=$((i + 1))
-  path=""
-  while ((i < ${#words[@]})); do
-    w="${words[i]}"
-    case "${w}" in
-      --kind=copy | --repo=?* | --dir=?*) i=$((i + 1)) ;;
-      --kind)
-        [[ "${words[i + 1]:-}" == copy ]] || _deny_pangram_copy "--kind takes copy here, nothing else"
-        i=$((i + 2))
-        ;;
-      --repo | --dir)
-        [[ -n "${words[i + 1]:-}" && "${words[i + 1]}" != "<" ]] || _deny_pangram_copy "${w} needs a value"
-        i=$((i + 2))
-        ;;
-      "<")
-        path="${words[i + 1]:-}"
-        i=$((i + 2))
-        ;;
-      *) _deny_pangram_copy "unexpected argument: ${w}" ;;
-    esac
-  done
-  [[ -n "${path}" ]] || _deny_pangram_copy "no file redirected into stdin"
-  case "${path}" in
-    /*) ;;
-    *) _deny_pangram_copy "the stdin path is not absolute: ${path}" ;;
-  esac
-  case "/${path}/" in
-    */../* | */./*) _deny_pangram_copy "the stdin path has . or .. in it: ${path}" ;;
-    *) ;;
-  esac
-  [[ -f "${path}" && ! -L "${path}" ]] || _deny_pangram_copy "the stdin path is not a regular file: ${path}"
-  real_out="$(cd "${COPY_OUT}" 2>/dev/null && pwd -P)" ||
-    _deny_pangram_copy "the copy extract directory does not exist: ${COPY_OUT}"
-  dir="$(cd "$(dirname "${path}")" 2>/dev/null && pwd -P)" ||
-    _deny_pangram_copy "cannot resolve the directory of ${path}"
-  [[ "${dir}" == "${real_out}" ]] ||
-    _deny_pangram_copy "the stdin file is not a copy extract in ${COPY_OUT}: ${path}"
-  return 0
-}
-# In this hook, not a new chain entry: --repair links no new file. Suspension does not lift it.
-_pangram_copy_guard
 _index_git_re="(^|[^[:alnum:]_.-])${_path}git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(add|rm|mv|stage|apply|restore|reset|checkout|switch|update-index|read-tree|stash|merge|cherry-pick|revert|rebase|am|pull|commit)([[:space:]]|$)"
 
 _verify_copy() {
@@ -1193,6 +1061,11 @@ _verify_path() {
 
   [[ -f "${path}" ]] || _deny "no such file: ${path}" "${surface}"
 
+  if [[ "${LINT_ONLY}" -eq 1 ]]; then
+    _lint_or_deny "${path}" "${surface}" "${cap_kind}"
+    return 0
+  fi
+
   [[ -x "${GATE}" ]] || _deny "gate-review.sh missing at ${GATE}; cannot verify" "${surface}"
 
   local -a dest=()
@@ -1205,6 +1078,48 @@ _verify_path() {
   if [[ "${DEST_ALSO_CWD:-0}" -eq 1 && -n "${DEST_DIR:-}" ]]; then
     _check_one "${path}" "${surface}" --kind "${cap_kind}" --dir "${DEST_DIR}"
   fi
+}
+
+# 1 while a draft PR body or a pending review is verified: gate-lint in block mode stands in for approval.
+LINT_ONLY=0
+
+_lint_or_deny() {
+  local path="$1" surface="$2" kind="$3" out rc=0
+  [[ -x "${SCRIPT_DIR}/gate-lint.sh" ]] || _deny "gate-lint.sh missing at ${SCRIPT_DIR}; cannot lint ${path}" "${surface}"
+  out="$("${SCRIPT_DIR}/gate-lint.sh" --mode block "${kind}" "${path}" 2>&1)" || rc=$?
+  [[ -z "${out}" ]] || printf '%s\n' "${out}" >&2
+  case "${rc}" in
+    0) return 0 ;;
+    1) _deny "lint errors in ${path}; a draft or pending review needs clean lint (approval not needed)" "${surface}" ;;
+    *) _deny "gate-lint could not run (exit ${rc}), so this is not a verdict on the text" "${surface}" ;;
+  esac
+}
+
+# 0 if a gh pr create segment has a bare --draft or -d word. Quoted text and flag values do not count; -dF is unsupported.
+_is_draft() {
+  local tag raw dec prev="" w
+  w="$(_words "$1")"
+  while IFS=$'\037' read -r tag raw dec; do
+    if [[ "${tag}" == OK ]]; then
+      case "${prev}" in
+        -t | --title | -b | --body | -F | --body-file | -B | --base | -H | --head | -R | --repo | -a | --assignee | \
+          -l | --label | -m | --milestone | -p | --project | -r | --reviewer | -T | --template | --recover) ;;
+        *) [[ "${dec}" == --draft || "${dec}" == -d || "${dec}" == --draft=true ]] && return 0 ;;
+      esac
+    fi
+    prev="${dec}"
+  done <<<"${w}"
+  return 1
+}
+
+# 0 if a gh pr ready segment carries --undo (back to draft), which publishes no text.
+_has_undo() {
+  local tag raw dec w
+  w="$(_words "$1")"
+  while IFS=$'\037' read -r tag raw dec; do
+    [[ "${tag}" == OK && "${dec}" == --undo ]] && return 0
+  done <<<"${w}"
+  return 1
 }
 
 # Run `gate-review.sh check` once and turn its one-line failure reason into the
@@ -1304,6 +1219,8 @@ _verify_api_segment() {
   fi
   # As in _verify_segment: an exempt destination passes in any form (#698).
   _dest_exempt "${cap_kind}" && return 0
+  # A review with no event stays pending, seen only by Andrew until he submits it: lint only.
+  _api_pending_review "${seg}" && LINT_ONLY=1
   matches="$(printf '%s\n' "${seg}" | grep -oE -- "${_api_body_re}" || true)"
   while IFS= read -r m; do
     [[ -n "${m}" ]] || continue
@@ -1319,6 +1236,26 @@ _verify_api_segment() {
       _deny "text given inline; only -F body=@<absolute path> can be verified" "${surface}"
     _verify_path "${val#@}" "${surface}" "${cap_kind}"
   done <<<"${matches}"
+}
+
+# The endpoint words of a gh api segment (repos/...), never a field value or file path.
+_api_endpoints() {
+  printf '%s\n' "$1" | grep -oE -- "(^|[[:space:]])[\"']?(https?://[^/[:space:]\"']+)?/?repos/[^[:space:]\"']*" || true
+}
+
+# 0 if the endpoint creates a review and nothing could be an event field. Quotes, $ and ` fail closed.
+_api_pending_review() {
+  local flat="${1//[\"\'\\]/}"
+  [[ "${flat}" != *event* && "${flat}" != *[\$\`]* ]] || return 1
+  _api_endpoints "$1" | grep -qE '/pulls/[0-9]+/reviews/?([?]|$)'
+}
+
+# 0 if the endpoint submits a pending review (POST .../reviews/ID/events).
+_api_submits_review() {
+  local flat="${1//[\"\'\\]/}" gql="${_scan_flat//[\"\'\\]/}"
+  [[ "${flat}" == *graphql* && "${gql}" == *submitPullRequestReview* ]] && return 0
+  # Anywhere in the segment, any ID token ($ID, quoted): matching too much only blocks.
+  printf '%s\n' "${flat}" | grep -qE '/pulls/[^/[:space:]]+/reviews/[^/[:space:]]+/events'
 }
 
 # Endpoint words only, as in _gh_destination, so a body file path cannot pick the looser cap.
@@ -1683,12 +1620,33 @@ _gate_segment() {
     if printf '%s\n' "${seg}" | grep -qE '[[:space:]](-b|--body|-F|--body-file)([[:space:]]|=)'; then
       _suspended && exit 0
       cap_kind="$(_gh_cap_kind "${seg}")"
+      if [[ "${cap_kind}" == pr ]] && printf '%s\n' "${seg}" | grep -qE 'pr[[:space:]]+create([[:space:]]|$)' &&
+        _is_draft "${seg}"; then
+        LINT_ONLY=1
+      fi
       _verify_segment "${seg}" "PR/issue body" '-b|--body' '-F|--body-file' gh "${cap_kind}"
+      LINT_ONLY=0
     fi
+  elif printf '%s\n' "${seg}" | grep -qE "${ready_re}"; then
+    _has_undo "${seg}" && return 0
+    _suspended && exit 0
+    _destination_for_segment "${seg}" gh "PR ready for review"
+    _dest_exempt pr && return 0
+    _deny "gh pr ready on a review route; Andrew clicks Ready for review in the GitHub UI" "PR ready for review"
   elif printf '%s\n' "${seg}" | grep -qE "${api_re}"; then
+    # Submitting a pending review publishes its text; graphql has no route, so it never passes.
+    if _api_submits_review "${seg}"; then
+      _suspended && exit 0
+      if [[ "${seg}" != *graphql* ]]; then
+        _destination_for_segment "${seg}" api "review submission"
+        _dest_exempt pr-comment && return 0
+      fi
+      _deny "submitting a review on a review route; Andrew clicks Submit review in the GitHub UI" "review submission"
+    fi
     if _api_is_gated "${seg}"; then
       _suspended && exit 0
       _verify_api_segment "${seg}"
+      LINT_ONLY=0
     fi
   fi
   return 0
