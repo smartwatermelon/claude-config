@@ -435,7 +435,10 @@ _verify_segment() {
   _destination_for_segment "${seg}" "${kind}" "${surface}"
   # Copy is checked before the exemption: the message's route says nothing about the page.
   [[ "${kind}" != "commit" ]] || _verify_copy "${seg}"
-  _dest_exempt "${cap_kind}" && return 0
+  if _dest_exempt "${cap_kind}"; then
+    _lint_exempt "${seg}" "${file_flags}" "${cap_kind}"
+    return 0
+  fi
 
   # An inline string cannot be hashed from the command line at all.
   if printf '%s\n' "${seg}" | grep -qE "[[:space:]](${inline_flags})([[:space:]]|=)"; then
@@ -449,6 +452,14 @@ _verify_segment() {
   fi
 
   _verify_path "${path}" "${surface}" "${cap_kind}"
+}
+
+# Exempt text: gate-lint in warn mode on the message file, if any. Never blocks; inline text is not linted.
+_lint_exempt() {
+  local path
+  path="$(_extract_path "$1" "$2")" || return 0
+  [[ "${path}" == /* && -f "${path}" && -x "${SCRIPT_DIR}/gate-lint.sh" ]] || return 0
+  "${SCRIPT_DIR}/gate-lint.sh" --mode warn "$3" "${path}" >&2 || true
 }
 
 # Public-facing copy (dev-env#206). gate-copy.py reads DEST_DIR's index, so _verify_copy denies what stages more.

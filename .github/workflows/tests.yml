@@ -64,4 +64,6 @@ jobs:
         env:
           GH_WRAPPER_LIB: ${{ runner.temp }}/dotfiles/bash/gh-wrapper.sh
           PERSONIFY_CHECKOUT: ${{ github.workspace }}/personify
+          # The runner has no vale, and gate-review.sh stage fails closed without one.
+          GATE_LINT_VALE: ${{ github.workspace }}/scripts/tests/fixtures/vale-stub.sh
         run: scripts/run-tests.sh
