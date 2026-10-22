@@ -14,7 +14,7 @@ _lead='^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|time|exec|command
 _flags='([[:space:]]+-[^[:space:]]+)*'
 _end='[[:space:]]*$'
 patterns=(
-  "${_lead}((bash|sh|zsh|source|\.)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?([^[:space:]]*/)?run-tests\.sh([[:space:]]|$)"
+  "${_lead}((bash|sh|zsh|source|\.)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?([^[:space:]]*/)?run-tests\.sh${_flags}([[:space:]]*[0-9]*[<>].*)?${_end}"
   "${_lead}python[0-9.]*[[:space:]]+-m[[:space:]]+unittest([[:space:]]+discover([[:space:]]|$)|${_flags}${_end})"
   "${_lead}(python[0-9.]*[[:space:]]+-m[[:space:]]+)?pytest${_flags}${_end}"
   "${_lead}bats[[:space:]]+(-r|--recursive)([[:space:]]|$)"
