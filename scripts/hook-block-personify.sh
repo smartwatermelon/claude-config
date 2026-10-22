@@ -33,6 +33,7 @@
 # gated only when it carries a body flag, so label and title edits pass.
 # `gh pr review` follows the same rule: `--approve` alone passes, a review
 # body is gated.
+# Draft PR create and pending API review (no event): clean gate-lint, no approval. gh pr ready: Andrew, in the UI.
 #
 # `gh api` is gated when it sends a field named `body` or runs a GraphQL
 # mutation with a body argument (claude-config#548). The one verifiable form
@@ -192,11 +193,13 @@ readonly _scan_flat
 commit_re="${_sep}${_wrap}${_path}git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*commit([[:space:]]|$)"
 gh_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(pr[[:space:]]+(create|comment|edit|review)|issue[[:space:]]+(create|comment|edit))([[:space:]]|$)"
 api_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*api([[:space:]]|$)"
+ready_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*pr[[:space:]]+ready([[:space:]]|$)"
 
 # A `gh api` field named exactly `body`, in every spelling gh accepts:
 # `-f body=`, `-fbody=`, `--field body=`, `--field=body=`, `--raw-field body=`,
 # with the key=value optionally quoted. The leading space keeps `nobody=` and
 # the like out; the value runs to the next space.
+_api_event_re="[[:space:]](-f|-F|--field|--raw-field)(=|[[:space:]]+)?[\"']?event="
 _api_body_re="[[:space:]](-f|-F|--field|--raw-field)(=|[[:space:]]+)?[\"']?body=[^[:space:]]*"
 
 # A GraphQL mutation that sets a body argument (addComment, addPullRequestReview
@@ -1059,6 +1062,11 @@ _verify_path() {
 
   [[ -f "${path}" ]] || _deny "no such file: ${path}" "${surface}"
 
+  if [[ "${LINT_ONLY}" -eq 1 ]]; then
+    _lint_or_deny "${path}" "${surface}" "${cap_kind}"
+    return 0
+  fi
+
   [[ -x "${GATE}" ]] || _deny "gate-review.sh missing at ${GATE}; cannot verify" "${surface}"
 
   local -a dest=()
@@ -1071,6 +1079,48 @@ _verify_path() {
   if [[ "${DEST_ALSO_CWD:-0}" -eq 1 && -n "${DEST_DIR:-}" ]]; then
     _check_one "${path}" "${surface}" --kind "${cap_kind}" --dir "${DEST_DIR}"
   fi
+}
+
+# 1 while a draft PR body or a pending review is verified: gate-lint in block mode stands in for approval.
+LINT_ONLY=0
+
+_lint_or_deny() {
+  local path="$1" surface="$2" kind="$3" out rc=0
+  [[ -x "${SCRIPT_DIR}/gate-lint.sh" ]] || _deny "gate-lint.sh missing at ${SCRIPT_DIR}; cannot lint ${path}" "${surface}"
+  out="$("${SCRIPT_DIR}/gate-lint.sh" --mode block "${kind}" "${path}" 2>&1)" || rc=$?
+  [[ -z "${out}" ]] || printf '%s\n' "${out}" >&2
+  case "${rc}" in
+    0) return 0 ;;
+    1) _deny "lint errors in ${path}; a draft or pending review needs clean lint (approval not needed)" "${surface}" ;;
+    *) _deny "gate-lint could not run (exit ${rc}), so this is not a verdict on the text" "${surface}" ;;
+  esac
+}
+
+# 0 if a gh pr create segment has a bare --draft or -d word. Quoted text and flag values do not count; -dF is unsupported.
+_is_draft() {
+  local tag raw dec prev="" w
+  w="$(_words "$1")"
+  while IFS=$'\037' read -r tag raw dec; do
+    if [[ "${tag}" == OK ]]; then
+      case "${prev}" in
+        -t | --title | -b | --body | -F | --body-file | -B | --base | -H | --head | -R | --repo | -a | --assignee | \
+          -l | --label | -m | --milestone | -p | --project | -r | --reviewer | -T | --template | --recover) ;;
+        *) [[ "${dec}" == --draft || "${dec}" == -d || "${dec}" == --draft=true ]] && return 0 ;;
+      esac
+    fi
+    prev="${dec}"
+  done <<<"${w}"
+  return 1
+}
+
+# 0 if a gh pr ready segment carries --undo (back to draft), which publishes no text.
+_has_undo() {
+  local tag raw dec w
+  w="$(_words "$1")"
+  while IFS=$'\037' read -r tag raw dec; do
+    [[ "${tag}" == OK && "${dec}" == --undo ]] && return 0
+  done <<<"${w}"
+  return 1
 }
 
 # Run `gate-review.sh check` once and turn its one-line failure reason into the
@@ -1170,6 +1220,11 @@ _verify_api_segment() {
   fi
   # As in _verify_segment: an exempt destination passes in any form (#698).
   _dest_exempt "${cap_kind}" && return 0
+  # A review with no event stays pending, seen only by Andrew until he submits it: lint only.
+  if [[ "${seg}" =~ /pulls/[0-9]+/reviews([[:space:]\"\'?]|$) ]] &&
+    ! printf '%s\n' "${seg}" | grep -qE -- "${_api_event_re}"; then
+    LINT_ONLY=1
+  fi
   matches="$(printf '%s\n' "${seg}" | grep -oE -- "${_api_body_re}" || true)"
   while IFS= read -r m; do
     [[ -n "${m}" ]] || continue
@@ -1549,12 +1604,24 @@ _gate_segment() {
     if printf '%s\n' "${seg}" | grep -qE '[[:space:]](-b|--body|-F|--body-file)([[:space:]]|=)'; then
       _suspended && exit 0
       cap_kind="$(_gh_cap_kind "${seg}")"
+      if [[ "${cap_kind}" == pr ]] && printf '%s\n' "${seg}" | grep -qE 'pr[[:space:]]+create([[:space:]]|$)' &&
+        _is_draft "${seg}"; then
+        LINT_ONLY=1
+      fi
       _verify_segment "${seg}" "PR/issue body" '-b|--body' '-F|--body-file' gh "${cap_kind}"
+      LINT_ONLY=0
     fi
+  elif printf '%s\n' "${seg}" | grep -qE "${ready_re}"; then
+    _has_undo "${seg}" && return 0
+    _suspended && exit 0
+    _destination_for_segment "${seg}" gh "PR ready for review"
+    _dest_exempt pr && return 0
+    _deny "gh pr ready on a review route; Andrew clicks Ready for review in the GitHub UI" "PR ready for review"
   elif printf '%s\n' "${seg}" | grep -qE "${api_re}"; then
     if _api_is_gated "${seg}"; then
       _suspended && exit 0
       _verify_api_segment "${seg}"
+      LINT_ONLY=0
     fi
   fi
   return 0
