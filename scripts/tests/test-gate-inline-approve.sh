@@ -103,6 +103,11 @@ if [[ "${RC}" == 0 ]]; then _ok "wrong code: hook exits 0"; else _no "wrong code
 if _approved "${ALPHA}" c4; then _no "wrong code: nothing approved"; else _ok "wrong code: nothing approved"; fi
 if [[ "${OUT}" == *"nothing approved"* ]]; then _ok "wrong code: Andrew is told"; else _no "wrong code: Andrew is told: ${OUT}"; fi
 
+for p in "approve ${c4} zz12zz" "approve ${c4} 12345" "approve ${c4}, abc"; do
+  _prompt "${p}"
+  if _approved "${ALPHA}" c4 || [[ "${OUT}" != *"nothing approved"* ]]; then _no "'${p}': nothing approved"; else
+    _ok "'${p}': nothing approved"; fi
+done
 _prompt "approve ${c4} ${wrong}"
 if _approved "${ALPHA}" c4; then _no "one good, one wrong: nothing approved"; else _ok "one good, one wrong: nothing approved"; fi
 

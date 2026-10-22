@@ -42,6 +42,14 @@ list="${BASH_REMATCH[1]//[,$'\n\t\r']/ }"
 read -ra codes <<<"${list}"
 ((${#codes[@]} > 0)) || exit 0
 
+# A mistyped extra code (hex, or letters with a digit) must not let the others through.
+rest="${prompt:${#BASH_REMATCH[0]}-${#BASH_REMATCH[3]}}"
+rest="${rest#"${rest%%[![:space:],]*}"}"
+next="${rest%%[^0-9a-z]*}"
+if [[ "${next}" =~ ^[0-9a-f]+$ || "${next}" =~ [0-9] ]]; then
+  _say "gate: nothing approved: '${next}' after the codes is not a 6-character code."
+fi
+
 out="$("${GATE}" approve-hash "${codes[@]}" 2>&1)"
 rc=$?
 if ((rc == 0)); then
