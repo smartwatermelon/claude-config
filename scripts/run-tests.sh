@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs every test suite in this repo: tests/*.bats, scripts/tests/test-*.sh,
 # hooks/tests/*.sh, and the root test-pre-merge-review.sh. CI calls it as a
-# required check; run it by hand for a local full run.
+# required check. Outside CI it refuses unless RUN_FULL_SUITE=1, which is for
+# Andrew's own hand runs; agents never set it.
 #
 # Before this existed nothing ran these tests: CI ran linters only and there
 # was no .project-hooks/pre-push, so two bats cases sat red on main for four
@@ -36,8 +37,10 @@ done
 
 # The full suite runs in CI only (Andrew, 2026-10-22): local full runs cost a
 # half hour per push and CI runs it anyway as a required check.
-if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
+# RUN_FULL_SUITE=1 is the human override (Andrew, 2026-10-22).
+if [[ "${GITHUB_ACTIONS:-}" != "true" && "${RUN_FULL_SUITE:-}" != "1" ]]; then
   echo "run-tests.sh: the full suite runs in CI only. Run the test files for your change, then push." >&2
+  echo "run-tests.sh: a human can run it by hand with RUN_FULL_SUITE=1. Agents never set it." >&2
   exit 3
 fi
 

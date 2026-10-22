@@ -48,7 +48,6 @@ REQUIRED_HOOKS=(
   hook-block-api-merge.sh
   hook-block-gh-auth.sh
   hook-block-git-worktree.sh
-  hook-block-full-suite.sh
 )
 
 # Fail closed (#660). This loop used to skip a hook that was not executable, so

@@ -12,6 +12,8 @@ setup() {
   FAKE="$(mktemp -d)"
   mkdir -p "${FAKE}/tests" "${FAKE}/scripts/tests" "${FAKE}/hooks/tests"
   export RUN_TESTS_ROOT="${FAKE}"
+  # The runner refuses outside CI; these cases test what it does past that guard.
+  export RUN_FULL_SUITE=1
 }
 
 teardown() {
@@ -93,7 +95,7 @@ fail_sh() { printf 'echo marker-%s; exit 1\n' "$1" >"${FAKE}/scripts/tests/test-
   # Each suite fails if HOME is the caller's, or if an earlier suite's marker
   # is visible, then leaves a marker of its own.
   for n in b c; do
-    printf '[ "$HOME" != "%s" ] || exit 1\n[ ! -e "$HOME/marker" ] || exit 1\n[ "$XDG_CONFIG_HOME" = "$HOME/.config" ] || exit 1\ntouch "$HOME/marker"\n' \
+    printf "[ \"\$HOME\" != \"%s\" ] || exit 1\\n[ ! -e \"\$HOME/marker\" ] || exit 1\\n[ \"\$XDG_CONFIG_HOME\" = \"\$HOME/.config\" ] || exit 1\\ntouch \"\$HOME/marker\"\\n" \
       "${HOME}" >"${FAKE}/scripts/tests/test-${n}.sh"
   done
   run "${RUNNER}"
@@ -105,14 +107,14 @@ fail_sh() { printf 'echo marker-%s; exit 1\n' "$1" >"${FAKE}/scripts/tests/test-
   local caller_home="${FAKE}/caller"
   mkdir -p "${caller_home}/.config/bash"
   : >"${caller_home}/.config/bash/gh-wrapper.sh"
-  printf '[ "$GH_WRAPPER_LIB" = "%s" ]\n' "${caller_home}/.config/bash/gh-wrapper.sh" \
+  printf "[ \"\$GH_WRAPPER_LIB\" = \"%s\" ]\\n" "${caller_home}/.config/bash/gh-wrapper.sh" \
     >"${FAKE}/scripts/tests/test-b.sh"
   run env -u GH_WRAPPER_LIB HOME="${caller_home}" "${RUNNER}"
   [ "${status}" -eq 0 ]
 }
 
 @test "an explicit GH_WRAPPER_LIB is kept" {
-  printf '[ "$GH_WRAPPER_LIB" = /x/gh-wrapper.sh ]\n' >"${FAKE}/scripts/tests/test-b.sh"
+  printf "[ \"\$GH_WRAPPER_LIB\" = /x/gh-wrapper.sh ]\\n" >"${FAKE}/scripts/tests/test-b.sh"
   run env GH_WRAPPER_LIB=/x/gh-wrapper.sh "${RUNNER}"
   [ "${status}" -eq 0 ]
 }
@@ -120,7 +122,7 @@ fail_sh() { printf 'echo marker-%s; exit 1\n' "$1" >"${FAKE}/scripts/tests/test-
 @test "repo-local git variables from a hook environment do not reach suites" {
   # git exports these into hooks; a suite that inherits GIT_DIR runs its temp
   # repo's git commands against the pushing repo instead.
-  printf '[ -z "${GIT_DIR:-}" ] && [ -z "${GIT_WORK_TREE:-}" ] && [ -z "${GIT_INDEX_FILE:-}" ]\n' \
+  printf "[ -z \"\${GIT_DIR:-}\" ] && [ -z \"\${GIT_WORK_TREE:-}\" ] && [ -z \"\${GIT_INDEX_FILE:-}\" ]\\n" \
     >"${FAKE}/scripts/tests/test-b.sh"
   run env GIT_DIR=/nonexistent/.git GIT_WORK_TREE=/nonexistent GIT_INDEX_FILE=/nonexistent/index "${RUNNER}"
   [ "${status}" -eq 0 ]
