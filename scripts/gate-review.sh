@@ -401,9 +401,7 @@ _cmd_stage() {
 # gate-lint's "allow <Check>: <reason>" lines from the last _stage_lint, for the batch header.
 LINT_ALLOWED=""
 
-# _stage_lint <outcome> <kind> <file> [--allow R --reason T]...: a gated route blocks, exempt warns.
-
-# Any route but exempt is gated, so this works with both the review and pangram/visual names.
+# _stage_lint <outcome> <kind> <file> [--allow R --reason T]...: any route but exempt blocks; exempt warns.
 _stage_lint() {
   local outcome="$1" kind="$2" file="$3" lint out rc=0 mode=block
   shift 3
