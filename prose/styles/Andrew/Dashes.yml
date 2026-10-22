@@ -1,0 +1,10 @@
+# Source: personify SKILL.md hard rule 1, "No em dashes or en dashes."
+
+# nonword: true is load-bearing. Without it, existence wraps tokens in \b and never matches a dash.
+extends: existence
+message: "Replace the dash ('%s') with a period, comma, or colon."
+level: error
+nonword: true
+tokens:
+  - '—'
+  - '–'

@@ -1,0 +1,9 @@
+# Source: ~/.claude/skills/asd-ste100/SKILL.md, at most 25 words per descriptive sentence.
+
+# personify SKILL.md hard rule 6 asks for short sentences, following ASD-STE100.
+extends: occurrence
+message: "This sentence has more than 25 words. Split it."
+level: error
+scope: sentence
+max: 25
+token: '\b(\w+)\b'

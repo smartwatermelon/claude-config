@@ -1,0 +1,19 @@
+# Source: personify SKILL.md lists contractions as a mark of human prose.
+
+# A warning only: ASD-STE100 prefers the long form, and some sentences read better with it.
+extends: substitution
+message: "Consider '%s' instead of '%s'."
+level: warning
+ignorecase: true
+swap:
+  do not: don't
+  does not: doesn't
+  did not: didn't
+  cannot: can't
+  will not: won't
+  is not: isn't
+  are not: aren't
+  was not: wasn't
+  should not: shouldn't
+  would not: wouldn't
+  could not: couldn't
