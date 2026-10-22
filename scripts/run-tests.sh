@@ -34,6 +34,13 @@ for arg in "$@"; do
   esac
 done
 
+# The full suite runs in CI only (Andrew, 2026-10-22): local full runs cost a
+# half hour per push and CI runs it anyway as a required check.
+if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
+  echo "run-tests.sh: the full suite runs in CI only. Run the test files for your change, then push." >&2
+  exit 3
+fi
+
 REPO_ROOT="${RUN_TESTS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 # git exports GIT_DIR (and friends) into hooks. Inherited by a suite, it points

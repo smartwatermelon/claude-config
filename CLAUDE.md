@@ -156,7 +156,7 @@ After committing, verify the hook ran: `head -6 "$(git -C /abs/path/to/repo rev-
 
 1. Confirm both commit-time reviewers are clean.
 2. Expect the pre-push hook to run one `--mode=full-diff` review of `base...HEAD`. It must pass for the push to succeed, and it files no GitHub issues. A whole-codebase scan (`--mode=codebase --no-file`) is optional and on demand, not part of the push. Details: `~/.claude/docs/CHECKLISTS.md` ("On-Demand Codebase Review").
-3. Make sure the FULL test suite runs, not just Protocol 3's scoped subset. Where CI runs it as a required check (claude-config `tests`, dotfiles `bash-tests`), do NOT run it locally: the push returns at once, and the required check gates the merge. In a repo with no CI test job, run the suite yourself and fix what it finds.
+3. The FULL test suite runs in CI only, never locally, and never in an agent brief. `hook-block-full-suite.sh` blocks it, and each runner refuses outside CI. Push; the required check gates the merge. A repo with no CI test job gets one; it is not a reason to run the suite locally.
 
 Full checklists: `~/.claude/docs/CHECKLISTS.md`
 
