@@ -31,7 +31,7 @@ export GIT_CEILING_DIRECTORIES="${TMP}"
 export XDG_CONFIG_HOME="${TMP}/xdg"
 mkdir -p "${XDG_CONFIG_HOME}/personify/checks"
 export GATE_RULES_FILE="${TMP}/rules.conf"
-printf 'repo=acme/pang pangram\nrepo=acme/ex exempt\n* visual\n' >"${GATE_RULES_FILE}"
+printf 'repo=acme/pang review\nrepo=acme/ex exempt\n* review\n' >"${GATE_RULES_FILE}"
 export GATE_REVIEW_DIR="${TMP}/gate"
 # Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
 GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
@@ -123,11 +123,11 @@ else
 fi
 _stage_case "stage with an unknown --kind fails" 1 "unknown --kind" "${VIS}" \
   --kind novel badkind "${SHORT}"
-_stage_case "under-cap text stages on a visual route" 0 "staged: ok1" "${VIS}" \
+_stage_case "under-cap text stages on a review route" 0 "staged: ok1" "${VIS}" \
   --kind commit ok1 "${SHORT}"
 _stage_case "--kind after the name is accepted too" 0 "staged: ok2" "${VIS}" \
   ok2 --kind commit "${SHORT}"
-_stage_case "over-cap text is refused on a visual route" 1 \
+_stage_case "over-cap text is refused on a review route" 1 \
   "gate-review: commit title: 60/50 over by 10" "${VIS}" --kind commit vlong "${LONG}"
 if ! _pending "${VIS}" vlong; then
   _ok "over-cap refusal stages nothing"
@@ -136,13 +136,13 @@ else
 fi
 out="$( (cd "${PANG}" && _cmd_stage --kind commit plong "${LONG}") 2>&1)"
 rc=$?
-if ((rc == 1)) && [[ "${out}" == *"over by 10"* && "${out}" != *"no Pangram check record"* ]]; then
-  _ok "pangram route: the refusal is the length one, not the record one"
+if ((rc == 1)) && [[ "${out}" == *"over by 10"* && "${out}" != *"Pangram"* ]]; then
+  _ok "repo review rule: over-cap text is refused for length"
 else
-  _no "pangram route: the refusal is the length one, not the record one (rc=${rc}): ${out}"
+  _no "repo review rule: over-cap text is refused for length (rc=${rc}): ${out}"
 fi
-_stage_case "pangram route, under cap, no record: record refusal as before" 1 \
-  "no Pangram check record" "${PANG}" --kind commit pshort "${SHORT}"
+_stage_case "repo review rule, under cap, no record: stages" 0 \
+  "staged: pshort" "${PANG}" --kind commit pshort "${SHORT}"
 _stage_case "exempt route stages over-cap text" 0 "staged: elong" "${EX}" \
   --kind commit elong "${LONG}"
 # The kind picks the cap: 200 characters pass as a PR body, not as a PR comment.
@@ -295,7 +295,7 @@ _measure_case "measure: --kind 'pr issue' is an unknown kind" 64 "unknown --kind
 _measure_case "measure: --kind 'pr' alone is still known" 0 "" /dev/null --kind pr --title x
 _measure_case "measure: exempt destination is not measured" 0 "" /dev/null \
   --kind pr --title "${T71}" --dir "${EX}"
-_measure_case "measure: visual destination is measured" 1 "over by 1" /dev/null \
+_measure_case "measure: review destination is measured" 1 "over by 1" /dev/null \
   --kind pr --title "${T71}" --dir "${VIS}"
 out="$(CLAUDE_CONFIG_DIR="${TMP}/silent-cfg" bash "${GATE}" measure --kind pr --title x </dev/null 2>&1)"
 rc=$?

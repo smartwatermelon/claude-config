@@ -22,8 +22,7 @@ export GIT_CEILING_DIRECTORIES="${TMP}"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com
 export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
 export XDG_CONFIG_HOME="${TMP}/xdg"
-CHECKS="${XDG_CONFIG_HOME}/personify/checks"
-mkdir -p "${CHECKS}"
+mkdir -p "${XDG_CONFIG_HOME}"
 export GH_WRAPPER_LIB="${TMP}/no-wrapper.sh"
 export GATE_REVIEW_DIR="${TMP}/gate"
 GATE_GH="${HERE}/fixtures/gh-fork-stub.sh"
@@ -85,12 +84,6 @@ _contains() { # <label> <haystack> <needle> [absent]
     _no "$1: no [$3] in [$2]"
   fi
 }
-_sha() {
-  local o
-  o="$(sha256sum "$1")"
-  printf '%s\n' "${o%% *}"
-}
-
 SITE="${TMP}/kebab-tax-netlify"
 mkdir -p "${SITE}/emails"
 git -C "${SITE}" init -q
@@ -233,7 +226,7 @@ _case "staged copy change: blocked" 2 "public-facing copy that has not been appr
 _contains "  ... names the extract" "${err}" "extract: ${GATE_REVIEW_DIR}/copy/"
 _contains "  ... and the stage --kind copy step" "${err}" "stage --kind copy copy-"
 EX1="${extract}"
-_contains "  ... and the check hint names the copy kind" "${err}" "pangram_check.py --kind copy < ${EX1}"
+_contains "  ... and no Pangram check step" "${err}" "pangram_check" absent
 body="$(cat "${EX1}" 2>/dev/null)"
 _contains "  ... extract has the changed text" "${body}" "Export a tax report in two taps."
 _contains "  ... and not the unchanged text" "${body}" "Kebab keeps your receipts" absent
@@ -241,14 +234,11 @@ _contains "  ... and no CSS" "${body}" "color: red" absent
 _case "git -C from another cwd: blocked too" 2 "public-facing copy" "${TMP}" \
   "git -C ${SITE} commit -m x"
 
-# Approval: the record (proof Pangram ran) and the approved bytes, both needed.
-REC="${CHECKS}/$(_sha "${EX1}").json"
+# Approval: the approved bytes alone. No Pangram record is needed (2026-10-22).
 cp "${EX1}" "${APPROVED}/copy-1"
-_case "approved but no Pangram record: blocked" 2 "no Pangram check ran" "${SITE}" "git commit -m x"
-printf '{"status":"SKIPPED","word_count":12}\n' >"${REC}"
-_case "approved, with record: passes" 0 "" "${SITE}" "git commit -m x"
+_case "approved, no Pangram record: passes" 0 "" "${SITE}" "git commit -m x"
 rm -f "${APPROVED}/copy-1"
-_case "record but no approval: blocked" 2 "no visual approval matches" "${SITE}" "git commit -m x"
+_case "no approval: blocked" 2 "rule copy (review): no visual approval matches" "${SITE}" "git commit -m x"
 cp "${EX1}" "${APPROVED}/copy-1"
 _run "${SITE}" "git commit -m x"
 if [[ "${rc}" == 0 && -z "${extract}" ]]; then
