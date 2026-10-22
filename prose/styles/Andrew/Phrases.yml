@@ -1,0 +1,25 @@
+# Source: ~/.config/personify/VOICE.md, "What is never him".
+
+# Same source, "No chatbot sign-offs": the booster closers.
+
+# Source: ~/.claude/CLAUDE.md, Completion Protocol: claims banned until the PR is merged.
+extends: existence
+message: "Cut or replace '%s'."
+level: error
+ignorecase: true
+tokens:
+  # Inflated significance, vague attribution, hedging that costs information.
+  - pivotal moment
+  - experts say
+  - may potentially
+  - in some cases
+  # Booster closers.
+  - hope this helps
+  - happy to adjust
+  - happy to help
+  - let me know if you have (?:any )?questions
+  # Completion claims.
+  - production[- ]ready
+  - ready for review
+  - all done
+  - changes are complete

@@ -21,6 +21,7 @@
 #
 # Usage:
 #   gate-review.sh stage --kind <kind> <name> <file>   queue one artifact (under its length cap) for review
+#                 [--allow RULE --reason TEXT]...      gated routes run gate-lint.sh; these override a rule
 #   gate-review.sh open                  open the batch, wait for save
 #   gate-review.sh hash <file>           print the approved-bytes hash
 #   gate-review.sh check [--kind K] <file>   exit 0 if file matches ANY approval (and fits)
@@ -327,16 +328,23 @@ _cmd_measure() {
 # never keeps a stale route.
 _remove_pending() {
   local dir="$1" name="$2"
-  rm -f "${dir:?}/${name}" "${dir:?}/.route/${name}"
+  rm -f "${dir:?}/${name}" "${dir:?}/.route/${name}" "${dir:?}/.lint/${name}"
 }
 
 _cmd_stage() {
   local name="" file="" kind="" route outcome rule reason here line
+  local -a lint_allow=()
   while (($# > 0)); do
     case "$1" in
       --kind)
         (($# >= 2)) || _die "stage: --kind needs a value"
         kind="$2"
+        shift 2
+        ;;
+      # Passed through to gate-lint.sh, which checks that each --allow has its --reason.
+      --allow | --reason)
+        (($# >= 2)) || _die "stage: $1 needs a value"
+        lint_allow+=("$1" "$2")
         shift 2
         ;;
       *)
@@ -377,11 +385,44 @@ _cmd_stage() {
       *) _die "length checker error, not a verdict on the text: ${LENGTH_OUT}. Nothing staged." ;;
     esac
   fi
+  _stage_lint "${outcome}" "${kind}" "${file}" "${lint_allow[@]+"${lint_allow[@]}"}"
   _use_key
-  mkdir -p "${PENDING}/.route"
+  mkdir -p "${PENDING}/.route" "${PENDING}/.lint"
   cp "${file}" "${PENDING}/${name}"
   printf '%s\t%s\t%s\n' "${outcome}" "${rule}" "${reason}" >"${PENDING}/.route/${name}"
+  if [[ -n "${LINT_ALLOWED}" ]]; then
+    printf '%s\n' "${LINT_ALLOWED}" >"${PENDING}/.lint/${name}"
+  else
+    rm -f "${PENDING}/.lint/${name}"
+  fi
   printf 'staged: %s (for %s)\n' "${name}" "${GATE_KEY}"
+}
+
+# gate-lint's "allow <Check>: <reason>" lines from the last _stage_lint, for the batch header.
+LINT_ALLOWED=""
+
+# _stage_lint <outcome> <kind> <file> [--allow R --reason T]...: a gated route blocks, exempt warns.
+
+# Any route but exempt is gated, so this works with both the review and pangram/visual names.
+_stage_lint() {
+  local outcome="$1" kind="$2" file="$3" lint out rc=0 mode=block
+  shift 3
+  LINT_ALLOWED=""
+  [[ "${outcome}" != "exempt" ]] || mode=warn
+  lint="${ROUTE_SCRIPT%/*}/gate-lint.sh"
+  if [[ ! -x "${lint}" ]]; then
+    [[ "${mode}" == "warn" ]] && return 0
+    _die "no gate-lint.sh at ${lint}, so the text cannot be linted. Nothing staged."
+  fi
+  out="$("${lint}" --mode "${mode}" "$@" "${kind}" "${file}" 2>&1)" || rc=$?
+  [[ -z "${out}" ]] || printf '%s\n' "${out}" >&2
+  case "${rc}" in
+    0) ;;
+    1) _die "lint errors in ${file}. Revise it and stage again, or stage with --allow <Rule> --reason <text>. Nothing staged." ;;
+    64) _die "stage: bad --allow/--reason (see gate-lint above). Nothing staged." ;;
+    *) _die "gate-lint could not run, so this is not a verdict on the text. Nothing staged." ;;
+  esac
+  LINT_ALLOWED="$(printf '%s\n' "${out}" | sed -n 's/^gate-lint: allow //p')"
 }
 
 # Narrow PENDING and APPROVED to the caller's <repo>-<branch>, the same key
@@ -660,6 +701,14 @@ _cmd_open() {
     for f in "${PENDING}"/*; do
       batch_items+=("${f##*/}")
       echo "# ORIGIN ${f##*/}: $(_hash "${f}")"
+    done
+    # Lint rules the agent chose to break, with its stated reason (stage --allow).
+    local lint_line
+    for f in "${PENDING}"/.lint/*; do
+      [[ -f "${f}" && -f "${PENDING}/${f##*/}" ]] || continue
+      while IFS= read -r lint_line; do
+        echo "# LINT OVERRIDE ${f##*/}: ${lint_line}"
+      done <"${f}"
     done
     if [[ -n "${prior}" ]]; then
       echo "#"
