@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # gate-lint.sh as wired in: gate-review.sh stage (block or warn) and the personify hook's exempt branch.
 
-# The gated outcome is "review" after the route rename and "visual" before it. Both are tested as gated.
+# The gated outcome is "review" after the route rename and "visual" before it. The cases use whichever this gate-route.sh accepts.
 
 set -uo pipefail
 unset CDPATH GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
@@ -154,6 +154,12 @@ if [[ "${res}" == "0|"*"error Andrew.Dashes"* ]]; then
   _ok "exempt commit with an em dash passes, with the lint finding on stderr"
 else
   _no "exempt commit with an em dash passes, with the lint finding on stderr: ${res}"
+fi
+res="$(_hook "${EXEMPT}" "gh pr create -R smartwatermelon/z --title t --body-file ${DASH}")"
+if [[ "${res}" == "0|"*"error Andrew.Dashes"* ]]; then
+  _ok "exempt gh pr create body is linted as a pr, and passes"
+else
+  _no "exempt gh pr create body is linted as a pr, and passes: ${res}"
 fi
 res="$(_hook "${EXEMPT}" "git commit -F ${CLEAN}")"
 if [[ "${res}" == "0|" ]]; then
