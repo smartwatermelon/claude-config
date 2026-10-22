@@ -104,8 +104,16 @@ _inplace="${_cmdpos}(sed[[:space:]]+[^|;&]*-i|perl[[:space:]]+[^|;&]*-i|ex[[:spa
 # `echo x >| <dir>/file` passed.
 _redirect=">(>|\\|)?[[:space:]]*[^[:space:]|;&]*${_dirs}"
 
+# approve-hash and the chat hook write approvals; only a human prompt may run them. The bare word counts.
+_approve_hash="(^|[[:space:]\"'=])approve-hash([[:space:]\"';&|)]|\$)"
+_inline_hook="${_cmdpos}((bash|sh|zsh|source|\.)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*([^[:space:]|;&]*/)?)?hook-gate-inline-approve"
+
 blocked=""
-if printf '%s\n' "${cmd}" | grep -qE "${_redirect}"; then
+if printf '%s\n' "${cmd}" | grep -qE "${_approve_hash}"; then
+  blocked="self-approval (approve-hash)"
+elif printf '%s\n' "${cmd}" | grep -qE "${_inline_hook}"; then
+  blocked="self-approval (inline-approve hook)"
+elif printf '%s\n' "${cmd}" | grep -qE "${_redirect}"; then
   blocked="shell redirect"
 elif printf '%s\n' "${cmd}" | grep -qE "${_inplace}"; then
   blocked="in-place edit"
@@ -141,5 +149,6 @@ printf '%s BLOCKED GATE-DIR WRITE (%s)\n' \
   echo ''
   echo 'To get something approved, stage it and ask him to review:'
   echo '  gate-review.sh stage --kind <kind> <label> <file> && gate-review.sh open'
+  echo 'or show him the text and its approve-code; he replies "approve <code>" in chat.'
 } >&2
 exit 2

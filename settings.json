@@ -173,6 +173,16 @@
         ],
         "matcher": ""
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-gate-inline-approve.sh",
+            "type": "command"
+          }
+        ]
+      }
     ]
   },
   "includeCoAuthoredBy": false,
