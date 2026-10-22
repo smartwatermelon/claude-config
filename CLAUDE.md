@@ -156,7 +156,7 @@ After committing, verify the hook ran: `head -6 "$(git -C /abs/path/to/repo rev-
 
 1. Confirm both commit-time reviewers are clean.
 2. Expect the pre-push hook to run one `--mode=full-diff` review of `base...HEAD`. It must pass for the push to succeed, and it files no GitHub issues. A whole-codebase scan (`--mode=codebase --no-file`) is optional and on demand, not part of the push. Details: `~/.claude/docs/CHECKLISTS.md` ("On-Demand Codebase Review").
-3. The FULL test suite runs in CI only, never locally, and never in an agent brief. `hook-block-full-suite.sh` blocks it, and the claude-config, dotfiles and dev-env runners refuse outside CI. Push; the required check gates the merge. A repo with no CI test job gets one; it is not a reason to run the suite locally.
+3. The FULL test suite runs in CI only, never locally, and never in an agent brief. The claude-config and dotfiles runners refuse outside CI. `RUN_FULL_SUITE=1` overrides that for Andrew's own hand runs; agents never set it. Push; the required check gates the merge. A repo with no CI test job gets one; it is not a reason to run the suite locally.
 
 Full checklists: `~/.claude/docs/CHECKLISTS.md`
 
