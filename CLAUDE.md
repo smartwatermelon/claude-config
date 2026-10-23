@@ -25,6 +25,8 @@ If you don't KNOW beyond doubt that a certain thing is true, do NOT present it a
 
 **Every push costs money. Every local verification is free.**
 
+Except running destructive code on a machine that is not disposable. That cost is data, not dollars. See "Destructive code" in Protocol 3.
+
 Pushes trigger GH Actions ($0.008/min+) and EAS builds (limited). Local agents, tests, linting, and Simulator runs cost nothing. Don't push until you're CONFIDENT, not hopeful. One thorough local cycle beats three push-fix-push iterations.
 
 ---
@@ -127,6 +129,29 @@ single obvious owner — a common lib, a hook every module sources — touches
 every test that exercises anything built on it; widen the scope rather than
 guess narrow. If the mapping isn't obvious, run the test files in the changed
 code's directory, push, and let CI run the full suite. Never run it locally.
+
+**Destructive code.** Code is destructive if it deletes, moves, overwrites,
+truncates, or kills, or if it changes system state (`launchctl`, `tmutil`,
+`diskutil`, `defaults write`). If you are not sure, treat it as destructive.
+
+1. Inject every destructive command (a `*_BIN` variable or a wrapper
+   function), including `rm`, `mv` and `find -delete`. Tests stub all of
+   them. A test that can reach a real destructive command through any input
+   must not run on a host.
+2. A safety test ("refuses /", "refuses $HOME") never passes a real
+   dangerous path to a real delete. It asserts on the stub's recorded
+   arguments, or it uses paths under its own temp dir.
+3. The first run of a new safety test (the TDD red phase) happens only in a
+   disposable environment: a Linux container, or a VM on mimolette. This
+   applies even inside the Claude Code sandbox.
+4. Where suites run:
+   - Fully stubbed: locally, inside the sandbox.
+   - Calls a real macOS tool: a disposable macOS VM on mimolette, with no
+     shared folders. Code goes in by clone; results come out as text.
+   - Never on a GitHub macOS runner.
+
+**Why:** on 2026-10-22 a red-phase test passed `//` to a path guard that
+did not yet catch it, and `rm -rf` removed ~40 apps from /Applications.
 
 The full suite is reserved for CI, not every commit — see Protocol 4.
 
@@ -288,6 +313,7 @@ Banned until the PR is merged: "production ready", "ready for review", "all done
 - Never use `# shellcheck disable` directives
 - Never use `((var++))` with `set -e` — when var=0, this exits. Use `((var += 1))` instead.
 - Run `shellcheck -S info <script>` after every script edit before committing
+- Let the tool that owns a cache delete it (`npm cache clean`, `uv cache prune`). A hand-written `rm -rf` needs an allowlist: the exact resolved parent path plus a name pattern for each entry. A denylist (refuse `/`, refuse `$HOME`) is not a guard.
 - **Multi-line shell commands for clipboard**: Write to `cmd.sh` in the session scratchpad, then `pbcopy < <scratchpad>/cmd.sh` so the user gets clean clipboard content. The terminal renderer breaks copy-paste on code blocks (adds indentation/trailing spaces). See [claude-code#18170](https://github.com/anthropics/claude-code/issues/18170).
 - **PATH-shim wrappers — reload the shell before testing**: after symlinking a script into `~/.local/bin` that shadows a system binary (ssh, gh, claude), bash's per-session hash table still points at the old location, so plain `cmd` silently runs the old binary. **Why it hides:** `command -v` and `type` read that same hash table and report the stale path too. Only `which <cmd>` (fresh PATH scan) and `hash -t <cmd>` (shows what is cached) reveal it. **How to apply:** have the user run `hash -r` before any functional check, and debug a "wrapper not running" report by asking for `which` and `hash` output — never `command -v`.
 
