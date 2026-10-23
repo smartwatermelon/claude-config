@@ -45,7 +45,7 @@ EOF
   chmod +x "${MOCK_DIR}/claude"
   export CLAUDE_CLI="${MOCK_DIR}/claude"
 
-  # run-review.sh writes a global pointer to ${HOME}/.claude/last-review-result.log.
+  # run-review.sh writes a global pointer under ${HOME}/.local/state/claude-review.
   # Without a sandbox HOME every run overwrote the real pointer, the file the
   # post-commit check reads to confirm a review ran.
   export HOME="${MOCK_DIR}/home"
@@ -96,8 +96,13 @@ run_review() {
   [[ -f "${TMPDIR_TEST}/.git/last-review-result.log" ]]
 }
 
-@test "global pointer file is updated at ~/.claude/last-review-result.log" {
+@test "global pointer file is updated at ~/.local/state/claude-review/last-review-result.log" {
   run_review || true
-  [[ -f "${HOME}/.claude/last-review-result.log" ]]
-  grep -q "${TMPDIR_TEST}" "${HOME}/.claude/last-review-result.log"
+  [[ -f "${HOME}/.local/state/claude-review/last-review-result.log" ]]
+  grep -q "${TMPDIR_TEST}" "${HOME}/.local/state/claude-review/last-review-result.log"
+}
+
+@test "global pointer is not written under ~/.claude (sandbox denies writes there)" {
+  run_review || true
+  [[ ! -e "${HOME}/.claude/last-review-result.log" ]]
 }

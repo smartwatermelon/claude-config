@@ -428,7 +428,8 @@ _print_nonblocking_dryrun() {
 # Args: analysis_text (full Claude output)
 create_nonblocking_issues() {
   local analysis_text="$1"
-  local pending_dir="${PENDING_ISSUES_DIR:-${HOME}/.claude/pending-issues}"
+  # Not ~/.claude: the sandbox denies writes there, and this runs from sandboxed git hooks.
+  local pending_dir="${PENDING_ISSUES_DIR:-${REVIEW_STATE_DIR:-${HOME}/.local/state/claude-review}/pending-issues}"
 
   local parsed
   parsed=$(parse_nonblocking_issues "${analysis_text}")

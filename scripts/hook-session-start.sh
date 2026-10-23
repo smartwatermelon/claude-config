@@ -5,7 +5,7 @@
 # .claude/hooks/ directory and invoked via the claude-wrapper's
 # pre-launch hook mechanism (see ~/.local/bin/claude-wrapper).
 #
-# ~/.claude/pending-issues/ is where lib-review-issues.sh writes a finding it
+# ~/.local/state/claude-review/pending-issues/ is where lib-review-issues.sh writes a finding it
 # could not file as a GitHub issue (gh stubbed during a dry-run, auth failure,
 # rate limit, Issues disabled on the target repo). That fallback is correct —
 # the finding survives instead of being lost — but nothing ever read the
@@ -21,26 +21,31 @@
 # Consume stdin (required by hook protocol)
 cat >/dev/null
 
-PENDING_DIR="${PENDING_ISSUES_DIR:-${HOME}/.claude/pending-issues}"
+# Queue left ~/.claude (sandbox). Old dir still read for findings queued earlier.
+if [[ -n "${PENDING_ISSUES_DIR:-}" ]]; then
+  PENDING_DIRS=("${PENDING_ISSUES_DIR}")
+else
+  PENDING_DIRS=("${REVIEW_STATE_DIR:-${HOME}/.local/state/claude-review}/pending-issues" "${HOME}/.claude/pending-issues")
+fi
 
-# A missing directory is the normal case on a fresh machine, not an error.
-[[ -d "${PENDING_DIR}" ]] || exit 0
+for PENDING_DIR in "${PENDING_DIRS[@]}"; do
+  # A missing directory is the normal case on a fresh machine, not an error.
+  [[ -d "${PENDING_DIR}" ]] || continue
 
-# `find -print` piped to `wc -l` rather than a glob: an empty directory makes
-# a glob expand to the literal pattern, which would count as one file.
-# Each stage gets `|| true` so a find failure (unreadable dir) yields 0
-# rather than masking a non-zero status mid-pipeline.
-pending_count=$(
-  { find "${PENDING_DIR}" -maxdepth 1 -name '*.md' -type f -print 2>/dev/null || true; } \
-    | { wc -l || true; } \
-    | { tr -d ' ' || true; }
-)
+  # find, not a glob: an empty dir's glob counts as one file. `|| true`: 0 on error.
+  pending_count=$(
+    { find "${PENDING_DIR}" -maxdepth 1 -name '*.md' -type f -print 2>/dev/null || true; } \
+      | { wc -l || true; } \
+      | { tr -d ' ' || true; }
+  )
 
-[[ "${pending_count}" -gt 0 ]] || exit 0
+  [[ "${pending_count}" -gt 0 ]] || continue
 
-# stderr, not stdout: stdout is the hook protocol's channel back to the
-# harness, and this is a human-facing notice rather than hook output.
-printf '⚠️  %s unfiled review finding(s) in %s\n' "${pending_count}" "${PENDING_DIR}" >&2
-printf '   These are findings the reviewer could not file as GitHub issues.\n' >&2
-printf '   Each records its target repo in its Repo header line; drain them by filing\n' >&2
-printf '   each in that repo, then deleting the file.\n' >&2
+  # stderr, not stdout: stdout is the hook protocol's channel back to the
+  # harness, and this is a human-facing notice rather than hook output.
+  printf '⚠️  %s unfiled review finding(s) in %s\n' "${pending_count}" "${PENDING_DIR}" >&2
+  printf '   These are findings the reviewer could not file as GitHub issues.\n' >&2
+  printf '   Each records its target repo in its Repo header line; drain them by filing\n' >&2
+  printf '   each in that repo, then deleting the file.\n' >&2
+done
+exit 0

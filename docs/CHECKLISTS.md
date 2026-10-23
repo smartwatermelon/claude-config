@@ -30,7 +30,7 @@
   3. branch: field matches your current branch
   4. commit: field matches HEAD (git rev-parse --short HEAD)
   If ANY field is missing or wrong: treat as unreviewed. Do not push.
-  (The global ~/.claude/last-review-result.log is now a pointer file with a log: field
+  (The global ~/.local/state/claude-review/last-review-result.log is now a pointer file with a log: field
    pointing to the per-repo authoritative log.)
 □ Never claim "AI review: N clean iterations" without seeing actual review output (Bash tool or log file)
 □ No console.log/print statements in production code
@@ -104,12 +104,12 @@ To scan on demand without filing issues, pass `--no-file` so findings print
 instead:
 
 ```bash
-git diff origin/main...HEAD > /tmp/dryrev-diff.txt
+git diff origin/main...HEAD > "${TMPDIR}"/dryrev-diff.txt
 ~/.claude/hooks/run-review.sh --mode=codebase --no-file \
-  < /tmp/dryrev-diff.txt > /tmp/dryrev-out.txt 2>/tmp/dryrev-err.txt
+  < "${TMPDIR}"/dryrev-diff.txt > "${TMPDIR}"/dryrev-out.txt 2>"${TMPDIR}"/dryrev-err.txt
 
-grep -c 'NON_BLOCKING_ISSUE:' /tmp/dryrev-out.txt   # count of findings
-cat /tmp/dryrev-out.txt
+grep -c 'NON_BLOCKING_ISSUE:' "${TMPDIR}"/dryrev-out.txt   # count of findings
+cat "${TMPDIR}"/dryrev-out.txt
 ```
 
 This is optional. It is not a preview of the push: the push runs a different
@@ -220,7 +220,7 @@ ONLY THEN is the PR ready for merge approval.
 
 <body - what and why>
 
-AI review: <N> clean iterations  ← ONLY write this if you SAW the output (Bash tool or ~/.claude/last-review-result.log)
+AI review: <N> clean iterations  ← ONLY write this if you SAW the output (Bash tool or the per-repo .git/last-review-result.log)
 [Adversarial review: <N> iterations - <brief fixes>]
 [Architectural review: approved/concerns]
 Issues fixed: <brief list>

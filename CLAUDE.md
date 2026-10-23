@@ -288,7 +288,7 @@ Banned until the PR is merged: "production ready", "ready for review", "all done
 - Never use `# shellcheck disable` directives
 - Never use `((var++))` with `set -e` — when var=0, this exits. Use `((var += 1))` instead.
 - Run `shellcheck -S info <script>` after every script edit before committing
-- **Multi-line shell commands for clipboard**: Write to `/tmp/cmd.sh` then `cat /tmp/cmd.sh | pbcopy` so the user gets clean clipboard content. The terminal renderer breaks copy-paste on code blocks (adds indentation/trailing spaces). See [claude-code#18170](https://github.com/anthropics/claude-code/issues/18170).
+- **Multi-line shell commands for clipboard**: Write to `cmd.sh` in the session scratchpad, then `pbcopy < <scratchpad>/cmd.sh` so the user gets clean clipboard content. The terminal renderer breaks copy-paste on code blocks (adds indentation/trailing spaces). See [claude-code#18170](https://github.com/anthropics/claude-code/issues/18170).
 - **PATH-shim wrappers — reload the shell before testing**: after symlinking a script into `~/.local/bin` that shadows a system binary (ssh, gh, claude), bash's per-session hash table still points at the old location, so plain `cmd` silently runs the old binary. **Why it hides:** `command -v` and `type` read that same hash table and report the stale path too. Only `which <cmd>` (fresh PATH scan) and `hash -t <cmd>` (shows what is cached) reveal it. **How to apply:** have the user run `hash -r` before any functional check, and debug a "wrapper not running" report by asking for `which` and `hash` output — never `command -v`.
 
 ### Git Rules
@@ -330,7 +330,7 @@ A denial from the auto-mode classifier ("Permission for this action was denied b
 
 ### Verification Discipline
 
-- Test changes in `/tmp/` before applying to production code
+- Test changes in the session scratchpad before applying to production code (the sandbox denies `/tmp`)
 - Batch size ~3 changes, then verify against reality
 - More than 5 actions without verification = accumulating unjustified beliefs
 - **Know why a thing exists before you remove or change it.** Find the
