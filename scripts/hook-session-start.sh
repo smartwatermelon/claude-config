@@ -25,7 +25,7 @@ cat >/dev/null
 if [[ -n "${PENDING_ISSUES_DIR:-}" ]]; then
   PENDING_DIRS=("${PENDING_ISSUES_DIR}")
 else
-  PENDING_DIRS=("${HOME}/.local/state/claude-review/pending-issues" "${HOME}/.claude/pending-issues")
+  PENDING_DIRS=("${REVIEW_STATE_DIR:-${HOME}/.local/state/claude-review}/pending-issues" "${HOME}/.claude/pending-issues")
 fi
 
 for PENDING_DIR in "${PENDING_DIRS[@]}"; do

@@ -7,7 +7,14 @@ setup() {
   export HOME="${BATS_TEST_TMPDIR}/home"
   NEW_DIR="${HOME}/.local/state/claude-review/pending-issues"
   OLD_DIR="${HOME}/.claude/pending-issues"
-  unset PENDING_ISSUES_DIR
+  unset PENDING_ISSUES_DIR REVIEW_STATE_DIR
+}
+
+@test "REVIEW_STATE_DIR override is read, matching the writer" {
+  mkdir -p "${BATS_TEST_TMPDIR}/state/pending-issues"
+  touch "${BATS_TEST_TMPDIR}/state/pending-issues/a.md"
+  REVIEW_STATE_DIR="${BATS_TEST_TMPDIR}/state" run bash "${SCRIPT}" </dev/null
+  [[ "${output}" == *"1 unfiled review finding(s) in ${BATS_TEST_TMPDIR}/state/pending-issues"* ]]
 }
 
 @test "no queue directories: silent, exit 0" {
