@@ -136,7 +136,7 @@ REPO_DIR="${TMPDIR_TEST}/testrepo"
 
 # Sandbox HOME. REVIEW_LOG keeps the per-repo log out of production, but
 # run-review.sh still writes its global pointer to
-# ${HOME}/.claude/last-review-result.log, so every run of this suite overwrote
+# ${HOME}/.local/state/claude-review/, so every run of this suite overwrote
 # the real one. It also decides whether adversarial-reviewer runs by finding
 # the agent under ${HOME}/.claude/plugins/marketplaces, so the result depended
 # on what the machine had installed; a CI runner has nothing there. The stub
@@ -146,7 +146,7 @@ mkdir -p "${HOME}/.claude/plugins/marketplaces/stub/agents"
 : >"${HOME}/.claude/plugins/marketplaces/stub/agents/adversarial-reviewer.md"
 # Seed a fresh `haiku` alias probe result, so no test below spends a mock
 # CLI call on the probe. Tests of the probe itself rewrite or remove this file.
-HAIKU_CACHE="${HOME}/.claude/cache/review-haiku-alias"
+HAIKU_CACHE="${HOME}/.local/state/claude-review/review-haiku-alias"
 # seed_haiku_cache <fresh|stale> <model ID>
 seed_haiku_cache() {
   local ts=0

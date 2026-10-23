@@ -172,8 +172,10 @@ fi
 # Max API credit needs ANTHROPIC_API_KEY. Child env only: exported, it bills interactive use too.
 REVIEW_SECURITY_BIN="${REVIEW_SECURITY_BIN:-security}"
 REVIEW_API_KEY_SERVICE="${REVIEW_API_KEY_SERVICE:-claude-reviewer-api-key}"
+# Per-user state lives outside ~/.claude: the Claude Code sandbox denies writes there, and git hooks run sandboxed.
+REVIEW_STATE_DIR="${REVIEW_STATE_DIR:-${HOME}/.local/state/claude-review}"
 # Spend ledger, one JSON line per CLI run. Per-user, unlike REVIEW_LOG: the credit is per-user.
-REVIEW_API_USAGE_LOG="${REVIEW_API_USAGE_LOG:-${HOME}/.claude/logs/reviewer-api-usage.jsonl}"
+REVIEW_API_USAGE_LOG="${REVIEW_API_USAGE_LOG:-${REVIEW_STATE_DIR}/reviewer-api-usage.jsonl}"
 
 # Read once at top level: CLI runs are in subshells, which can't fill a cache. Not exported.
 REVIEW_API_KEY=""
@@ -292,7 +294,7 @@ run_claude_cli() {
 # than guess it, ask the CLI what its `haiku` alias resolves to. One probe
 # costs about 6s and $0.11, so the answer is cached for a day, failures too.
 REVIEW_FALLBACK_MODEL="claude-sonnet-5-5"
-HAIKU_PROBE_CACHE="${HOME}/.claude/cache/review-haiku-alias"
+HAIKU_PROBE_CACHE="${REVIEW_STATE_DIR}/review-haiku-alias"
 HAIKU_PROBE_TTL_SECONDS=86400
 
 # Print the model ID the CLI's `haiku` alias resolves to, or nothing.
@@ -2854,10 +2856,9 @@ _review_commit=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
   printf 'commit: %s\n' "${_review_commit}"
 } >"${REVIEW_LOG}" || true
 
-# Global pointer: keep ~/.claude/last-review-result.log pointed at the most
-# recent per-repo log. Controllers checking the global path will see identity
-# fields that reveal cross-repo contamination immediately.
-_global_log="${HOME}/.claude/last-review-result.log"
+# Global pointer to the latest per-repo log; its identity fields expose cross-repo mixups.
+_global_log="${REVIEW_STATE_DIR}/last-review-result.log"
+mkdir -p "${REVIEW_STATE_DIR}" 2>/dev/null || true
 {
   printf '%s\n' "${_review_ts}"
   printf 'repo: %s\n' "${_review_repo}"
@@ -4098,7 +4099,7 @@ else
 fi
 _review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
 # Overwrite the start timestamp (first line) with the completion timestamp so that
-# `head -1 ~/.claude/last-review-result.log` reflects when the review FINISHED,
+# `head -1` of the review log reflects when the review FINISHED,
 # not when it started. For slow reviews (>60s), this prevents false staleness alerts.
 {
   printf '%s\n' "${_review_ts}"
@@ -4106,7 +4107,7 @@ _review_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
 } >"${REVIEW_LOG}.tmp" \
   && mv "${REVIEW_LOG}.tmp" "${REVIEW_LOG}" || true
 # Also update the global pointer's timestamp to match the completion time.
-# Controllers checking head -1 ~/.claude/last-review-result.log need the
+# Controllers checking head -1 of the global pointer need the
 # completion time (not start time) for the staleness check to be accurate.
 # Write all fields from current session variables (not tail -n +2 of the
 # existing file) to avoid a read-modify-write race with concurrent sessions.
