@@ -1,7 +1,7 @@
 ---
 name: prepare-handoff
 description: Use when the user explicitly says "prepare handoff," "wrap up for handoff," or asks to save the current session's state so another session can resume the work. Writes a dense, structured export — not a prose summary — as a Markdown file in the locally synced Google Drive `Claude Handoff` folder (or `~/.claude/handoffs/` on a host with no Drive mount) so a later session can resume with minimal re-derivation. Verifies every path, branch, and identifier it records before writing, so the next session does not inherit stale pointers. Do not trigger on generic session-ending language like "thanks" or "bye."
-version: 2.1.0
+version: 2.2.0
 ---
 
 # Prepare Handoff
@@ -48,7 +48,25 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
   `~/.claude/handoffs/` in place of `<mount>/Claude Handoff` everywhere
   below. `receive-handoff` reads that folder too, so a handoff written there
   is found by a later session **on this same host**. It does not sync to any
-  other machine.
+  other machine, unless the host has the rclone sync below.
+
+**rclone sync (some hosts with no mount).** A host with no GUI session
+cannot run the Drive app, so it may sync the fallback folder with rclone
+instead: `~/.local/bin/handoff-sync.sh` runs `rclone bisync` between
+`~/.claude/handoffs` and Drive's `Claude Handoff`, from cron every 5
+minutes. TILSIT has had it since 2026-10-22. Check for it:
+
+```bash
+test -x ~/.local/bin/handoff-sync.sh && echo "rclone sync present"
+```
+
+The remote uses rclone's shared Google client ID, which Google has said it
+will retire during 2026. **Expect it to fail at some point** with an auth
+error. When it fails, nothing is lost: the handoff is still saved in
+`~/.claude/handoffs`, but it does not reach other machines until someone
+fixes the remote (`rclone config reconnect gdrive:`, or a personal client
+ID). So never assume the sync worked; run it and read its exit status
+(steps 5 and 7).
 
 The fallback is one fixed path so that both skills agree on it. Do not write
 a handoff anywhere else (`~/.claude/plans/`, the repo, the scratchpad): the
@@ -359,7 +377,8 @@ exists. That happened on 2026-09-23 on a host with no Drive mount.
    A non-zero byte count at that path is what "saved" means. A `Write` call
    that did not error is not the same claim. This proves the file is on the
    local mount, which is what a session on this machine reads; Drive uploads
-   it afterward. A file in `~/.claude/handoffs` is never uploaded.
+   it afterward. A file in `~/.claude/handoffs` is uploaded only on a host
+   with the rclone sync, and only when that sync succeeds.
 
    Write the new file **before** retiring the old one. If the write fails,
    the previous handoff must still be the newest valid file.
@@ -390,8 +409,22 @@ exists. That happened on 2026-09-23 on a host with no Drive mount.
    2026-09-22: a handoff retired with `rm` was in the web trash two hours
    later. The local `<mount's parent>/.Trash/` is only a staging area that
    Drive clears once the deletion syncs, so an empty one there does not mean
-   the file is gone. An `rm` in `~/.claude/handoffs` is permanent: there is
-   no trash to recover it from.
+   the file is gone. An `rm` in `~/.claude/handoffs` is permanent on the
+   host: there is no local trash. With the rclone sync, the next sync also
+   deletes the Drive copy, which goes to the Drive web trash.
+
+   With the rclone sync present, run it now, after the `rm`, so Drive gets
+   the new file and the deletion without waiting for cron:
+
+   ```bash
+   ~/.local/bin/handoff-sync.sh; echo "sync exit=$?"
+   ```
+
+   Exit 0 means Drive matches the folder. Any other exit means it does not:
+   show the last lines of `~/.local/state/rclone/handoff-sync.log` (skip
+   the shared-client_id NOTICE, which appears on every run) and report it
+   in step 7. An auth error there most likely means Google retired the
+   shared client ID.
 
    Also run the same glob with `.gdoc` in place of `.md`. A match is a legacy
    handoff from before 2.0.0, when handoffs were native Google Docs. Do not
@@ -403,9 +436,13 @@ exists. That happened on 2026-09-23 on a host with no Drive mount.
    agent selects the newest file by the timestamp in its name regardless.
 
 7. Confirm to the user in one line: the filename, and the folder it went to.
-   If the folder is `~/.claude/handoffs`, say plainly in the same line that
-   the handoff is local to this host, does not sync to other machines, and
-   must be resumed on this host.
+   If the folder is `~/.claude/handoffs`, say plainly in the same line which
+   of these is true:
+   - The rclone sync ran with exit 0 → the handoff is on Drive too.
+   - The rclone sync failed → the handoff is local to this host until the
+     sync is fixed. Give the error line.
+   - No rclone sync on this host → the handoff is local, does not sync to
+     other machines, and must be resumed on this host.
    Do not restate the export — they already saw it composed. If step 6 left
    any file un-retired, state that in the same breath. If any pointer
    went out with an `UNVERIFIED:` prefix, name those too — the user is the
@@ -451,7 +488,8 @@ exists. That happened on 2026-09-23 on a host with no Drive mount.
   point to it instead of copying it in. The sole exception is a client-scoped
   store (memory, Project instructions) — inline those, per step 3.
 - If no synced Drive mount exists, write to `~/.claude/handoffs/` (see
-  **Before you start**) and say that it does not sync. If the write fails
+  **Before you start**). Say whether it synced, from the rclone sync's exit
+  status, or that the host has no sync. If the write fails
   in whichever folder you chose, say so plainly and
   offer the export as plain text for the user to paste manually instead. Do
   not fall back to creating a Google Doc through a connector: the Doc
