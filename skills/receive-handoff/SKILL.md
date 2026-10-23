@@ -1,7 +1,7 @@
 ---
 name: receive-handoff
 description: Use when the user explicitly says "receive handoff," "pick up where I left off," or starts a session continuing work saved by an earlier session. Reads the Markdown handoff export from the locally synced Google Drive `Claude Handoff` folder and the local fallback `~/.claude/handoffs/`, and loads the files and KB entries it points to, so this session starts with working context rather than a description of context. Typically the first message of a session.
-version: 2.1.0
+version: 2.2.0
 ---
 
 # Receive Handoff
@@ -20,7 +20,24 @@ file tools. No Drive connector is needed.
   filesystem.
 - The local fallback `~/.claude/handoffs/`. `prepare-handoff` writes there
   when the host has no Drive mount. A file there exists only on the host
-  that wrote it; it does not sync.
+  that wrote it, unless that host has the rclone sync below.
+
+**rclone sync (some hosts with no mount).** A host may sync
+`~/.claude/handoffs` with Drive's `Claude Handoff` folder by
+`~/.local/bin/handoff-sync.sh` (`rclone bisync`, from cron every 5 minutes;
+TILSIT since 2026-10-22). If that script exists, run it first, so this
+session sees handoffs written on other machines in the last few minutes:
+
+```bash
+test -x ~/.local/bin/handoff-sync.sh && { ~/.local/bin/handoff-sync.sh; echo "sync exit=$?"; }
+```
+
+It uses rclone's shared Google client ID, which Google has said it will
+retire during 2026, so **expect it to fail at some point**. On a non-zero
+exit, still read the local folder, but tell the user the sync failed, show
+the last error line from `~/.local/state/rclone/handoff-sync.log` (skip the
+shared-client_id NOTICE, which appears on every run), and say that a newer
+handoff from another machine may be missing here.
 
 Check both, every time. Find the Drive folder with a glob, not a hardcoded
 path, because the mount path contains the Google account name:
@@ -36,8 +53,9 @@ ls -d ~/.claude/handoffs
   local fallback, or both.
 - Neither matched → say so plainly and stop. Do not proceed as if the
   handoff had been read. Say which two locations you checked. If this host
-  has no Drive mount, add that a handoff written on another host without
-  Drive is in that host's `~/.claude/handoffs/`, not here.
+  has no Drive mount and no working rclone sync, add that a handoff written
+  on another host without Drive is in that host's `~/.claude/handoffs/`,
+  not here.
 
 Do not report "no handoff" after checking only one of the two. A handoff
 that exists but is reported missing is the worst result this skill can
@@ -117,7 +135,8 @@ transcript.
 
    If the newest is in `~/.claude/handoffs` on a host that also has a Drive
    folder, say so: it was written while this host had no mount, and it never
-   synced to other machines.
+   synced to other machines. (On a host with the rclone sync and no mount,
+   `~/.claude/handoffs` is the synced copy of Drive, so this does not apply.)
 
 3. Read the file with `Read`, using its absolute path.
 
