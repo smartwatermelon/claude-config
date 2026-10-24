@@ -39,15 +39,16 @@ policy() {
 
 # --- the decisions ---------------------------------------------------------
 
-@test "everyday repo is exempt" {
+@test "a repo no rule names is never exempt" {
   policy smartwatermelon/dev-env twistedmelonman
-  [[ "${status}" -eq 0 ]]
-  [[ "${output}" == exempt$'\t'* ]]
+  [[ "${status}" -ne 0 ]]
+  [[ "${output}" != exempt* ]]
 }
 
-@test "twistedmelonman repo is exempt" {
+@test "twistedmelonman repo is never exempt" {
   policy twistedmelonman/cat-boxen twistedmelonman
-  [[ "${output}" == exempt$'\t'* ]]
+  [[ "${status}" -ne 0 ]]
+  [[ "${output}" != exempt* ]]
 }
 
 @test "the four infrastructure repos stay locked" {
@@ -76,7 +77,7 @@ policy() {
   [[ "${output}" == lock$'\t'*$'\t'owner=nightowlstudiollc ]]
 }
 
-@test "an andrewmrich-authored PR in an otherwise exempt repo stays locked" {
+@test "an andrewmrich-authored PR stays locked by the author rule" {
   policy smartwatermelon/spokane-snow andrewmrich
   [[ "${output}" == lock$'\t'*$'\t'author=andrewmrich ]]
 }
@@ -102,7 +103,7 @@ policy() {
 
 @test "no deployed policy is an error" {
   rm "${HOME}/.claude/merge-lock-policy.conf"
-  policy smartwatermelon/dev-env twistedmelonman
+  policy andrewmrich/beacon-workspace twistedmelonman
   [[ "${status}" -ne 0 ]]
   [[ "${output}" != exempt* ]]
 }
@@ -122,13 +123,13 @@ policy() {
 
 @test "a checkout on another branch is refused" {
   git -C "${CC}" checkout -q -b claude/x
-  policy smartwatermelon/dev-env twistedmelonman
+  policy andrewmrich/beacon-workspace twistedmelonman
   [[ "${status}" -ne 0 ]]
 }
 
 @test "a checkout with another origin is refused" {
   git -C "${CC}" remote set-url origin git@github.com:someone/claude-config.git
-  policy smartwatermelon/dev-env twistedmelonman
+  policy andrewmrich/beacon-workspace twistedmelonman
   [[ "${status}" -ne 0 ]]
 }
 
@@ -142,13 +143,13 @@ policy() {
 
 @test "an origin on another host is refused" {
   git -C "${CC}" remote set-url origin git@evil.example:smartwatermelon/claude-config.git
-  policy smartwatermelon/dev-env twistedmelonman
+  policy andrewmrich/beacon-workspace twistedmelonman
   [[ "${status}" -ne 0 ]]
 }
 
 @test "an https origin is accepted" {
   git -C "${CC}" remote set-url origin https://github.com/smartwatermelon/claude-config.git
-  policy smartwatermelon/dev-env twistedmelonman
+  policy andrewmrich/beacon-workspace twistedmelonman
   [[ "${output}" == exempt$'\t'* ]]
 }
 
@@ -217,22 +218,22 @@ EOF
 }
 
 @test "exempt repo skips the lock but still runs the review" {
-  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  _pre_merge andrewmrich/beacon-workspace twistedmelonman SAFE_TO_MERGE
   [[ "${output}" != *"MERGE AUTHORIZATION REQUIRED"* ]]
   [[ "${output}" == *"Merge lock not required"* ]]
   [[ -f "${TMP_HOME}/claude-ran" ]]
   [[ "${status}" -eq 0 ]]
-  grep -q $'\tsmartwatermelon/dev-env\t7\ttwistedmelonman\t' "${HOME}/.claude/merge-locks/exempt.tsv"
+  grep -q $'\tandrewmrich/beacon-workspace\t7\ttwistedmelonman\t' "${HOME}/.claude/merge-locks/exempt.tsv"
 }
 
 @test "exempt repo is still blocked by a BLOCK_MERGE review, and nothing is logged" {
-  _pre_merge smartwatermelon/dev-env twistedmelonman BLOCK_MERGE
+  _pre_merge andrewmrich/beacon-workspace twistedmelonman BLOCK_MERGE
   [[ -f "${TMP_HOME}/claude-ran" ]]
   [[ "${status}" -ne 0 ]]
   [[ ! -s "${HOME}/.claude/merge-locks/exempt.tsv" ]]
 }
 
-@test "andrewmrich-authored PR in an exempt repo still needs the lock" {
+@test "andrewmrich-authored PR still needs the lock" {
   _pre_merge smartwatermelon/spokane-snow andrewmrich SAFE_TO_MERGE
   [[ "${status}" -eq 1 ]]
   [[ "${output}" == *"MERGE AUTHORIZATION REQUIRED"* ]]
@@ -247,7 +248,7 @@ EOF
 
 @test "no deployed policy: every repo needs the lock" {
   rm "${HOME}/.claude/merge-lock-policy.conf"
-  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  _pre_merge andrewmrich/beacon-workspace twistedmelonman SAFE_TO_MERGE
   [[ "${status}" -eq 1 ]]
   [[ "${output}" == *"MERGE AUTHORIZATION REQUIRED"* ]]
 }
@@ -265,27 +266,27 @@ _issue_count() {
 }
 
 @test "exempt merge files its non-blocking issue" {
-  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge andrewmrich/beacon-workspace twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
   [[ "${output}" != *"already filed"* ]]
 }
 
 @test "known-bad: a retried exempt merge in the window does not file twice" {
-  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge andrewmrich/beacon-workspace twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
-  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge andrewmrich/beacon-workspace twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
-  [[ "${output}" == *"already filed for smartwatermelon/dev-env#7 in this exempt window"* ]]
+  [[ "${output}" == *"already filed for andrewmrich/beacon-workspace#7 in this exempt window"* ]]
   # The retry is still logged, so merge-audit sees the attempt.
-  [[ "$(grep -c $'\tsmartwatermelon/dev-env\t7\t' "${HOME}/.claude/merge-locks/exempt.tsv")" -eq 2 ]]
+  [[ "$(grep -c $'\tandrewmrich/beacon-workspace\t7\t' "${HOME}/.claude/merge-locks/exempt.tsv")" -eq 2 ]]
 }
 
 @test "an exempt merge after the window files again" {
-  printf '%s\tsmartwatermelon/dev-env\t7\ttwistedmelonman\told\n' "$(($(date +%s) - 7200))" \
+  printf '%s\tandrewmrich/beacon-workspace\t7\ttwistedmelonman\told\n' "$(($(date +%s) - 7200))" \
     >"${HOME}/.claude/merge-locks/exempt.tsv"
-  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge andrewmrich/beacon-workspace twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
 }
@@ -293,14 +294,14 @@ _issue_count() {
 @test "a recent exempt row for the same PR number in another repo does not skip filing" {
   printf '%s\tsmartwatermelon/other\t7\ttwistedmelonman\tx\n' "$(date +%s)" \
     >"${HOME}/.claude/merge-locks/exempt.tsv"
-  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge andrewmrich/beacon-workspace twistedmelonman SAFE_TO_MERGE findings
   [[ "$(_issue_count)" -eq 1 ]]
 }
 
 @test "known-bad: a recent exempt row matches the repo case-insensitively" {
-  printf '%s\tSmartWatermelon/Dev-Env\t7\ttwistedmelonman\tx\n' "$(date +%s)" \
+  printf '%s\tAndrewMRich/Beacon-Workspace\t7\ttwistedmelonman\tx\n' "$(date +%s)" \
     >"${HOME}/.claude/merge-locks/exempt.tsv"
-  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge andrewmrich/beacon-workspace twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 0 ]]
 }
