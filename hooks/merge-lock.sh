@@ -560,6 +560,17 @@ lock_label() {
   echo "${repo:-?}#${pr:-?}"
 }
 
+# Under set -e, a failed purge ended check before it read the PR asked about (#779).
+
+# So a failed rm (the sandbox denies this dir) warns and returns 1. An expired lock authorizes nothing.
+remove_expired_lock() {
+  if rm -f "$1" 2>/dev/null; then
+    return 0
+  fi
+  echo -e "${YELLOW}[merge-lock]${NC} Could not remove expired lock $1; run 'merge-lock list' outside the sandbox to clear it" >&2
+  return 1
+}
+
 purge_expired_locks() {
   local now
   now=$(date +%s)
@@ -571,7 +582,7 @@ purge_expired_locks() {
     [[ ! -f "${lock_file}" ]] && continue
     local legacy_pr
     legacy_pr=$(grep "^PR_NUMBER=" "${lock_file}" | cut -d= -f2 || true)
-    rm -f "${lock_file}"
+    remove_expired_lock "${lock_file}" || continue
     echo -e "${YELLOW}[merge-lock]${NC} Purged legacy repo-less lock for PR #${legacy_pr:-?} (re-authorize with the repo-keyed form)"
   done
 
@@ -590,7 +601,7 @@ purge_expired_locks() {
     if [[ ${age} -gt ${ttl} ]]; then
       local label
       label=$(lock_label "${lock_file}")
-      rm -f "${lock_file}"
+      remove_expired_lock "${lock_file}" || continue
       echo -e "${YELLOW}[merge-lock]${NC} Purged expired lock for ${label}"
     fi
   done <<<"${lock_files}"
@@ -612,7 +623,7 @@ check_merge_lock() {
   ttl=$(lock_ttl "${lock_file}")
 
   if [[ ${age} -gt ${ttl} ]]; then
-    rm -f "${lock_file}"
+    remove_expired_lock "${lock_file}" || true
     return 1
   fi
   return 0
@@ -644,7 +655,7 @@ show_status() {
       echo "  Expires in: $((remaining / 60)) minutes"
     else
       echo -e "${YELLOW}[merge-lock]${NC} ${REPO}#${pr_number} authorization expired"
-      rm -f "${lock_file}"
+      remove_expired_lock "${lock_file}" || true
     fi
   else
     echo -e "${RED}[merge-lock]${NC} ${REPO}#${pr_number}: no active lock exists"
@@ -786,6 +797,10 @@ authorize_batch() {
         ;;
     esac
   done
+
+  # Andrew runs authorize outside the Claude Code sandbox, so its purge can remove
+  # expired locks that a sandboxed check cannot (#779).
+  purge_expired_locks
 
   # Shared timestamp so all TTLs align.
   local _ts
