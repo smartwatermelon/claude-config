@@ -32,6 +32,8 @@ setup() {
 teardown() {
   # TMP_HOME is readonly so a test can't reassign it out from under teardown,
   # even if it reassigns HOME mid-test (see #116).
+  # A read-only lock dir left by a failed test would stop rm -rf.
+  chmod -R u+w "${TMP_HOME}"
   rm -rf "${TMP_HOME}"
 }
 
@@ -108,4 +110,50 @@ write_backdated_lock() {
   run bash "${SCRIPT}" list
   [ "${status}" -eq 0 ]
   [[ "${output}" == *"(none)"* ]]
+}
+
+# The Claude Code sandbox denies writes to the lock dir (#779). A read-only
+# lock dir under TMP_HOME stands in for it: rm fails the same way.
+make_lock_dir_read_only() {
+  [ "$(id -u)" -ne 0 ] || skip "root ignores directory write permission"
+  chmod 555 "${TMP_HOME}/.claude/merge-locks/acme/widgets"
+}
+
+restore_lock_dir() {
+  chmod 755 "${TMP_HOME}/.claude/merge-locks/acme/widgets"
+}
+
+@test "check still answers for a valid lock when an expired one cannot be removed" {
+  write_backdated_lock 600 $((LOCK_TTL_SECONDS + 60))
+  write_backdated_lock 601 60
+  make_lock_dir_read_only
+
+  run bash "${SCRIPT}" check 601
+  restore_lock_dir
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"Authorized"* ]]
+  [[ "${output}" == *"Could not remove expired lock"* ]]
+  [ -f "$(lock_file 600)" ]
+}
+
+@test "check on an expired lock it cannot remove says Not authorized" {
+  write_backdated_lock 610 $((LOCK_TTL_SECONDS + 60))
+  make_lock_dir_read_only
+
+  run bash "${SCRIPT}" check 610
+  restore_lock_dir
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *"Not authorized"* ]]
+}
+
+@test "authorize purges expired locks for other PRs" {
+  write_backdated_lock 700 $((LOCK_TTL_SECONDS + 60))
+  write_backdated_lock 701 60
+
+  run bash "${SCRIPT}" auth 702 "ok"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"Purged expired lock for acme/widgets#700"* ]]
+  [ ! -f "$(lock_file 700)" ]
+  [ -f "$(lock_file 701)" ]
+  [ -f "$(lock_file 702)" ]
 }
