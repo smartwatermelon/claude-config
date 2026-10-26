@@ -397,9 +397,9 @@ append_ledger() {
 # Which PRs need a lock. A symlink into the claude-config checkout; only its committed main counts.
 POLICY_LINK="${HOME}/.claude/merge-lock-policy.conf"
 
-# Print the policy text from HEAD of a clean-origin claude-config checkout on main, or fail.
+# Print the policy from local main of the claude-config checkout, or fail. Main must be on origin/main.
 policy_text() {
-  local target dir top branch origin rel
+  local target dir top origin rel
   if [[ ! -L "${POLICY_LINK}" ]]; then
     echo "policy: ${POLICY_LINK} is missing or not a symlink (run install.sh --sync)" >&2
     return 1
@@ -416,37 +416,43 @@ policy_text() {
     return 1
   }
   origin="$(git -C "${top}" config --get remote.origin.url 2>/dev/null || true)"
-  case "${origin}" in
-    git@github.com:smartwatermelon/claude-config | git@github.com:smartwatermelon/claude-config.git) ;;
-    https://github.com/smartwatermelon/claude-config | https://github.com/smartwatermelon/claude-config.git) ;;
-    ssh://git@github.com/smartwatermelon/claude-config | ssh://git@github.com/smartwatermelon/claude-config.git) ;;
-    *)
-      echo "policy: ${top} is not a smartwatermelon/claude-config checkout (origin '${origin}')" >&2
-      return 1
-      ;;
-  esac
-  branch="$(git -C "${top}" symbolic-ref --short -q HEAD 2>/dev/null || true)"
-  if [[ "${branch}" != "main" ]]; then
-    echo "policy: ${top} is on '${branch:-a detached HEAD}', not main" >&2
+  if ! policy_origin_ok "${origin}"; then
+    echo "policy: ${top} is not a smartwatermelon/claude-config checkout (origin '${origin}')" >&2
+    return 1
+  fi
+  # Read main, not HEAD: a checked-out feature branch must not change the policy or make it unreadable.
+  if ! git -C "${top}" rev-parse -q --verify 'refs/heads/main^{commit}' >/dev/null 2>&1; then
+    echo "policy: ${top} has no local main branch" >&2
     return 1
   fi
   # A local commit on main that never reached origin must not count.
-  if ! git -C "${top}" merge-base --is-ancestor HEAD refs/remotes/origin/main 2>/dev/null; then
+  if ! git -C "${top}" merge-base --is-ancestor refs/heads/main refs/remotes/origin/main 2>/dev/null; then
     echo "policy: ${top} main has commits that are not on origin/main" >&2
     return 1
   fi
-  rel="$(git -C "${dir}" ls-files --full-name -- "$(basename "${target}")" 2>/dev/null || true)"
+  rel="$(git -C "${dir}" ls-tree --full-name --name-only refs/heads/main -- "$(basename "${target}")" 2>/dev/null || true)"
   [[ -n "${rel}" ]] || {
-    echo "policy: ${target} is not tracked in ${top}" >&2
+    echo "policy: ${target} is not tracked on main in ${top}" >&2
     return 1
   }
-  git -C "${top}" show "HEAD:${rel}" 2>/dev/null || {
-    echo "policy: cannot read HEAD:${rel} in ${top}" >&2
+  git -C "${top}" show "refs/heads/main:${rel}" 2>/dev/null || {
+    echo "policy: cannot read main:${rel} in ${top}" >&2
     return 1
   }
 }
 
-# policy_decide <owner/name> <author>: print "lock|exempt<TAB>rule N<TAB>matcher". Return 1 on any error.
+# policy_origin_ok <url>: true only for smartwatermelon/claude-config on GitHub, or a git@github-<alias> SSH alias.
+policy_origin_ok() {
+  case "$1" in
+    git@github.com:smartwatermelon/claude-config | git@github.com:smartwatermelon/claude-config.git) return 0 ;;
+    https://github.com/smartwatermelon/claude-config | https://github.com/smartwatermelon/claude-config.git) return 0 ;;
+    ssh://git@github.com/smartwatermelon/claude-config | ssh://git@github.com/smartwatermelon/claude-config.git) return 0 ;;
+    *) ;;
+  esac
+  [[ "$1" =~ ^git@github-[A-Za-z0-9._-]+:smartwatermelon/claude-config(\.git)?$ ]]
+}
+
+# policy_decide <owner/name> <author>: print "lock|exempt|refuse<TAB>rule N<TAB>matcher". Return 1 on any error.
 policy_decide() {
   local repo="${1,,}" author="${2,,}" text line lineno=0 matcher outcome extra value hit result=""
   validate_repo_slug "${repo}" || {
@@ -463,8 +469,8 @@ policy_decide() {
     line="${line//$'\r'/}"
     read -r matcher outcome extra <<<"${line}"
     [[ -z "${matcher}" || "${matcher}" == \#* ]] && continue
-    if [[ -z "${outcome}" || -n "${extra}" ]] || [[ "${outcome}" != "lock" && "${outcome}" != "exempt" ]]; then
-      echo "policy: line ${lineno}: expected '<matcher> lock|exempt'" >&2
+    if [[ -z "${outcome}" || -n "${extra}" ]] || [[ "${outcome}" != "lock" && "${outcome}" != "exempt" && "${outcome}" != "refuse" ]]; then
+      echo "policy: line ${lineno}: expected '<matcher> lock|exempt|refuse'" >&2
       return 1
     fi
     value="${matcher#*=}"
@@ -1004,7 +1010,7 @@ case "${SUBCOMMAND}" in
     fi
     ;;
   policy)
-    # Read-only. pre-merge-review.sh skips the lock only on an exit-0 line starting "exempt".
+    # Read-only. pre-merge-review.sh: "refuse" stops the merge, "exempt" skips the lock, anything else locks.
     if [[ -z "${REPO_OVERRIDE}" || -z "${AUTHOR_ARG}" ]]; then
       echo "Usage: $0 policy --repo OWNER/NAME --author LOGIN" >&2
       exit 1
@@ -1036,7 +1042,8 @@ case "${SUBCOMMAND}" in
     echo "  check <pr>               - Check if PR is authorized (exit 0/1)"
     echo "  status <pr>              - Show detailed authorization status"
     echo "  list                     - List all active authorizations"
-    echo "  policy --repo R --author L - Print lock or exempt for a PR (merge-lock-policy.conf)"
+    echo "  policy --repo R --author L - Print lock, exempt or refuse for a PR (merge-lock-policy.conf)"
+    echo "                             refuse: agents never merge it, and a lock does not override it"
     echo ""
     echo "Locks are keyed on repo + PR number. The repo comes from --repo OWNER/NAME"
     echo "(after the subcommand) or from 'gh repo view' in the current directory."

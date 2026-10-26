@@ -883,15 +883,13 @@ else
 fi
 
 LOCK_REPO_FLAG=()
-LOCK_REPO_HINT=""
 if [[ -n "${REPO_OWNER}" && -n "${REPO_NAME}" ]]; then
   LOCK_REPO_FLAG=(--repo "${REPO_OWNER}/${REPO_NAME}")
-  LOCK_REPO_HINT=" --repo ${REPO_OWNER}/${REPO_NAME}"
 fi
 
 MERGE_LOCK="${HOME}/.claude/hooks/merge-lock.sh"
 
-# Lock policy (dev-env#176): some repos need no human lock. Everything after this step still runs.
+# Lock policy (dev-env#176): exempt skips only the lock; refuse (no agent merge) stops here.
 
 # The repo comes from the PR's own URL, which GitHub canonicalizes, so an old owner name cannot dodge a lock.
 LOCK_POLICY="lock"
@@ -903,33 +901,28 @@ if [[ "${_pr_url}" =~ ^https://github\.com/([^/]+/[^/]+)/pull/[0-9]+$ ]]; then
   _canon_repo="${BASH_REMATCH[1]}"
 fi
 if [[ -x "${MERGE_LOCK}" && -n "${_canon_repo}" && -n "${_pr_author}" ]]; then
-  # Fail closed: only an exit-0 line that starts with "exempt" skips the lock.
+  # Fail closed: only an exit-0 line that starts with "exempt" skips the lock. An error stays "lock".
   _policy_out=$("${MERGE_LOCK}" policy --repo "${_canon_repo}" --author "${_pr_author}" 2>/dev/null) || _policy_out=""
   if [[ "${_policy_out}" == exempt$'\t'* ]]; then
     LOCK_POLICY="exempt"
     LOCK_POLICY_WHY="${_policy_out#exempt$'\t'}"
+  elif [[ "${_policy_out}" == refuse$'\t'* ]]; then
+    LOCK_POLICY="refuse"
   fi
 fi
 
-if [[ "${LOCK_POLICY}" == "exempt" ]]; then
+# Agents see one stdout line that names no command; they report it to Andrew as is.
+_msg_repo="${_canon_repo:-${REPO_OWNER:-?}/${REPO_NAME:-?}}"
+
+if [[ "${LOCK_POLICY}" == "refuse" ]]; then
+  # Checked before the lock: an existing lock never overrides refuse.
+  printf '[gh] Not merged: %s#%s is merged by Andrew in the GitHub UI after its own approval process; agents do not merge it.\n' "${_msg_repo}" "${PR_NUMBER}"
+  exit 1
+elif [[ "${LOCK_POLICY}" == "exempt" ]]; then
   log_success "Merge lock not required for ${_canon_repo}#${PR_NUMBER} by ${_pr_author} (${LOCK_POLICY_WHY//$'\t'/: }); CI and review still apply"
 elif [[ -x "${MERGE_LOCK}" ]]; then
   if ! "${MERGE_LOCK}" check "${PR_NUMBER}" "${LOCK_REPO_FLAG[@]}" >/dev/null 2>&1; then
-    echo "" >&2
-    log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    log_error "MERGE AUTHORIZATION REQUIRED"
-    log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "" >&2
-    log_error "Merge requires human authorization before review runs."
-    log_error ""
-    log_error "To authorize (valid 30 min):"
-    log_error "  ~/.claude/hooks/merge-lock.sh authorize ${PR_NUMBER} \"reason\"${LOCK_REPO_HINT}"
-    log_error ""
-    log_error "Then retry: gh pr merge ${PR_NUMBER}"
-    echo "" >&2
-    # Write to stdout as well: Bash tool surfaces stdout more reliably than
-    # stderr for commands that complete quickly (before any claude invocation).
-    printf '🛑 MERGE AUTHORIZATION REQUIRED: run ~/.claude/hooks/merge-lock.sh authorize %s "reason"%s then retry gh pr merge %s\n' "${PR_NUMBER}" "${LOCK_REPO_HINT}" "${PR_NUMBER}"
+    printf "[gh] Not merged: %s#%s needs Andrew's approval.\n" "${_msg_repo}" "${PR_NUMBER}"
     exit 1
   fi
   log_success "Merge authorization verified for ${REPO_OWNER:-?}/${REPO_NAME:-?}#${PR_NUMBER}"

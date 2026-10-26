@@ -83,35 +83,44 @@ _run_with_mock_lock() {
   [[ "${status}" -eq 1 ]]
 }
 
-@test "not authorized: output contains MERGE AUTHORIZATION REQUIRED" {
+# Same run as _run_with_mock_lock, but stdout only: the line the Bash tool surfaces.
+_run_with_mock_lock_stdout() {
+  env HOME="${MOCK_DIR}/home" PATH="${MOCK_DIR}:${PATH}" \
+    bash -c "
+      export HOME='${MOCK_DIR}/home'
+      export CLAUDE_CLI='${CLAUDE_CLI}'
+      mkdir -p \"\${HOME}/.claude/hooks\"
+      cp '${MOCK_LOCK}' \"\${HOME}/.claude/hooks/merge-lock.sh\"
+      chmod +x \"\${HOME}/.claude/hooks/merge-lock.sh\"
+      '${SCRIPT}' pr merge 59
+    " 2>/dev/null
+}
+
+@test "not authorized: output says the PR needs Andrew's approval" {
   run _run_with_mock_lock
 
   [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"MERGE AUTHORIZATION REQUIRED"* ]]
+  [[ "${output}" == *"[gh] Not merged: "*"#59 needs Andrew's approval."* ]]
 }
 
-@test "not authorized: output contains the merge-lock authorize command" {
+@test "not authorized: output names no authorize command and no lock path" {
+  # Agents report the line to Andrew; they are never handed the command to grant it.
   run _run_with_mock_lock
 
   [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"merge-lock.sh authorize"* ]]
+  [[ "${output}" != *"authorize"* ]]
+  [[ "${output}" != *"merge-lock"* ]]
+  [[ "${output}" != *"MERGE AUTHORIZATION REQUIRED"* ]]
 }
 
-@test "not authorized: output contains the retry instruction" {
-  run _run_with_mock_lock
-
-  [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"gh pr merge 59"* ]]
-}
-
-@test "not authorized: stdout contains the single-line summary (visible in Bash tool)" {
+@test "not authorized: stdout is exactly the one Not merged line (visible in Bash tool)" {
   # The stdout message is written so Claude Code's Bash tool always surfaces it.
   # If only stderr is written, the tool result may be silent after claude CLI runs.
-  run _run_with_mock_lock
+  run _run_with_mock_lock_stdout
 
   [[ "${status}" -eq 1 ]]
-  # The 🛑 prefix is on stdout (printf without >&2)
-  [[ "${output}" == *"🛑 MERGE AUTHORIZATION REQUIRED"* ]]
+  [[ "${#lines[@]}" -eq 1 ]]
+  [[ "${lines[0]}" == "[gh] Not merged: "*"#59 needs Andrew's approval." ]]
 }
 
 @test "not authorized: exits before running claude CLI" {
