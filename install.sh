@@ -429,7 +429,19 @@ repair_symlinks() {
           local backup_name
           backup_name="${file//\//_}.$(date +%Y%m%d%H%M%S)"
           cp "${link}" "${BACKUP_DIR}/${backup_name}"
-          _warn "Content differs — Backed up ${link} to ${BACKUP_DIR}/${backup_name}; port the edit to ${DEV_CHECKOUT}"
+          _warn "Content differs — Backed up ${link} to ${BACKUP_DIR}/${backup_name}"
+          # Unstaged in the working checkout, so it shows as a diff to commit. Never over uncommitted work there.
+          local dev_copy="${DEV_CHECKOUT}/${file}"
+          if [[ ! -e "${DEV_CHECKOUT}/.git" ]]; then
+            _warn "Port the edit to ${DEV_CHECKOUT} to keep it"
+          elif ! git -C "${DEV_CHECKOUT}" diff --quiet HEAD -- "${file}" 2>/dev/null ||
+            { [[ -e "${dev_copy}" ]] && ! git -C "${DEV_CHECKOUT}" ls-files --error-unmatch -- "${file}" &>/dev/null; }; then
+            _warn "${dev_copy} has uncommitted changes, so it was left alone; port the edit from the backup"
+          elif mkdir -p "$(dirname "${dev_copy}")" && cp "${link}" "${dev_copy}"; then
+            _warn "Copied the edit to ${dev_copy} (unstaged); commit it there to keep it"
+          else
+            _warn "Could not copy the edit to ${dev_copy}; port it from the backup"
+          fi
         else
           _warn "Content differs — copying ${link} back to repo and staging"
           cp "${link}" "${target}"

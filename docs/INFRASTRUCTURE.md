@@ -102,10 +102,14 @@ clone's `install.sh` refuses `--dev`.
 **Repair and audit.** `update-tools.sh` runs the clone's `install.sh
 --repair`, or skips repair in dev mode. In the clone, `--repair` no longer
 copies a regular file at a link path back into the repo (that would leave the
-clone dirty and stop every deploy); it backs the file up to
-`~/.claude/backups/symlink-migration/` and relinks. `--learn` still writes the
-working checkout's `scripts/known-runtime.txt`, which is where a commit can
-come from.
+clone dirty and stop every deploy). It backs the file up to
+`~/.claude/backups/symlink-migration/`, copies it unstaged into the working
+checkout, and relinks. So a live edit that replaced a link (Claude Code
+writing `settings.json`, for example) is reverted in `~/.claude` and survives
+only as a working-checkout diff to commit. An edit written through the link
+lands in the clone instead; the next deploy then refuses and notifies until it
+is moved to the working checkout. `--learn` still writes the working
+checkout's `scripts/known-runtime.txt`, which is where a commit can come from.
 
 **Atomicity.** `git merge --ff-only` rewrites each changed file in turn, so for
 the time it runs (not measured; a handful of small files) a hook can see an old file next to a new one, or

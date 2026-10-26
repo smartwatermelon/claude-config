@@ -238,6 +238,53 @@ STUB
   [[ "${output}" == *"Backed up"* ]]
 }
 
+@test "the clone's --repair also leaves the edit in the working checkout, unstaged" {
+  make_repo "${CLONE}"
+  run run_install "${CLONE}" --sync
+  [ "${status}" -eq 0 ]
+  rm "${DEPLOY}/CLAUDE.md"
+  printf '# edited in place\n' >"${DEPLOY}/CLAUDE.md"
+
+  run run_install "${CLONE}" --repair
+  [ "${status}" -eq 0 ]
+  grep -qx '# edited in place' "${DEV}/CLAUDE.md"
+  [[ -z "$(git -C "${DEV}" diff --cached --name-only)" ]]
+  [[ "${output}" == *"${DEV}/CLAUDE.md"* ]]
+}
+
+@test "the clone's --repair never overwrites uncommitted work in the working checkout" {
+  make_repo "${CLONE}"
+  run run_install "${CLONE}" --sync
+  [ "${status}" -eq 0 ]
+  printf '# uncommitted work\n' >"${DEV}/CLAUDE.md"
+  rm "${DEPLOY}/CLAUDE.md"
+  printf '# edited in place\n' >"${DEPLOY}/CLAUDE.md"
+
+  run run_install "${CLONE}" --repair
+  [ "${status}" -eq 0 ]
+  grep -qx '# uncommitted work' "${DEV}/CLAUDE.md"
+  grep -rqx '# edited in place' "${DEPLOY}/backups/symlink-migration"
+  [[ "${output}" == *"has uncommitted changes"* ]]
+}
+
+@test "the clone's --repair never overwrites an untracked file in the working checkout" {
+  make_repo "${CLONE}"
+  mkdir -p "${CLONE}/scripts"
+  printf 'v1\n' >"${CLONE}/scripts/only-in-clone.txt"
+  git -C "${FAKE_HOME}/.local/share/claude-config" add scripts/only-in-clone.txt
+  GIT_CONFIG_GLOBAL=/dev/null git -C "${FAKE_HOME}/.local/share/claude-config" commit -q -m "clone file"
+  run run_install "${CLONE}" --sync
+  [ "${status}" -eq 0 ]
+  mkdir -p "${DEV}/scripts"
+  printf 'untracked work\n' >"${DEV}/scripts/only-in-clone.txt"
+  rm "${DEPLOY}/scripts/only-in-clone.txt"
+  printf 'edited in place\n' >"${DEPLOY}/scripts/only-in-clone.txt"
+
+  run run_install "${CLONE}" --repair
+  [ "${status}" -eq 0 ]
+  grep -qx 'untracked work' "${DEV}/scripts/only-in-clone.txt"
+}
+
 @test "the working checkout's repair still copies an edit back into it (legacy)" {
   run run_install "${DEV}" --sync
   [ "${status}" -eq 0 ]

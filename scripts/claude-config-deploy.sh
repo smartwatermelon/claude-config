@@ -182,7 +182,7 @@ deploy_once() {
 
   # lowSpeed* aborts a stalled transfer; launchd would otherwise wait on it until the next interval.
   if ! fetch_out="$(_git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 fetch --quiet origin 2>&1)"; then
-    _log "fetch failed (offline?); will retry: ${fetch_out}"
+    _log "fetch failed (offline, or inside the Claude Code sandbox?); will retry: ${fetch_out}"
     return 1
   fi
 
