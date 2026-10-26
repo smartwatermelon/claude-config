@@ -59,7 +59,13 @@ entries are omitted here.
 2. `hook-block-gate-dir-write.sh` (Bash-path writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf`, `copy-paths.conf` and personify's `route-command`)
 3. `hook-block-no-verify.sh`
 4. `hook-block-short-no-verify.sh`
-5. `hook-block-main-commit.sh`
+5. `hook-block-main-commit.sh`. Denies a commit on main/master. Since #792 it also denies a command that moves a repo's primary checkout off its default branch: `git checkout <branch|commit>` (with `-b`, `-B`, `--orphan`, `--detach`, `-`), `git switch` (with `-c`, `-C`, `--orphan`, `--detach`, `-`), `git stash branch` and `gh pr checkout`. The deny names the replacement, `git -C <repo> worktree add .claude/worktrees/<name> -b <branch> origin/<default>`.
+   - Primary checkout: `rev-parse --git-common-dir` equals `--absolute-git-dir`. A linked worktree is never guarded.
+   - Repo: the hook input's `cwd`, then any `env -C` and `git -C` values in order. A `-C` from a variable or substitution, an earlier `cd`, or `--git-dir` denies (fail closed). A path that is not a repo passes, since git fails there anyway.
+   - Default branch: `refs/remotes/origin/HEAD`, else `main` if it exists, else `master`.
+   - Allowed: a switch to the default branch, `git checkout -- <path>`, `git checkout <ref> -- <path>`, `git checkout .`, `-p`, a checkout operand that is not a ref (a path), `git pull` and `git worktree add`.
+   - Only real invocations count. A piece of the command is checked only when a command starts there, not in quotes, a heredoc or a comment, so a commit message or `printf` that mentions `git checkout -b` passes.
+   - Not covered: `git reset --hard`, `git rebase`, `git bisect`, `bash -c`/`eval` strings, command substitution (`$(...)`, backticks), a command after a single `&`, aliases and variables.
 6. `hook-block-personify.sh` (text gate, below)
 7. `hook-check-commit-message.py`
 8. `hook-block-merge-lock-authorize.sh`
