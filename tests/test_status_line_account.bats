@@ -54,6 +54,25 @@ render() {
   [[ "${output}" == "[work] "* ]]
 }
 
+@test "spaces around = in the labels file are ignored" {
+  printf '%s' '{"oauthAccount":{"emailAddress":"a@example.com"}}' \
+    >"${CLAUDE_CONFIG_DIR}/.claude.json"
+  printf '%s\n' '  a@example.com = work  ' >"${CLAUDE_CONFIG_DIR}/account-labels"
+  run render
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == "[work] "* ]]
+}
+
+@test "CRLF line endings in the labels file do not leak into the label" {
+  printf '%s' '{"oauthAccount":{"emailAddress":"a@example.com"}}' \
+    >"${CLAUDE_CONFIG_DIR}/.claude.json"
+  printf 'b@example.com=other\r\na@example.com=work\r\n' \
+    >"${CLAUDE_CONFIG_DIR}/account-labels"
+  run render
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == "[work] "* ]]
+}
+
 @test "a near-miss email does not take another account's label" {
   printf '%s' '{"oauthAccount":{"emailAddress":"xa@example.com"}}' \
     >"${CLAUDE_CONFIG_DIR}/.claude.json"

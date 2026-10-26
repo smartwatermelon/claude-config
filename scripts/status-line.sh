@@ -138,6 +138,13 @@ fi
 # Optional labels file, one `email=label` per line, so each account reads as
 # a short word rather than a full address. It lives beside the runtime
 # config, not in this repo, so no addresses are committed.
+trim_ws() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "${s}"
+}
+
 account_segment=""
 claude_json="${CLAUDE_CONFIG_DIR:-${HOME}}/.claude.json"
 account_email=$(jq -r '.oauthAccount.emailAddress // empty' \
@@ -148,6 +155,10 @@ if [[ -n "${account_email}" ]]; then
   if [[ -r "${labels_file}" ]]; then
     # `|| [[ -n ... ]]` keeps a last line that has no trailing newline.
     while IFS='=' read -r label_key label_value || [[ -n "${label_key}" ]]; do
+      # Hand-edited files get `email = label` and CRLF endings; trim both
+      # sides so neither breaks the match or puts a \r in the label.
+      label_key=$(trim_ws "${label_key}")
+      label_value=$(trim_ws "${label_value}")
       if [[ "${label_key}" == "${account_email}" && -n "${label_value}" ]]; then
         account_label="${label_value}"
         break
