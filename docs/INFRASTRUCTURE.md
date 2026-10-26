@@ -104,9 +104,11 @@ clone's `install.sh` refuses `--dev`.
 copies a regular file at a link path back into the repo (that would leave the
 clone dirty and stop every deploy). It backs the file up to
 `~/.claude/backups/symlink-migration/`, copies it unstaged into the working
-checkout, and relinks. So a live edit that replaced a link (Claude Code
-writing `settings.json`, for example) is reverted in `~/.claude` and survives
-only as a working-checkout diff to commit. An edit written through the link
+checkout, and relinks. It skips that copy when the working-checkout file has
+uncommitted changes or is untracked. So a live edit that replaced a link
+(Claude Code writing `settings.json`, for example) is reverted in `~/.claude`.
+It survives as a working-checkout diff to commit or, when the copy was
+skipped, only in the backup. An edit written through the link
 lands in the clone instead; the next deploy then refuses and notifies until it
 is moved to the working checkout. `--learn` still writes the working
 checkout's `scripts/known-runtime.txt`, which is where a commit can come from.
