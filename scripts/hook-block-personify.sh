@@ -1260,6 +1260,15 @@ _api_submits_review() {
   printf '%s\n' "${flat}" | grep -qE '/pulls/[^/[:space:]]+/reviews/[^/[:space:]]+/events'
 }
 
+# 0 for the GraphQL form of gh pr ready. Reads _scan_flat, as a query spans lines.
+_gql_marks_ready() {
+  local flat="${1//[\"\'\\]/}" gql="${_scan_flat//[\"\'\\]/}"
+  [[ "${flat}" == *graphql* && "${gql}" == *markPullRequestReadyForReview* ]]
+}
+
+_GQL_READY_DENY="GraphQL markPullRequestReadyForReview names a node ID, not a repository, so it counts as a review route"
+_GQL_READY_DENY+="; Andrew clicks Ready for review in the GitHub UI"
+
 # Endpoint words only, as in _gh_destination, so a body file path cannot pick the looser cap.
 _api_cap_kind() {
   local eps ep kind=""
@@ -1655,6 +1664,10 @@ _verify_api_input() {
   path="$(_extract_path "${seg}" '--input')"
   if [[ "${seg}" == *graphql* ]]; then
     # GraphQL has no route (see _verify_api_segment); a query that can carry text never passes.
+    if [[ -f "${path}" ]] && jq -r '.query // "" | tostring' "${path}" 2>/dev/null |
+      grep -q 'markPullRequestReadyForReview'; then
+      _deny "${_GQL_READY_DENY}" "PR ready for review"
+    fi
     if [[ "${path}" != /* || "${path}" == /dev/* || ! -f "${path}" ]] ||
       ! jq -e 'type == "object"' "${path}" >/dev/null 2>&1 ||
       jq -e '[paths | select(.[-1] == "body")] | length > 0' "${path}" >/dev/null 2>&1 ||
@@ -1761,6 +1774,11 @@ _gate_segment() {
         _dest_exempt pr-comment && return 0
       fi
       _deny "submitting a review on a review route; Andrew clicks Submit review in the GitHub UI" "review submission"
+    fi
+    # The GraphQL form of gh pr ready. No route resolves from a node ID, so it never passes.
+    if _gql_marks_ready "${seg}"; then
+      _suspended && exit 0
+      _deny "${_GQL_READY_DENY}" "PR ready for review"
     fi
     if printf '%s\n' "${seg}" | grep -qE -- '[[:space:]]--input([[:space:]]|=)'; then
       _suspended && exit 0

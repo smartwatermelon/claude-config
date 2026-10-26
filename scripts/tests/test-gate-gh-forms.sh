@@ -189,6 +189,29 @@ _case "literal IDs on an exempt route: passes" 0 "" "${EXEMPT}" \
 _case "GET with \$( ) and no review endpoint: passes" 0 "" "${REVIEW}" \
   "gh api repos/beacon-biosignals/x/issues/\$(printf 3)"
 
+echo "--- GraphQL markPullRequestReadyForReview ---"
+# The mutation names a node ID, not a repo, so no route resolves: it blocks from every checkout.
+RDY="Ready for review in the GitHub UI"
+MUT='mutation { markPullRequestReadyForReview(input: {pullRequestId: "PR_kwDOAB"}) { clientMutationId } }'
+J_READY="${TMP}/gql-ready.json"
+jq -n --arg q "${MUT}" '{query: $q}' >"${J_READY}"
+_case "ready mutation via -f query=, review checkout: blocked" 2 "${RDY}" "${REVIEW}" "gh api graphql -f query='${MUT}'"
+_case "ready mutation via --raw-field query=: blocked" 2 "${RDY}" "${REVIEW}" "gh api graphql --raw-field query='${MUT}'"
+_case "ready mutation via -F query=: blocked" 2 "${RDY}" "${REVIEW}" "gh api graphql -F query='${MUT}'"
+_case "ready mutation via --field=query=: blocked" 2 "${RDY}" "${REVIEW}" "gh api graphql --field=query='${MUT}'"
+_case "ready mutation across lines: blocked" 2 "${RDY}" "${REVIEW}" \
+  "gh api graphql -f query='mutation {
+  markPullRequestReadyForReview(input: {pullRequestId: \"PR_kwDOAB\"}) { clientMutationId }
+}'"
+_case "ready mutation from an exempt checkout (no route): blocked" 2 "${RDY}" "${EXEMPT}" \
+  "gh api graphql -f query='${MUT}'"
+_case "ready mutation via --input: blocked" 2 "${RDY}" "${REVIEW}" "gh api graphql --input ${J_READY}"
+_case "ready mutation via --input from an exempt checkout: blocked" 2 "${RDY}" "${EXEMPT}" \
+  "gh api graphql --input ${J_READY}"
+_case "PR body that mentions the mutation: passes" 0 "" "${EXEMPT}" \
+  "gh pr create -R twistedmelonman/y --title t --body 'Blocks gh api graphql markPullRequestReadyForReview on review routes.'"
+_case "read-only graphql query: passes" 0 "" "${REVIEW}" "gh api graphql -f query='query { viewer { login } }'"
+
 echo ""
 echo "${pass} passed, ${fail} failed"
 ((fail == 0))
