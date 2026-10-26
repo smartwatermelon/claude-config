@@ -248,3 +248,32 @@ STUB
   [ "${status}" -eq 0 ]
   grep -qx '# edited in place' "${DEV}/CLAUDE.md"
 }
+
+# --- review findings on the first commit -------------------------------------
+
+@test "the clone's --repair keeps the dev-mode marker while dev links remain" {
+  make_repo "${CLONE}"
+  run run_install "${DEV}" --dev
+  [ "${status}" -eq 0 ]
+  run run_install "${CLONE}" --repair
+  [ "${status}" -eq 0 ]
+  [[ -f "${MARKER}" ]]
+}
+
+@test "the clone's --sync removes leftovers of --dev run from a checkout elsewhere" {
+  make_repo "${CLONE}"
+  OTHER="${FAKE_HOME}/src/claude-config"
+  make_repo "${OTHER}"
+  mkdir -p "${OTHER}/scripts"
+  printf '#!/usr/bin/env bash\n' >"${OTHER}/scripts/feature-only.sh"
+  chmod +x "${OTHER}/scripts/feature-only.sh"
+  git -C "${FAKE_HOME}/src/claude-config" add scripts/feature-only.sh
+  GIT_CONFIG_GLOBAL=/dev/null git -C "${FAKE_HOME}/src/claude-config" commit -q -m "feature"
+  run run_install "${OTHER}" --dev
+  [ "${status}" -eq 0 ]
+  [[ -L "${DEPLOY}/scripts/feature-only.sh" ]]
+
+  run run_install "${CLONE}" --sync
+  [ "${status}" -eq 0 ]
+  [[ ! -L "${DEPLOY}/scripts/feature-only.sh" ]]
+}

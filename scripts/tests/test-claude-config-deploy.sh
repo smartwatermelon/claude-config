@@ -329,15 +329,23 @@ done
 chmod +x "${T}"/ghooks/* "${T}"/gtemplate/hooks/*
 printf '[core]\n\thooksPath = %s\n\tfsmonitor = false\n[init]\n\ttemplateDir = %s\n' \
   "${T}/ghooks" "${T}/gtemplate" >"${T}/gitconfig"
-GIT_CONFIG_GLOBAL="${T}/gitconfig" "${SCRIPT}" bootstrap >/dev/null 2>&1 || true
-advance_origin v2 >/dev/null
-GIT_CONFIG_GLOBAL="${T}/gitconfig" "${CLONE}/scripts/claude-config-deploy.sh" deploy >/dev/null 2>&1 || true
+rc=0
+GIT_CONFIG_GLOBAL="${T}/gitconfig" "${SCRIPT}" bootstrap >/dev/null 2>&1 || rc=$?
+check "global hooks: bootstrap succeeded (so the checks below are not vacuous)" test "${rc}" -eq 0
+check "global hooks: the clone exists" test -d "${CLONE}/.git"
+new_sha="$(advance_origin v2)"
+rc=0
+GIT_CONFIG_GLOBAL="${T}/gitconfig" "${CLONE}/scripts/claude-config-deploy.sh" deploy >/dev/null 2>&1 || rc=$?
+check "global hooks: deploy succeeded" test "${rc}" -eq 0
+check_eq "global hooks: the clone fast-forwarded" "${new_sha}" head_of "${CLONE}"
 check "global hooks: none ran in the clone during clone or fast-forward" test ! -e "${T}/hook-ran"
 check "global hooks: no template hooks copied into the clone" test ! -e "${CLONE}/.git/hooks/post-checkout"
 
 # --- uninstall -----------------------------------------------------------------
 fresh
 "${SCRIPT}" bootstrap >/dev/null 2>&1
+check "uninstall setup: plist exists" test -f "${PLIST}"
+check "uninstall setup: command link exists" test -L "${HOME}/.local/bin/claude-config-deploy"
 run_clone_script uninstall
 check "uninstall: exit 0" test "${rc}" -eq 0
 check "uninstall: agent booted out" grep -qx "bootout gui/${UID_N}/com.smartwatermelon.claude-config-deploy" "${STUB_LAUNCHCTL_LOG}"

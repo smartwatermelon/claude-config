@@ -466,11 +466,23 @@ repair_symlinks() {
 
 # Links into the other checkout (#453) are dev-mode leftovers for untracked files.
 # --sync removes them; --repair only when dangling.
+OTHER_CHECKOUTS=("${DEPLOY_CLONE}")
 if ${IS_DEPLOY_CLONE}; then
-  OTHER_CHECKOUT="${DEV_CHECKOUT}"
-else
-  OTHER_CHECKOUT="${DEPLOY_CLONE}"
+  OTHER_CHECKOUTS=("${DEV_CHECKOUT}")
+  # A --dev run from a checkout elsewhere names itself in the marker.
+  _marker_path="$(sed -n 's/^path=//p' "${DEV_MARKER}" 2>/dev/null || true)"
+  if [[ "${_marker_path}" == /* && "${_marker_path}" != "${DEV_CHECKOUT}" ]]; then
+    OTHER_CHECKOUTS+=("${_marker_path}")
+  fi
 fi
+
+_in_other_checkout() {
+  local root
+  for root in "${OTHER_CHECKOUTS[@]}"; do
+    [[ "$1" == "${root}/"* ]] && return 0
+  done
+  return 1
+}
 
 prune_stale_symlinks() {
   local link target dir
@@ -480,7 +492,7 @@ prune_stale_symlinks() {
     target="$(readlink "${link}")" || continue
     if [[ "${target}" == "${REPO_DIR}/"* ]]; then
       [[ -e "${link}" ]] && continue
-    elif [[ "${target}" == "${OTHER_CHECKOUT}/"* ]]; then
+    elif _in_other_checkout "${target}"; then
       ${REPAIR_ONLY} && [[ -e "${link}" ]] && continue
     else
       continue
