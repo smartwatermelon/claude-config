@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # Hook: Block Write/Edit operations to the approval directories
-# Prevents unauthorized modification of merge locks, text approvals, Pangram
-# check records, and Pangram stamps:
+# Prevents unauthorized modification of merge locks, text approvals, personify
+# check records, and personify stamps:
 #
 #   ~/.claude/merge-locks/       merge authorization
 #   ~/.claude/gate-review/       commit/PR text approval
-#   ~/.config/personify/checks/  Pangram check records
+#   ~/.config/personify/checks/  records from the retired Pangram check
 #   ~/.config/personify/stamps/  Human approval stamps
 #   ~/.claude/gate-rules.conf    destination routing rules (a file; an agent
 #                                that could edit it could exempt itself)
 #   ~/.claude/merge-lock-policy.conf  which PRs need a merge-lock (a file)
 #   ~/.claude/copy-paths.conf    which files are public-facing copy (a file;
 #                                an agent that could edit it could ungate copy)
-#   ~/.config/personify/route-command  the route program pangram_check.py runs
-#                                (a file; editing it could route any text to Pangram)
+#   ~/.config/personify/route-command  the route program personify runs
+#                                (a file; editing it could give personify a false route)
 #
 # Covers the Write and Edit matchers. The Bash path -- `cp`, `tee`, `sed -i`,
 # redirects -- carries no file_path and is not visible here; it is covered by
@@ -38,7 +38,7 @@ file_path=$(printf '%s\n' "${input}" | jq -r '.tool_input.file_path // empty')
 # both end in that suffix). `personify/pangram-key` and `personify/VOICE.md`
 # sit beside those two directories, not inside either, so they still match
 # nothing here.
-# personify/route-command (a file) names pangram_check.py's router, so it is guarded too.
+# personify/route-command (a file) names the router personify asks, so it is guarded too.
 if printf '%s\n' "${file_path}" | grep -qE '(^|[^a-zA-Z0-9_-])(merge-locks|gate-review|personify/(checks|stamps))/|\.claude/(gate-rules|merge-lock-policy|copy-paths)\.conf$|(^|/)personify/route-command$'; then
   printf '%s BLOCKED WRITE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${file_path}" >>"${HOME}/.claude/blocked-commands.log" || true
   printf '🛑 BLOCKED: Writing to an approval directory is forbidden.\n' >&2
@@ -46,7 +46,7 @@ if printf '%s\n' "${file_path}" | grep -qE '(^|[^a-zA-Z0-9_-])(merge-locks|gate-
   printf 'merge-locks/, gate-review/, personify/checks/, personify/stamps/, and\n' >&2
   printf 'the files .claude/gate-rules.conf, .claude/copy-paths.conf and\n' >&2
   printf 'personify/route-command hold decisions\n' >&2
-  printf 'only Andrew makes, or what Pangram said.\n' >&2
+  printf 'only Andrew makes, or records an agent must not forge.\n' >&2
   printf 'Reading from them is allowed; writing them is not.\n' >&2
   exit 2
 fi

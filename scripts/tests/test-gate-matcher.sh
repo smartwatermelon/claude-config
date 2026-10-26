@@ -740,7 +740,7 @@ _bcase "${DIRWRITE}" "rm the deployed copy paths file" \
 _bcase "${DIRWRITE}" "cat the deployed copy paths file (read)" \
   'cat ~/.claude/copy-paths.conf' 0
 
-# route-command names pangram_check.py's router; repointing or deleting it reroutes paid calls.
+# route-command names the router personify asks; repointing or deleting it gives personify a false route.
 _bcase "${DIRWRITE}" "redirect over the route-command file" \
   'echo /tmp/fake > ~/.config/personify/route-command' 2
 _bcase "${DIRWRITE}" "append to the route-command file (home spelled out)" \

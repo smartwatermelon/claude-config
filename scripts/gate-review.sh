@@ -150,13 +150,12 @@ _hash() {
 
 # The directory of the personify
 # version Claude Code has installed. The plugin cache keeps every past version
-# side by side, and a guessed one can predate a feature the check now needs:
+# side by side, and a guessed one can predate a feature the gate needs:
 # 2.0.1 has no Keychain lookup, so on 2026-09-24 it reported "no Pangram API
 # key found" on a machine whose key was in the Keychain. Computed per call so a
 # test can point CLAUDE_CONFIG_DIR at a fixture.
 #
-# Marker: length_check.py, the file the gate runs. pangram_check.py may go now
-# that Pangram left the gate (2026-10-22).
+# Marker: length_check.py, the file the gate runs.
 #
 # A local install wins over a copy synced from claude.ai, because that is the
 # one Claude Code loads when both exist. Without a local install, the synced

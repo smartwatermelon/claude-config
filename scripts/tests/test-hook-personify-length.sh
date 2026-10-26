@@ -45,7 +45,6 @@ printf 'repo=acme/ex exempt\n* review\n' >"${GATE_RULES_FILE}"
 PLUG="${TMP}/plug"
 mkdir -p "${PLUG}/scripts" "${CLAUDE_CONFIG_DIR}/plugins"
 cp "${CHECKER_SRC}" "${PLUG}/scripts/length_check.py"
-: >"${PLUG}/scripts/pangram_check.py"
 jq -n --arg p "${PLUG}" '{plugins:{"personify@personify":[{installPath:$p}]}}' \
   >"${CLAUDE_CONFIG_DIR}/plugins/installed_plugins.json"
 

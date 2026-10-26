@@ -3,12 +3,12 @@
 #
 #   ~/.claude/merge-locks/       merge authorization
 #   ~/.claude/gate-review/       commit/PR text approval
-#   ~/.config/personify/checks/  Pangram check records
+#   ~/.config/personify/checks/  records from the retired Pangram check
 #   ~/.config/personify/stamps/  Human approval stamps
 #   ~/.claude/gate-rules.conf    destination routing rules (a file)
 #   ~/.claude/merge-lock-policy.conf  which PRs need a merge-lock (a file)
 #   ~/.claude/copy-paths.conf    which files are public-facing copy (a file)
-#   ~/.config/personify/route-command  what pangram_check.py asks for a route (a file)
+#   ~/.config/personify/route-command  what personify asks for a route (a file)
 #
 # THE HOLE THIS CLOSES. hook-block-merge-locks-write.sh is registered for the
 # Write and Edit matchers only, and reads tool_input.file_path. A Bash `cp`
@@ -32,10 +32,8 @@
 # any writer not named below. Both locks are forcing functions, not
 # cryptographic locks -- a point accepted when this design was chosen. The
 # value is that the obvious path is closed and the log records attempts.
-# gate-review.sh's check-record lookup honors XDG_CONFIG_HOME, so an agent
-# that sets that variable to a directory it controls can write a check record
-# this hook never sees and bypass it that way. This is the same class as the
-# existing GATE_REVIEW_DIR override, and it is accepted for the same reason.
+# GATE_REVIEW_DIR can move the approval store out of this hook's sight; that
+# override is accepted for the same reason.
 #
 # Called by: hook-block-all.sh (PreToolUse Bash hook chain)
 
@@ -53,7 +51,7 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # impossible. Only paths INSIDE the directories are approval state.
 #
 # `~/.claude/gate-rules.conf` is the one FILE guarded here. It decides which
-# destinations skip the Pangram check, so an agent that could rewrite it could
+# destinations skip approval, so an agent that could rewrite it could
 # exempt itself. It has no trailing `/`; the literal name still leaves
 # `scripts/gate-rules-notes.md` and the repo's own `gate-rules.conf` (edited
 # through a human-reviewed PR) unmatched. The hook does not resolve symlinks,
@@ -61,7 +59,7 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 #
 # copy-paths.conf likewise decides which files' text needs approval (dev-env#206).
 #
-# route-command names pangram_check.py's router; repointing it reroutes paid calls. No .config anchor: $XDG_CONFIG_HOME spellings count.
+# route-command names personify's router; repointing it fakes a route. No .config anchor: $XDG_CONFIG_HOME spellings count.
 _route_name='personify/route-command'
 _route_file="${_route_name}([^[:alnum:]_.-]|\$)"
 _dirs_base='\.claude/(merge-locks|gate-review)/|\.config/personify/(checks|stamps)/|\.claude/(gate-rules|merge-lock-policy|copy-paths)\.conf'
@@ -140,9 +138,9 @@ printf '%s BLOCKED GATE-DIR WRITE (%s)\n' \
   echo "  kind: ${blocked}"
   echo ''
   echo 'merge-locks/ and gate-review/ hold decisions only Andrew makes, and'
-  echo 'personify checks/ and stamps/ hold what Pangram said. An agent that'
-  echo 'can write them can approve its own text or forge a check, which is'
-  echo 'what these directories exist to prevent.'
+  echo 'personify checks/ and stamps/ hold check records and approval stamps.'
+  echo 'An agent that can write them can approve its own text or forge a'
+  echo 'record, which is what these directories exist to prevent.'
   echo ''
   echo 'Reading from these directories is allowed and is the normal path:'
   echo '  git commit -F ~/.claude/gate-review/approved/<repo>-<branch>/<name>'

@@ -548,7 +548,7 @@ _link_command hooks/merge-lock.command "${HOME}/Applications/merge-lock.command"
 # ============================================================================
 # 7b. PERSONIFY ROUTE COMMAND
 # ============================================================================
-# pangram_check.py routes through this file; it calls Pangram only on a pangram route (none since 2026-10-22).
+# personify reads this file to ask gate-review.sh for a route. Keep it while personify does.
 _route_rel="scripts/gate-review.sh"
 _route_file="${XDG_CONFIG_HOME:-${HOME}/.config}/personify/route-command"
 _route_want="${DEPLOY_DIR}/${_route_rel}"
