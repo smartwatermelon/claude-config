@@ -18,6 +18,8 @@ SINCE_EPOCH=1788220800
 setup() {
   unset BASH_ENV
   unset CDPATH
+  # The default exempt path reads this; a caller's value must not leak in.
+  unset REVIEW_STATE_DIR
   unset -f gh 2>/dev/null || true
   export -n gh 2>/dev/null || true
 
@@ -389,15 +391,40 @@ run_audit() {
   [[ "${output}" == *"exempt=1"* ]]
 }
 
-@test "exempt.tsv is read from ~/.claude/merge-locks by default" {
+@test "exempt.tsv is read from the review state dir by default (#779)" {
   repos acme acme/widgets
   pulls acme/widgets 1 "[$(pr 7 "${MERGED}")]"
   ledger "${START}"
-  mkdir -p "${HOME}/.claude/merge-locks"
-  exempt_to "${HOME}/.claude/merge-locks/exempt.tsv" "$((MERGED - 30)) Acme/Widgets 7 twistedmelonman"
+  mkdir -p "${HOME}/.local/state/claude-review"
+  exempt_to "${HOME}/.local/state/claude-review/exempt.tsv" "$((MERGED - 30)) Acme/Widgets 7 twistedmelonman"
   run_audit --all
   [ "${status}" -eq 0 ]
   [[ "${output}" == *$'EXEMPT\tacme/widgets#7'* ]]
+}
+
+@test "the default exempt path follows REVIEW_STATE_DIR" {
+  repos acme acme/widgets
+  pulls acme/widgets 1 "[$(pr 7 "${MERGED}")]"
+  ledger "${START}"
+  mkdir -p "${TMP}/state"
+  exempt_to "${TMP}/state/exempt.tsv" "$((MERGED - 30)) acme/widgets 7 twistedmelonman"
+  REVIEW_STATE_DIR="${TMP}/state" run_audit --all
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *$'EXEMPT\tacme/widgets#7'* ]]
+}
+
+@test "the legacy ~/.claude/merge-locks/exempt.tsv is still read by default" {
+  repos acme acme/widgets
+  pulls acme/widgets 1 "[$(pr 7 "${MERGED}"), $(pr 8 "${MERGED}")]"
+  ledger "${START}"
+  mkdir -p "${HOME}/.claude/merge-locks" "${HOME}/.local/state/claude-review"
+  exempt_to "${HOME}/.claude/merge-locks/exempt.tsv" "$((MERGED - 30)) Acme/Widgets 7 twistedmelonman"
+  exempt_to "${HOME}/.local/state/claude-review/exempt.tsv" "$((MERGED - 30)) acme/widgets 8 twistedmelonman"
+  run_audit --all
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *$'EXEMPT\tacme/widgets#7'* ]]
+  [[ "${output}" == *$'EXEMPT\tacme/widgets#8'* ]]
+  [[ "${output}" == *"exempt=2"* ]]
 }
 
 @test "a locked merge stays LOCKED when an exempt row also exists" {

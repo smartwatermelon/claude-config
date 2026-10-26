@@ -943,8 +943,7 @@ case "${LOCK_POLICY}" in
     ;;
 esac
 
-# Track lock file path for dedup guard below (empty if merge-lock is not in use).
-# Mirrors merge-lock.sh's layout: merge-locks/<owner>/<repo>/pr-<N>.lock
+# Read-only here (#779): an older lock may hold ISSUES_CREATED=1. Layout matches merge-lock.sh.
 MERGE_LOCK_FILE="${HOME}/.claude/merge-locks/${REPO_OWNER:-unknown}/${REPO_NAME:-unknown}/pr-${PR_NUMBER}.lock"
 
 # --- Non-interactive flag gate ---
@@ -1461,36 +1460,65 @@ fi
 if echo "${VERDICT_LINE}" | grep -qE "SAFE_TO_MERGE"; then
   # Authorization was already verified at the top of this script (early check).
   log_success "PR review analysis passed - safe to merge"
-  # A policy-exempt merge is logged only once review passed. Beside the ledger, which keeps human grants only.
-  _exempt_log="${HOME}/.claude/merge-locks/exempt.tsv"
+  # Agent records go here, not merge-locks (#779): the sandbox keeps that dir for Andrew's grants.
+  _review_state_dir="${REVIEW_STATE_DIR:-${HOME}/.local/state/claude-review}"
+  # 1800s matches the default lock TTL: a retry inside it is the same authorization, a later run is new.
+  _filed_window=1800
+  _filed_now=$(date +%s)
+  # A policy-exempt merge is logged only once review passed.
+  _exempt_log="${_review_state_dir}/exempt.tsv"
+  # Before #779 the log lived in merge-locks. Read only, for dedup; agents cannot write or move it.
+  _exempt_log_legacy="${HOME}/.claude/merge-locks/exempt.tsv"
   _exempt_filed=false
   if [[ "${LOCK_POLICY}" == "exempt" ]]; then
-    # No lock file to mark (#702): a row for this PR in the last 1800s (the lock TTL) means filing ran. Scan before appending.
-    _exempt_window=1800
-    _exempt_now=$(date +%s)
-    if [[ -f "${_exempt_log}" ]] && awk -F'\t' -v r="${_canon_repo}" -v p="${PR_NUMBER}" -v now="${_exempt_now}" \
-      -v win="${_exempt_window}" \
-      '$1 ~ /^[0-9]+$/ && tolower($2) == tolower(r) && $3 == p && now - $1 >= 0 && now - $1 < win { f = 1 }
-       END { exit !f }' "${_exempt_log}" 2>/dev/null; then
-      _exempt_filed=true
+    # No lock to mark (#702): a row for this PR in the window means filing ran. Scan before appending.
+    for _log in "${_exempt_log}" "${_exempt_log_legacy}"; do
+      if [[ -f "${_log}" ]] && awk -F'\t' -v r="${_canon_repo}" -v p="${PR_NUMBER}" -v now="${_filed_now}" \
+        -v win="${_filed_window}" \
+        '$1 ~ /^[0-9]+$/ && tolower($2) == tolower(r) && $3 == p && now - $1 >= 0 && now - $1 < win { f = 1 }
+         END { exit !f }' "${_log}" 2>/dev/null; then
+        _exempt_filed=true
+      fi
+    done
+  fi
+  # Marker holds the filing epoch. Keyed on the lowercased repo; only plain name characters reach the path.
+  _issues_marker=""
+  _marker_repo=$(printf '%s' "${_canon_repo}" | tr '[:upper:]' '[:lower:]')
+  if [[ "${_marker_repo}" =~ ^[a-z0-9_.-]+/[a-z0-9_.-]+$ && "/${_marker_repo}/" != */./* && "/${_marker_repo}/" != */../* &&
+    "${PR_NUMBER}" =~ ^[0-9]+$ ]]; then
+    _issues_marker="${_review_state_dir}/issues-filed/${_marker_repo}/pr-${PR_NUMBER}"
+  fi
+  _marker_filed=false
+  if [[ -n "${_issues_marker}" && -f "${_issues_marker}" ]]; then
+    _marker_ts=$(head -1 "${_issues_marker}" 2>/dev/null || true)
+    if [[ "${_marker_ts}" =~ ^[0-9]+$ ]] && ((_filed_now - _marker_ts >= 0 && _filed_now - _marker_ts < _filed_window)); then
+      _marker_filed=true
     fi
   fi
   # Create GitHub issues for any non-blocking concerns found during review.
   # Guard: if the merge fails and Claude retries within the same authorization
   # window (30-min TTL), skip issue creation to prevent duplicates.
+  # A lock granted before #779 may still carry ISSUES_CREATED=1. Read it; never write the lock.
   if [[ -f "${MERGE_LOCK_FILE}" ]] && grep -q "^ISSUES_CREATED=1$" "${MERGE_LOCK_FILE}" 2>/dev/null; then
     log_info "Non-blocking issues already filed for PR #${PR_NUMBER} in this auth window — skipping"
   elif [[ "${_exempt_filed}" == true ]]; then
     log_info "Non-blocking issues already filed for ${_canon_repo}#${PR_NUMBER} in this exempt window — skipping"
+  elif [[ "${_marker_filed}" == true ]]; then
+    log_info "Non-blocking issues already filed for PR #${PR_NUMBER} in this auth window — skipping"
   else
     create_nonblocking_issues "${ANALYSIS_TEXT}"
-    # Mark so a retry within the same auth window skips issue creation.
-    [[ -f "${MERGE_LOCK_FILE}" ]] && printf 'ISSUES_CREATED=1\n' >>"${MERGE_LOCK_FILE}" || true
+    # Mark so a retry within the same window skips issue creation.
+    if [[ -n "${_issues_marker}" ]]; then
+      { mkdir -p "${_issues_marker%/*}" && printf '%s\n' "${_filed_now}" >"${_issues_marker}"; } 2>/dev/null ||
+        log_warn "Could not write issues-filed marker ${_issues_marker}; a retry may file duplicates"
+    fi
   fi
-  # After filing, like ISSUES_CREATED=1: a filing step that aborts leaves no row, so the retry files.
+  # After filing, like the marker: a filing step that aborts leaves no row, so the retry files.
   if [[ "${LOCK_POLICY}" == "exempt" ]]; then
-    printf '%s\t%s\t%s\t%s\t%s\n' "${_exempt_now}" "${_canon_repo}" "${PR_NUMBER}" "${_pr_author}" "${LOCK_POLICY_WHY//$'\t'/ }" \
-      >>"${_exempt_log}" 2>/dev/null || true
+    { mkdir -p "${_review_state_dir}" &&
+      printf '%s\t%s\t%s\t%s\t%s\n' "${_filed_now}" "${_canon_repo}" "${PR_NUMBER}" "${_pr_author}" "${LOCK_POLICY_WHY//$'\t'/ }" \
+        >>"${_exempt_log}"; } 2>/dev/null ||
+      log_warn "Could not append to exempt-merge log ${_exempt_log}"
   fi
   exit 0
 elif echo "${VERDICT_LINE}" | grep -qE "BLOCK_MERGE"; then

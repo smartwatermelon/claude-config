@@ -15,6 +15,12 @@ setup() {
   export HOME="${TMP_HOME}"
   export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
   export GIT_CEILING_DIRECTORIES="${TMP_HOME}"
+  # Agent-written review records (#779): never the caller's real state dir.
+  export REVIEW_STATE_DIR="${TMP_HOME}/state"
+  export PENDING_ISSUES_DIR="${REVIEW_STATE_DIR}/pending-issues"
+  EXEMPT_LOG="${REVIEW_STATE_DIR}/exempt.tsv"
+  LEGACY_EXEMPT_LOG="${HOME}/.claude/merge-locks/exempt.tsv"
+  mkdir -p "${REVIEW_STATE_DIR}"
 
   # A stand-in claude-config checkout on main, holding the shipped policy, deployed the way install.sh does.
   CC="${TMP_HOME}/claude-config"
@@ -315,14 +321,14 @@ EOF
   [[ "${output}" == *"Merge lock not required"* ]]
   [[ -f "${TMP_HOME}/claude-ran" ]]
   [[ "${status}" -eq 0 ]]
-  grep -q $'\tsmartwatermelon/dev-env\t7\ttwistedmelonman\t' "${HOME}/.claude/merge-locks/exempt.tsv"
+  grep -q $'\tsmartwatermelon/dev-env\t7\ttwistedmelonman\t' "${EXEMPT_LOG}"
 }
 
 @test "exempt repo is still blocked by a BLOCK_MERGE review, and nothing is logged" {
   _pre_merge smartwatermelon/dev-env twistedmelonman BLOCK_MERGE
   [[ -f "${TMP_HOME}/claude-ran" ]]
   [[ "${status}" -ne 0 ]]
-  [[ ! -s "${HOME}/.claude/merge-locks/exempt.tsv" ]]
+  [[ ! -s "${EXEMPT_LOG}" ]]
 }
 
 @test "andrewmrich-authored PR in an exempt repo still needs the lock" {
@@ -363,7 +369,7 @@ _assert_policy_refused() {
   [[ "${out}" != *"Merge lock not required"* ]]
   [[ ! -f "${TMP_HOME}/claude-ran" ]]
   [[ ! -e "${TMP_HOME}/gh-merges" ]]
-  [[ ! -s "${HOME}/.claude/merge-locks/exempt.tsv" ]]
+  [[ ! -s "${EXEMPT_LOG}" ]]
 }
 
 @test "known-bad: no deployed policy refuses even with a valid lock" {
@@ -442,7 +448,7 @@ _refuse_line() {
   [[ "${output}" != *"Merge authorization verified"* ]]
   [[ ! -f "${TMP_HOME}/claude-ran" ]]
   [[ ! -e "${TMP_HOME}/gh-merges" ]]
-  [[ ! -s "${HOME}/.claude/merge-locks/exempt.tsv" ]]
+  [[ ! -s "${EXEMPT_LOG}" ]]
 }
 
 @test "refuse stdout is exactly one line" {
@@ -490,12 +496,12 @@ _issue_count() {
   [[ "$(_issue_count)" -eq 1 ]]
   [[ "${output}" == *"already filed for smartwatermelon/dev-env#7 in this exempt window"* ]]
   # The retry is still logged, so merge-audit sees the attempt.
-  [[ "$(grep -c $'\tsmartwatermelon/dev-env\t7\t' "${HOME}/.claude/merge-locks/exempt.tsv")" -eq 2 ]]
+  [[ "$(grep -c $'\tsmartwatermelon/dev-env\t7\t' "${EXEMPT_LOG}")" -eq 2 ]]
 }
 
 @test "an exempt merge after the window files again" {
   printf '%s\tsmartwatermelon/dev-env\t7\ttwistedmelonman\told\n' "$(($(date +%s) - 7200))" \
-    >"${HOME}/.claude/merge-locks/exempt.tsv"
+    >"${EXEMPT_LOG}"
   _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
@@ -503,14 +509,14 @@ _issue_count() {
 
 @test "a recent exempt row for the same PR number in another repo does not skip filing" {
   printf '%s\tsmartwatermelon/other\t7\ttwistedmelonman\tx\n' "$(date +%s)" \
-    >"${HOME}/.claude/merge-locks/exempt.tsv"
+    >"${EXEMPT_LOG}"
   _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
   [[ "$(_issue_count)" -eq 1 ]]
 }
 
 @test "known-bad: a recent exempt row matches the repo case-insensitively" {
   printf '%s\tSmartWatermelon/Dev-Env\t7\ttwistedmelonman\tx\n' "$(date +%s)" \
-    >"${HOME}/.claude/merge-locks/exempt.tsv"
+    >"${EXEMPT_LOG}"
   _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 0 ]]
@@ -523,11 +529,121 @@ _issue_count() {
   _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
-  grep -q '^ISSUES_CREATED=1$' "${lock}"
+  [[ -s "$(_marker smartwatermelon/claude-config)" ]]
   _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
   [[ "${output}" == *"already filed for PR #7 in this auth window"* ]]
   # A locked merge never writes an exempt row.
-  [[ ! -s "${HOME}/.claude/merge-locks/exempt.tsv" ]]
+  [[ ! -s "${EXEMPT_LOG}" ]]
+  [[ ! -e "${LEGACY_EXEMPT_LOG}" ]]
+}
+
+# --- agent records stay out of merge-locks (#779) ----------------------------
+
+# _marker <repo>: the issues-filed marker path for PR 7 of <repo>.
+_marker() {
+  printf '%s/issues-filed/%s/pr-7' "${REVIEW_STATE_DIR}" "$1"
+}
+
+@test "known-bad: a merge run never modifies the lock file" {
+  local lock="${HOME}/.claude/merge-locks/smartwatermelon/claude-config/pr-7.lock"
+  mkdir -p "$(dirname "${lock}")"
+  printf 'TIMESTAMP=%s\n' "$(date +%s)" >"${lock}"
+  local before
+  before=$(cat "${lock}")
+  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  [[ "$(_issue_count)" -eq 1 ]]
+  [[ "$(cat "${lock}")" == "${before}" ]]
+  [[ "$(cat "${lock}")" != *ISSUES_CREATED* ]]
+}
+
+@test "the issues-filed marker holds the filing time" {
+  local lock="${HOME}/.claude/merge-locks/smartwatermelon/claude-config/pr-7.lock"
+  mkdir -p "$(dirname "${lock}")"
+  printf 'TIMESTAMP=%s\n' "$(date +%s)" >"${lock}"
+  local t0
+  t0=$(date +%s)
+  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  local ts
+  ts=$(head -1 "$(_marker smartwatermelon/claude-config)")
+  [[ "${ts}" =~ ^[0-9]+$ ]]
+  ((ts >= t0 && ts <= $(date +%s)))
+}
+
+@test "a marker inside the window skips filing" {
+  _valid_lock smartwatermelon/claude-config
+  mkdir -p "$(dirname "$(_marker smartwatermelon/claude-config)")"
+  printf '%s\n' "$(($(date +%s) - 60))" >"$(_marker smartwatermelon/claude-config)"
+  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  [[ "$(_issue_count)" -eq 0 ]]
+  [[ "${output}" == *"already filed for PR #7 in this auth window"* ]]
+}
+
+@test "known-bad: a stale marker from an earlier authorization files again" {
+  _valid_lock smartwatermelon/claude-config
+  mkdir -p "$(dirname "$(_marker smartwatermelon/claude-config)")"
+  printf '%s\n' "$(($(date +%s) - 7200))" >"$(_marker smartwatermelon/claude-config)"
+  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  [[ "$(_issue_count)" -eq 1 ]]
+  [[ "${output}" != *"already filed"* ]]
+  # The new filing refreshes the marker.
+  (($(date +%s) - $(head -1 "$(_marker smartwatermelon/claude-config)") < 60))
+}
+
+@test "known-bad: a marker for the same PR number in another repo does not skip filing" {
+  _valid_lock smartwatermelon/claude-config
+  mkdir -p "$(dirname "$(_marker smartwatermelon/dotfiles)")"
+  date +%s >"$(_marker smartwatermelon/dotfiles)"
+  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  [[ "$(_issue_count)" -eq 1 ]]
+}
+
+@test "a legacy ISSUES_CREATED=1 in a lock still skips filing" {
+  local lock="${HOME}/.claude/merge-locks/smartwatermelon/claude-config/pr-7.lock"
+  mkdir -p "$(dirname "${lock}")"
+  printf 'TIMESTAMP=%s\nISSUES_CREATED=1\n' "$(date +%s)" >"${lock}"
+  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  [[ "$(_issue_count)" -eq 0 ]]
+  [[ "${output}" == *"already filed for PR #7 in this auth window"* ]]
+}
+
+@test "an exempt merge writes the review state dir, never merge-locks" {
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  grep -q $'\tsmartwatermelon/dev-env\t7\ttwistedmelonman\t' "${EXEMPT_LOG}"
+  [[ -s "$(_marker smartwatermelon/dev-env)" ]]
+  [[ ! -e "${LEGACY_EXEMPT_LOG}" ]]
+  # merge-locks holds nothing the merge run wrote.
+  [[ -z "$(find "${HOME}/.claude/merge-locks" -type f)" ]]
+}
+
+@test "the exempt log dir is created when missing" {
+  rm -r "${REVIEW_STATE_DIR}"
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  [[ "${status}" -eq 0 ]]
+  grep -q $'\tsmartwatermelon/dev-env\t7\t' "${EXEMPT_LOG}"
+}
+
+@test "known-bad: a recent row in the legacy exempt log still suppresses re-filing" {
+  printf '%s\tsmartwatermelon/dev-env\t7\ttwistedmelonman\tx\n' "$(date +%s)" >"${LEGACY_EXEMPT_LOG}"
+  local before
+  before=$(cat "${LEGACY_EXEMPT_LOG}")
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  [[ "${status}" -eq 0 ]]
+  [[ "$(_issue_count)" -eq 0 ]]
+  [[ "${output}" == *"already filed for smartwatermelon/dev-env#7 in this exempt window"* ]]
+  # The legacy log is read, never appended to; the new row goes to the state dir.
+  [[ "$(cat "${LEGACY_EXEMPT_LOG}")" == "${before}" ]]
+  grep -q $'\tsmartwatermelon/dev-env\t7\t' "${EXEMPT_LOG}"
+}
+
+@test "an old row in the legacy exempt log does not suppress filing" {
+  printf '%s\tsmartwatermelon/dev-env\t7\ttwistedmelonman\tx\n' "$(($(date +%s) - 7200))" >"${LEGACY_EXEMPT_LOG}"
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE findings
+  [[ "$(_issue_count)" -eq 1 ]]
 }
