@@ -18,7 +18,7 @@
 # Run: bats ~/.claude/tests/test_pre_merge_repo_flag.bats
 
 SCRIPT="${BATS_TEST_DIRNAME}/../hooks/pre-merge-review.sh"
-VALID_JSON='{"number":123,"title":"test PR","reviewDecision":"APPROVED","reviews":[],"comments":[],"state":"OPEN","statusCheckRollup":[{"name":"CI","status":"COMPLETED","conclusion":"SUCCESS"}]}'
+VALID_JSON='{"number":123,"title":"test PR","reviewDecision":"APPROVED","reviews":[],"comments":[],"state":"OPEN","statusCheckRollup":[{"name":"CI","status":"COMPLETED","conclusion":"SUCCESS"}],"url":"https://github.com/owner/repo/pull/123","author":{"login":"someone"}}'
 
 setup() {
   MOCK_DIR="$(mktemp -d)"
@@ -100,6 +100,10 @@ CLAUDE_EOF
   cat >"${MOCK_DIR}/merge-lock.sh" <<LOCK_EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$(IFS='|'; echo "\$*")" >>"${MOCK_DIR}/lock_calls.log"
+if [[ "\${1:-}" == "policy" ]]; then
+  printf 'lock\trule 1\t*\n'
+  exit 0
+fi
 if [[ "\${1:-}" == "check" ]]; then
   exit 0
 fi

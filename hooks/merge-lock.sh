@@ -647,10 +647,7 @@ show_status() {
       rm -f "${lock_file}"
     fi
   else
-    echo -e "${RED}[merge-lock]${NC} ${REPO}#${pr_number} is NOT authorized"
-    echo ""
-    echo "To authorize merge (valid 30 minutes):"
-    echo "  ~/.claude/hooks/merge-lock.sh authorize ${pr_number} \"reason\" --repo ${REPO}"
+    echo -e "${RED}[merge-lock]${NC} ${REPO}#${pr_number}: no active lock exists"
   fi
 }
 
@@ -1010,7 +1007,7 @@ case "${SUBCOMMAND}" in
     fi
     ;;
   policy)
-    # Read-only. pre-merge-review.sh: "refuse" stops the merge, "exempt" skips the lock, anything else locks.
+    # Read-only. pre-merge-review.sh: "refuse" stops the merge, "exempt" skips the lock, "lock" checks it, anything else refuses.
     if [[ -z "${REPO_OVERRIDE}" || -z "${AUTHOR_ARG}" ]]; then
       echo "Usage: $0 policy --repo OWNER/NAME --author LOGIN" >&2
       exit 1

@@ -259,7 +259,26 @@ policy() {
 _pre_merge() {
   local bin="${TMP_HOME}/bin"
   mkdir -p "${bin}"
-  ln -sf "${LOCK}" "${HOME}/.claude/hooks/merge-lock.sh"
+  # LOCK_MODE (default link): link the real script; missing, noexec or garbage install something else.
+  rm -f "${HOME}/.claude/hooks/merge-lock.sh"
+  case "${LOCK_MODE:-link}" in
+    link) ln -s "${LOCK}" "${HOME}/.claude/hooks/merge-lock.sh" ;;
+    missing) ;;
+    noexec)
+      cp "${LOCK}" "${HOME}/.claude/hooks/merge-lock.sh"
+      chmod 644 "${HOME}/.claude/hooks/merge-lock.sh"
+      ;;
+    garbage)
+      # policy answers with an unparseable line; check always says authorized.
+      cat >"${HOME}/.claude/hooks/merge-lock.sh" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == policy ]] && { echo "maybe"; exit 0; }
+exit 0
+STUB
+      chmod +x "${HOME}/.claude/hooks/merge-lock.sh"
+      ;;
+    *) return 1 ;;
+  esac
   cat >"${bin}/gh" <<EOF
 #!/usr/bin/env bash
 if [[ "\$1" == "pr" && "\$2" == "view" ]]; then
@@ -320,11 +339,76 @@ EOF
   [[ "${output}" != *"authorize"* ]]
 }
 
-@test "no deployed policy: every repo needs the lock" {
+# --- policy failure refuses ---------------------------------------------------
+
+# _policy_error_line <repo>: the one line a policy failure prints.
+_policy_error_line() {
+  printf '[gh] Not merged: the merge policy could not be read for %s#7; no agent merges until it is fixed.' "$1"
+}
+
+# _valid_lock <repo>: write a lock for PR 7 that merge-lock.sh check accepts.
+_valid_lock() {
+  local lock="${HOME}/.claude/merge-locks/$1/pr-7.lock"
+  mkdir -p "$(dirname "${lock}")"
+  printf 'TIMESTAMP=%s\n' "$(date +%s)" >"${lock}"
+}
+
+# _assert_policy_refused <repo> <status> <output>: policy-error line, no review, no merge, nothing logged.
+_assert_policy_refused() {
+  local out="$3"
+  [[ "$2" -eq 1 ]]
+  [[ "${out}" == *"$(_policy_error_line "$1")"* ]]
+  [[ "${out}" != *"needs Andrew's approval"* ]]
+  [[ "${out}" != *"Merge authorization verified"* ]]
+  [[ "${out}" != *"Merge lock not required"* ]]
+  [[ ! -f "${TMP_HOME}/claude-ran" ]]
+  [[ ! -e "${TMP_HOME}/gh-merges" ]]
+  [[ ! -s "${HOME}/.claude/merge-locks/exempt.tsv" ]]
+}
+
+@test "known-bad: no deployed policy refuses even with a valid lock" {
+  _valid_lock smartwatermelon/dev-env
   rm "${HOME}/.claude/merge-lock-policy.conf"
   _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  _assert_policy_refused smartwatermelon/dev-env "${status}" "${output}"
+}
+
+@test "no deployed policy refuses without a lock too" {
+  rm "${HOME}/.claude/merge-lock-policy.conf"
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  _assert_policy_refused smartwatermelon/dev-env "${status}" "${output}"
+}
+
+@test "known-bad: a missing merge-lock.sh refuses, it does not skip the lock" {
+  LOCK_MODE=missing _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE
+  _assert_policy_refused smartwatermelon/claude-config "${status}" "${output}"
+}
+
+@test "known-bad: a non-executable merge-lock.sh refuses, it does not skip the lock" {
+  LOCK_MODE=noexec _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  _assert_policy_refused smartwatermelon/dev-env "${status}" "${output}"
+}
+
+@test "known-bad: an unparseable policy answer refuses even when check would pass" {
+  LOCK_MODE=garbage _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  _assert_policy_refused smartwatermelon/dev-env "${status}" "${output}"
+}
+
+@test "known-bad: an unknown PR author refuses even with a valid lock" {
+  _valid_lock smartwatermelon/claude-config
+  _pre_merge smartwatermelon/claude-config "" SAFE_TO_MERGE
+  _assert_policy_refused smartwatermelon/claude-config "${status}" "${output}"
+}
+
+@test "a policy error prints exactly one stdout line" {
+  rm "${HOME}/.claude/merge-lock-policy.conf"
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  local bin="${TMP_HOME}/bin"
+  run bash -c '"$@" 2>/dev/null' _ env PATH="${bin}:${PATH}" CLAUDE_CLI="${bin}/claude" \
+    "${PRE_MERGE}" pr merge 7 --repo smartwatermelon/dev-env --squash --delete-branch
   [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"[gh] Not merged: smartwatermelon/dev-env#7 needs Andrew's approval."* ]]
+  [[ "${#lines[@]}" -eq 1 ]]
+  [[ "${lines[0]}" == "$(_policy_error_line smartwatermelon/dev-env)" ]]
 }
 
 # --- refuse ------------------------------------------------------------------
@@ -372,12 +456,11 @@ _refuse_line() {
   [[ "${lines[0]}" == "$(_refuse_line beacon-biosignals/anything)" ]]
 }
 
-@test "a policy error on a beacon-biosignals PR falls to the lock path, never exempt" {
+@test "known-bad: a policy error on a beacon-biosignals PR refuses even with a valid lock" {
+  _valid_lock beacon-biosignals/anything
   rm "${HOME}/.claude/merge-lock-policy.conf"
   _pre_merge beacon-biosignals/anything andrewmrich SAFE_TO_MERGE
-  [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"[gh] Not merged: beacon-biosignals/anything#7 needs Andrew's approval."* ]]
-  [[ ! -f "${TMP_HOME}/claude-ran" ]]
+  _assert_policy_refused beacon-biosignals/anything "${status}" "${output}"
 }
 
 # --- non-blocking issue dedup for exempt merges (#702) ----------------------

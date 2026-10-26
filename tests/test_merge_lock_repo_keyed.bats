@@ -250,7 +250,9 @@ write_legacy_flat_lock() {
 
   run bash "${SCRIPT}" status 3 --repo acme/gadgets
   [ "${status}" -eq 0 ]
-  [[ "${output}" == *"acme/gadgets#3 is NOT authorized"* ]]
+  [[ "${output}" == *"acme/gadgets#3: no active lock exists"* ]]
+  # No lock: status names no command an agent could copy.
+  [[ "${output}" != *"authorize"* ]]
 }
 
 @test "purge walks nested repo directories" {

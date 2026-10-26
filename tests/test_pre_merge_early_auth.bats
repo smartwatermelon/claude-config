@@ -13,7 +13,7 @@
 # Run: bats ~/.claude/tests/test_pre_merge_early_auth.bats
 
 SCRIPT="${BATS_TEST_DIRNAME}/../hooks/pre-merge-review.sh"
-VALID_JSON='{"number":59,"title":"test PR","reviewDecision":"","reviews":[],"comments":[],"state":"OPEN","statusCheckRollup":[]}'
+VALID_JSON='{"number":59,"title":"test PR","reviewDecision":"","reviews":[],"comments":[],"state":"OPEN","statusCheckRollup":[],"url":"https://github.com/acme/widgets/pull/59","author":{"login":"someone"}}'
 
 setup() {
   MOCK_DIR="$(mktemp -d)"
@@ -50,9 +50,13 @@ CLAUDE_EOF
   export MOCK_LOCK
   mkdir -p "${MOCK_DIR}/hooks"
 
-  # Default: NOT authorized (tests can override)
+  # Default: the policy says lock, and the PR is NOT authorized (tests can override).
   cat >"${MOCK_LOCK}" <<'LOCK_EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "policy" ]]; then
+  printf 'lock\trule 1\t*\n'
+  exit 0
+fi
 if [[ "${1:-}" == "check" ]]; then
   echo "Not authorized"
   exit 1

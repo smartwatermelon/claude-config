@@ -32,6 +32,14 @@ run_hook() {
   [ "${status}" -eq 2 ]
 }
 
+@test "the block message tells the agent to run gh pr merge, not the authorize command" {
+  run run_hook 'merge-lock.sh authorize 42 "ok"'
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"Merge approval is not an agent task. Run gh pr merge <N> --squash --delete-branch and report its result as is."* ]]
+  [[ "${output}" != *"Ask the human to run"* ]]
+  [[ "${output}" != *'authorize <PR>'* ]]
+}
+
 @test "blocks the auth abbreviation" {
   run run_hook 'merge-lock.sh auth 42 "ok"'
   [ "${status}" -eq 2 ]
