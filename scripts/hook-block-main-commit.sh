@@ -213,8 +213,291 @@ if printf '%s\n' "${_scan}" | grep -qE "${commit_re}"; then
     echo '' >&2
     echo "Branch resolved from ${basis}" >&2
     echo '' >&2
-    echo 'Create a feature branch first:' >&2
-    echo '  git checkout -b claude/feature-name' >&2
+    echo 'Commit from a worktree on a feature branch (#792):' >&2
+    echo '  git -C /absolute/path/to/repo worktree add .claude/worktrees/<name> -b claude/<branch> origin/main' >&2
     exit 2
   fi
 fi
+
+# #792: no branch moves in a primary checkout (rules: docs/INFRASTRUCTURE.md). Without -C, the repo is the tool call's cwd.
+hook_cwd=$(printf '%s\n' "${input}" | jq -r '.cwd // empty')
+[[ -n "${hook_cwd}" ]] || hook_cwd="${PWD}"
+
+# Copied from hook-block-personify.sh; keep in step. Splits at && || ; | without reading quotes.
+_segments() {
+  printf '%s\n' "${_scan}" | sed -E 's/(&&|\|\||;|\|)/\n/g'
+}
+
+# Copied from hook-block-personify.sh (#747); keep in step. Prefixes each piece 1 if a command starts there.
+_segment_starts() {
+  printf '%s\n' "${_scan}" | LC_ALL=C awk '
+    BEGIN { q = 0; hd = 0; np = 0; ar = 0 }
+    {
+      line = $0; n = length(line)
+      split("", sl); split("", top)
+      i = 1
+      while (i <= n) {
+        two = substr(line, i, 2); c = substr(line, i, 1)
+        if (two == "&&" || two == "||") { sl[i] = 2; i += 2 }
+        else if (c == ";" || c == "|") { sl[i] = 1; i++ }
+        else i++
+      }
+      if (hd) {
+        lead = 0
+        chk = line
+        if (hstrip[hd]) sub(/^\t+/, "", chk)
+        if (chk == hdelim[hd]) { hd++; if (hd > np) { hd = 0; np = 0 } }
+      } else {
+        lead = (q == 0)
+        cmt = 0; i = 1
+        while (i <= n) {
+          c = substr(line, i, 1); nx = substr(line, i + 1, 1)
+          prev = (i == 1) ? "" : substr(line, i - 1, 1)
+          top[i] = (q == 0 && !cmt)
+          if (cmt) { i++; continue }
+          if (q == 1) { if (c == "\047") q = 0; i++; continue }
+          if (c == "\\") { i += 2; continue }
+          if (q == 3 || q == 2) { if (c == (q == 3 ? "\047" : "\"")) q = 0; i++; continue }
+          if (c == "#" && (prev == "" || prev ~ /[[:space:];&|()<>]/)) { cmt = 1; top[i] = 0; i++; continue }
+          if (c == "\047") { q = 1; i++; continue }
+          if (c == "\"") { q = 2; i++; continue }
+          if (c == "$" && nx == "\047") { q = 3; i += 2; continue }
+          if (c == "(" && nx == "(") { ar++; top[i + 1] = 1; i += 2; continue }
+          if (c == ")" && nx == ")" && ar > 0) { ar--; top[i + 1] = 1; i += 2; continue }
+          if (ar == 0 && c == "<" && nx == "<" && prev != "<" && substr(line, i + 2, 1) != "<") {
+            rest = substr(line, i + 2); strip = 0
+            if (substr(rest, 1, 1) == "-") { strip = 1; rest = substr(rest, 2) }
+            sub(/^[ \t]+/, "", rest)
+            if (match(rest, /^[^ \t;&|()<>]+/)) {
+              w = substr(rest, 1, RLENGTH)
+              gsub(/[\047"\\]/, "", w)
+              if (w != "") { np++; hdelim[np] = w; hstrip[np] = strip }
+            }
+            top[i + 1] = 1; i += 2; continue
+          }
+          i++
+        }
+        if (q == 0 && np > 0) hd = 1
+      }
+      start = 1; ok = lead; i = 1
+      while (i <= n) {
+        if (i in sl) {
+          print (ok ? 1 : 0) substr(line, start, i - start)
+          ok = (top[i] == 1); start = i + sl[i]; i = start
+        } else i++
+      }
+      print (ok ? 1 : 0) substr(line, start)
+    }
+  '
+}
+
+# One word per line, quotes honored and dropped; stops at ) } < > & or a backtick. \001 marks a word with $ or a backtick.
+_words() {
+  printf '%s' "$1" | LC_ALL=C awk '
+    BEGIN { RS = "\001"; q = 0; w = ""; have = 0; dyn = 0 }
+    {
+      n = length($0)
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1)
+        if (q == 1) { if (c == "\047") q = 0; else w = w c; continue }
+        if (q == 2) {
+          if (c == "\"") q = 0
+          else { if (c == "$" || c == "\140") dyn = 1; w = w c }
+          continue
+        }
+        if (c == "\047") { q = 1; have = 1; continue }
+        if (c == "\"") { q = 2; have = 1; continue }
+        if (c ~ /[[:space:]]/) {
+          if (have) print (dyn ? "\001" : "") w
+          w = ""; have = 0; dyn = 0; continue
+        }
+        if (c == ")" || c == "}" || c == "<" || c == ">" || c == "&" || c == "\140") break
+        if (c == "$") dyn = 1
+        w = w c; have = 1
+      }
+      if (have) print (dyn ? "\001" : "") w
+    }
+  '
+}
+
+# Anchored at the piece start, with no quote in _lead, so quoted text never matches (#792).
+_lead="^[[:space:]]*((\\(|\\{|!|if|then|do|else|elif|while|until|time)[[:space:]]+|\\()*[[:space:]]*"
+_gpath="([^[:space:]|;&(){${bt}]*/)?"
+_git_move="${_gpath}git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(checkout|switch|stash[[:space:]]+branch)([[:space:]]|$)"
+_gh_move="${_gpath}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*pr[[:space:]]+checkout([[:space:]]|$)"
+_wrapper="((${_env_arm}|command|sudo|nohup)[[:space:]]+)*"
+move_re="${_lead}${_wrapper}(${_git_move}|${_gh_move})"
+cd_re="${_lead}(cd|pushd|popd)([[:space:]]|$)"
+readonly _lead _gpath _git_move _gh_move _wrapper move_re cd_re
+
+_deny_branch_unknown() {
+  {
+    echo "🛑 BLOCKED: $1, so this hook cannot tell whether it moves a primary checkout off its default branch (#792)."
+    echo ''
+    echo 'Run it with a literal path and no cd before it:'
+    echo '  git -C /absolute/path/to/worktree switch <branch>'
+  } >&2
+  exit 2
+}
+
+_deny_branch_move() {
+  local what="$1" top="$2" def="$3" base="$4"
+  {
+    echo "🛑 BLOCKED: ${what} would move the primary checkout off ${def}."
+    echo ''
+    echo "  repo: ${top}"
+    echo ''
+    echo 'Other Claude Code sessions share this checkout. Moving its HEAD moves'
+    echo 'theirs too, and in claude-config it changes the deployed hooks (#792, #453).'
+    echo "Keep it on ${def}. Make a worktree for the branch instead:"
+    echo ''
+    echo "  git -C '${top}' worktree add .claude/worktrees/<name> -b <branch> ${base}"
+    echo ''
+    echo 'then run git and edits inside .claude/worktrees/<name>. For a PR branch,'
+    echo 'add the worktree from origin/<pr-branch> after git fetch.'
+    echo "Switching this checkout back to ${def} is allowed, as is git checkout -- <path>."
+  } >&2
+  exit 2
+}
+
+# origin/HEAD (set by clone); without it, main then master, the names the commit check protects.
+_default_branch() {
+  local d
+  if d=$(git "$@" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) && [[ -n "${d}" ]]; then
+    printf '%s\n' "${d#origin/}"
+  elif git "$@" show-ref --verify --quiet refs/heads/main; then
+    printf 'main\n'
+  elif git "$@" show-ref --verify --quiet refs/heads/master; then
+    printf 'master\n'
+  else
+    printf 'main\n'
+  fi
+}
+
+# $1 is one piece; $2 is 1 when an earlier piece ran cd, pushd or popd.
+_guard_piece() {
+  local piece="$1" cd_seen="$2" m git_part wrap_part d top def base kind
+  [[ "${piece}" =~ ${move_re} ]] || return 0
+  m="${BASH_REMATCH[0]}"
+  local args="${piece#*"${m}"}"
+  if [[ "${m}" =~ (${_git_move}|${_gh_move})$ ]]; then git_part="${BASH_REMATCH[0]}"; else git_part="${m}"; fi
+  wrap_part="${m%"${git_part}"}"
+
+  # A trailing backslash continues onto the next line, which these pieces do not join.
+  if [[ "${piece}" =~ \\[[:space:]]*$ ]]; then
+    _deny_branch_unknown 'a branch command is continued onto another line'
+  fi
+  if ((cd_seen)); then
+    _deny_branch_unknown 'a cd earlier in the command changes the directory'
+  fi
+  if [[ "${git_part}" =~ (^|[[:space:]])--(git-dir|work-tree)([[:space:]=]|$) || "${cmd}" =~ (^|[^[:alnum:]_])GIT_(DIR|WORK_TREE)= ]]; then
+    _deny_branch_unknown 'GIT_DIR or --git-dir/--work-tree names the repo'
+  fi
+
+  # The cwd, then env -C and git -C values in order, as git composes them.
+  local -a cargs=(-C "${hook_cwd}")
+  local found
+  for part in "${wrap_part}" "${git_part}"; do
+    found=$(_dirs_in "${part}")
+    while IFS= read -r d; do
+      [[ -n "${d}" ]] || continue
+      if [[ "${d}" == *'$'* || "${d}" == *"${bt}"* || "${d}" == *'{}'* ]]; then
+        _deny_branch_unknown "-C ${d} is only known when the shell runs"
+      fi
+      if [[ "${d}" == "${tilde}" || "${d}" == "${tilde}/"* ]]; then d="${HOME}${d:1}"; fi
+      cargs+=(-C "${d}")
+    done <<<"${found}"
+  done
+
+  # Not a repo, or bare: git fails by itself and no shared checkout exists.
+  local info common gitdir
+  info=$(git "${cargs[@]}" rev-parse --path-format=absolute --git-common-dir --absolute-git-dir --show-toplevel 2>/dev/null) || return 0
+  common=$(sed -n 1p <<<"${info}")
+  gitdir=$(sed -n 2p <<<"${info}")
+  top=$(sed -n 3p <<<"${info}")
+  # A linked worktree's git dir differs from the common dir. Not guarded.
+  [[ -n "${top}" && "${common}" == "${gitdir}" ]] || return 0
+
+  def=$(_default_branch "${cargs[@]}")
+  base="origin/${def}"
+  git "${cargs[@]}" show-ref --verify --quiet "refs/remotes/origin/${def}" || base="${def}"
+
+  local -a w=()
+  local words
+  words=$(_words "${args}")
+  [[ -z "${words}" ]] || mapfile -t w <<<"${words}"
+  if [[ "${git_part}" =~ gh[[:space:]] ]]; then
+    _deny_branch_move 'gh pr checkout' "${top}" "${def}" "${base}"
+  fi
+  if [[ "${git_part}" =~ stash[[:space:]]+branch ]]; then
+    _deny_branch_move 'git stash branch' "${top}" "${def}" "${base}"
+  fi
+  if [[ "${git_part}" =~ switch([[:space:]]|$) ]]; then kind=switch; else kind=checkout; fi
+
+  local i=0 tok create='' has_create=0 detach=0 dashdash=0 pathmode=0 op='' have_op=0
+  while ((i < ${#w[@]})); do
+    tok="${w[i]}"
+    case "${tok}" in
+      --) dashdash=1; break ;;
+      -b | -B | --orphan | -c | -C | --create | --force-create)
+        # -c/-C are create flags only for switch; checkout has no -c/-C.
+        if [[ "${kind}" == checkout && ("${tok}" == -c || "${tok}" == -C || "${tok}" == --create || "${tok}" == --force-create) ]]; then
+          ((i += 1)); continue
+        fi
+        has_create=1; create="${w[i + 1]-}"; ((i += 2)); continue ;;
+      --orphan=* | --create=* | --force-create=*) has_create=1; create="${tok#*=}" ;;
+      -b?* | -B?*) has_create=1; create="${tok:2}" ;;
+      --detach) detach=1 ;;
+      -d) [[ "${kind}" == switch ]] && detach=1 ;;
+      -p | --patch | --pathspec-from-file | --pathspec-from-file=*) pathmode=1 ;;
+      -) if ((!have_op)); then op='-'; have_op=1; fi ;;
+      -*) ;;
+      *) if ((!have_op)); then op="${tok}"; have_op=1; fi ;;
+    esac
+    ((i += 1))
+  done
+
+  if ((has_create)); then
+    [[ "${create}" == "${def}" ]] && return 0
+    _deny_branch_move "git ${kind} creating ${create:-a branch}" "${top}" "${def}" "${base}"
+  fi
+  ((detach)) && _deny_branch_move "git ${kind} --detach" "${top}" "${def}" "${base}"
+  # `git checkout [<ref>] -- <paths>` and the patch/pathspec forms restore files.
+  if [[ "${kind}" == checkout ]] && ((dashdash || pathmode)); then return 0; fi
+  ((have_op)) || return 0
+  if [[ "${op}" == $'\001'* ]]; then
+    _deny_branch_unknown "the ${kind} target ${op#?} is only known when the shell runs"
+  fi
+  if [[ "${op}" == '-' ]]; then
+    # The previous branch. Unresolved, it stays `-` and is denied below.
+    op=$(git "${cargs[@]}" rev-parse --abbrev-ref '@{-1}' 2>/dev/null) || op='-'
+    [[ -n "${op}" ]] || op='-'
+  fi
+  [[ "${op}" == "${def}" || "${op}" == "refs/heads/${def}" ]] && return 0
+  if [[ "${kind}" == checkout && "${op}" != '-' ]]; then
+    # Neither a commit nor a remote branch DWIM would create: git reads a path.
+    local remote_ref=''
+    remote_ref=$(git "${cargs[@]}" for-each-ref --count=1 "refs/remotes/*/${op}" 2>/dev/null) || remote_ref=''
+    if ! git "${cargs[@]}" rev-parse --verify --quiet "${op}^{commit}" >/dev/null 2>&1 && [[ -z "${remote_ref}" ]]; then
+      return 0
+    fi
+  fi
+  _deny_branch_move "git ${kind} ${op}" "${top}" "${def}" "${base}"
+}
+
+pieces="$(_segments)"
+starts="$(_segment_starts)"
+# If the flags ever disagree with _segments, check every piece.
+starts_text="$(printf '%s\n' "${starts}" | LC_ALL=C sed 's/^[01]//')"
+if [[ "${starts_text}" != "${pieces}" ]]; then
+  starts="$(printf '%s\n' "${pieces}" | LC_ALL=C sed 's/^/1/')"
+fi
+cd_seen=0
+while IFS= read -r st; do
+  [[ "${st:0:1}" == 1 ]] || continue
+  piece="${st:1}"
+  _guard_piece "${piece}" "${cd_seen}"
+  if [[ "${piece}" =~ ${cd_re} ]]; then cd_seen=1; fi
+done <<<"${starts}"
+
+exit 0
