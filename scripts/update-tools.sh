@@ -287,10 +287,10 @@ fi
 # 3. HOST FACTS — informational only, never fails
 # ============================================================================
 
-# Handoff skills fall back to ~/.claude/handoffs/ with no Drive mount (#567); say so up front. Same glob as the skills.
+# Handoff skills fall back to ~/.local/state/claude-handoffs/ with no Drive mount (#567, #779); say so up front. Same glob as the skills.
 if ! compgen -G "${HOME}/Library/CloudStorage/GoogleDrive-*/My Drive" >/dev/null; then
   echo ""
-  _info "No Google Drive mount on this host; handoffs go to ${DEPLOY_DIR}/handoffs/ (local only, does not sync)"
+  _info "No Google Drive mount on this host; handoffs go to ~/.local/state/claude-handoffs/ (local only, does not sync)"
 fi
 
 echo ""
