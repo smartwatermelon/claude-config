@@ -194,6 +194,8 @@ commit_re="${_sep}${_wrap}${_path}git[[:space:]]+(-[^[:space:]]+[[:space:]]+${_o
 gh_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(pr[[:space:]]+(create|comment|edit|review)|issue[[:space:]]+(create|comment|edit))([[:space:]]|$)"
 api_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*api([[:space:]]|$)"
 ready_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*pr[[:space:]]+ready([[:space:]]|$)"
+# Verbs that publish text through their own flags (_gate_gh_more). Kept out of gh_re so titles are not measured for them.
+gh_more_re="${_sep}${_wrap}${_path}gh[[:space:]]+(-[^[:space:]]+[[:space:]]+${_optval})*(pr[[:space:]]+(merge|close)|issue[[:space:]]+close|release[[:space:]]+(create|edit))([[:space:]]|$)"
 
 # A `gh api` field named exactly `body`, in every spelling gh accepts:
 # `-f body=`, `-fbody=`, `--field body=`, `--field=body=`, `--raw-field body=`,
@@ -1258,6 +1260,15 @@ _api_submits_review() {
   printf '%s\n' "${flat}" | grep -qE '/pulls/[^/[:space:]]+/reviews/[^/[:space:]]+/events'
 }
 
+# 0 for the GraphQL form of gh pr ready. Reads _scan_flat, as a query spans lines.
+_gql_marks_ready() {
+  local flat="${1//[\"\'\\]/}" gql="${_scan_flat//[\"\'\\]/}"
+  [[ "${flat}" == *graphql* && "${gql}" == *markPullRequestReadyForReview* ]]
+}
+
+_GQL_READY_DENY="GraphQL markPullRequestReadyForReview names a node ID, not a repository, so it counts as a review route"
+_GQL_READY_DENY+="; Andrew clicks Ready for review in the GitHub UI"
+
 # Endpoint words only, as in _gh_destination, so a body file path cannot pick the looser cap.
 _api_cap_kind() {
   local eps ep kind=""
@@ -1477,7 +1488,7 @@ _inert_values() {
     while IFS= read -r seg; do
       printf '%s\n' "${seg}" | grep -qE "${_echo_re}" || continue
       # A gated verb inside echo/printf (`printf 'cd B' 'git commit' | fish`) would run after that cd.
-      if printf '%s\n' "${seg}" | grep -qE "${commit_re}|${gh_re}|${api_re}"; then
+      if printf '%s\n' "${seg}" | grep -qE "${commit_re}|${gh_re}|${gh_more_re}|${api_re}"; then
         echo_ok=0
         break
       fi
@@ -1600,10 +1611,119 @@ _track_cd() {
 # same rule as below.
 _wrapped_verb_re="(^|[^[:alnum:]_.-])(git[[:space:]](.*[[:space:]])?commit([[:space:]]|$)|gh[[:space:]](.*[[:space:]])?((pr|issue)[[:space:]]+(create|comment|edit|review)|api)[[:space:]](.*[[:space:]])?((-b|--body|-F|--body-file)([[:space:]]|=)|[^[:space:]]*body=))"
 _wrapper_re="(^|[^[:alnum:]_.-])(xargs([[:space:]]|$)|env[[:space:]]+([^[:space:]]+[[:space:]]+)*(-C|--chdir)([[:space:]]|=|/))"
+# The same for the _gate_gh_more verbs and gh api --input.
+_more_flags="-b|--body|-F|--body-file|-t|--subject|-c|--comment|-n|--notes|--notes-file"
+_wrapped_more_re="(^|[^[:alnum:]_.-])gh[[:space:]](.*[[:space:]])?((pr[[:space:]]+(merge|close)|issue[[:space:]]+close|release[[:space:]]+(create|edit))"
+_wrapped_more_re+="[[:space:]](.*[[:space:]])?(${_more_flags})|api[[:space:]](.*[[:space:]])?--input)([[:space:]]|=|$)"
+
+# Merge, close and release text: the gh pr comment rule. The pr cap, as these files have no title line.
+_gate_gh_more() {
+  local seg="$1" verb inline file="" kind surface any letters joined=0
+  verb="$(printf '%s\n' "${seg}" | grep -oE -- "${gh_more_re}" | head -1 |
+    sed -E 's/.*(pr|issue|release)[[:space:]]+(merge|close|create|edit)([[:space:]].*)?$/\1 \2/')"
+  case "${verb}" in
+    'pr merge') inline='-b|--body|-t|--subject' file='-F|--body-file' letters=btF kind=pr surface="merge commit text" ;;
+    'release create' | 'release edit') inline='-n|--notes' file='-F|--notes-file' letters=nF kind=pr surface="release notes" ;;
+    *) inline='-c|--comment' letters=c kind=pr-comment surface="close comment" ;;
+  esac
+  any="${inline}"
+  [[ -z "${file}" ]] || any="${any}|${file}"
+  # gh also takes -b'text', -bText and clusters like -db; the hook reads none of those.
+  printf '%s\n' "${seg}" | grep -qE -- "[[:space:]]-([[:alpha:]]+[${letters}]|[${letters}][^[:space:]=])" && joined=1
+  ((joined)) || printf '%s\n' "${seg}" | grep -qE -- "[[:space:]](${any})([[:space:]]|=)" || return 0
+  _suspended && exit 0
+  _destination_for_segment "${seg}" gh "${surface}"
+  if _dest_exempt "${kind}"; then
+    [[ -z "${file}" ]] || _lint_exempt "${seg}" "${file}" "${kind}"
+    return 0
+  fi
+  ((joined == 0)) || _deny "a short text flag is joined to its value or to other flags; write it as -x <value>" "${surface}"
+  # Neither flag has a file form, so an approved file can never stand in for it.
+  if [[ -z "${file}" ]]; then
+    _deny "gh ${verb} --comment takes inline text only; post it with gh ${verb%% *} comment --body-file, then close without --comment" \
+      "${surface}"
+  fi
+  if [[ "${verb}" == 'pr merge' ]] && printf '%s\n' "${seg}" | grep -qE -- '[[:space:]](-t|--subject)([[:space:]]|=)'; then
+    _deny "gh pr merge --subject takes inline text only; drop it (the squash subject defaults to the PR title)" "${surface}"
+  fi
+  _verify_segment "${seg}" "${surface}" "${inline}" "${file}" gh "${kind}"
+}
+
+# Bodies pulled out of a gh api --input file, one temp file each; removed on exit.
+_INPUT_TMP=""
+_input_tmpdir() {
+  if [[ -z "${_INPUT_TMP}" ]]; then
+    _INPUT_TMP="$(mktemp -d "${TMPDIR:-/tmp}/gate-input.XXXXXX")" || _deny "cannot create a temp dir to read --input" "API --input body"
+    trap 'rm -rf "${_INPUT_TMP}"' EXIT
+  fi
+}
+
+# gh api --input: every JSON "body" key is matched by hash, as -F body=@file is. A pending review: lint only.
+_verify_api_input() {
+  local seg="$1" surface="API --input body" path cap_kind exempt=0 p n=0 out bodies
+  path="$(_extract_path "${seg}" '--input')"
+  if [[ "${seg}" == *graphql* ]]; then
+    # GraphQL has no route (see _verify_api_segment); a query that can carry text never passes.
+    if [[ -f "${path}" ]] && jq -r '.query // "" | tostring' "${path}" 2>/dev/null |
+      grep -q 'markPullRequestReadyForReview'; then
+      _deny "${_GQL_READY_DENY}" "PR ready for review"
+    fi
+    if [[ "${path}" != /* || "${path}" == /dev/* || ! -f "${path}" ]] ||
+      ! jq -e 'type == "object"' "${path}" >/dev/null 2>&1 ||
+      jq -e '[paths | select(.[-1] == "body")] | length > 0' "${path}" >/dev/null 2>&1 ||
+      jq -r '.query // "" | tostring' "${path}" 2>/dev/null | tr '\n' ' ' |
+      grep -qE -- "[^[:alnum:]_]body[[:space:]]*:|submitPullRequestReview"; then
+      _deny "GraphQL --input that can carry text has no route; use gh pr/issue comment --body-file" "${surface}"
+    fi
+    return 0
+  fi
+  _destination_for_segment "${seg}" api "${surface}"
+  cap_kind="$(_api_cap_kind "${seg}")"
+  _dest_exempt "${cap_kind}" && exempt=1
+  if [[ "${path}" != /* || "${path}" == /dev/* || ! -f "${path}" ]]; then
+    ((exempt)) && return 0
+    case "${path}" in
+      - | /dev/*) _deny "--input reads stdin; write the JSON to a file and pass --input <absolute path>" "${surface}" ;;
+      /*) _deny "no such file: ${path}" "${surface}" ;;
+      *) _deny "--input '${path}' is not a literal absolute path to a file" "${surface}" ;;
+    esac
+  fi
+  if ! jq -e . "${path}" >/dev/null 2>&1; then
+    ((exempt)) && return 0
+    _deny "--input ${path} is not valid JSON, so its body cannot be found" "${surface}"
+  fi
+  if ((!exempt)) && _api_pending_review "${seg}" &&
+    ! jq -e '[paths | select(.[-1] == "event")] | length > 0' "${path}" >/dev/null 2>&1; then
+    LINT_ONLY=1
+  fi
+  _input_tmpdir
+  bodies="$(jq -c 'paths | select(.[-1] == "body")' "${path}")" || _deny "jq could not list the bodies in ${path}" "${surface}"
+  while IFS= read -r p; do
+    [[ -n "${p}" ]] || continue
+    n=$((n + 1))
+    out="${_INPUT_TMP}/body-${n}"
+    if ! jq -e -j --argjson p "${p}" 'getpath($p) | strings' "${path}" >"${out}" 2>/dev/null; then
+      ((exempt)) && continue
+      _deny "a body in ${path} is not a string, so it cannot be verified" "${surface}"
+    fi
+    if ((exempt)); then
+      [[ -x "${SCRIPT_DIR}/gate-lint.sh" ]] && { "${SCRIPT_DIR}/gate-lint.sh" --mode warn "${cap_kind}" "${out}" >&2 || true; }
+      continue
+    fi
+    _verify_path "${out}" "${surface}" "${cap_kind}"
+  done <<<"${bodies}"
+  return 0
+}
+
+# A review or event endpoint whose PR or review ID comes from $( ) or backticks: the hook cannot see which call it is.
+_api_dynamic_review() {
+  [[ "$1" == *"\$("* || "$1" == *"${bt}"* ]] || return 1
+  printf '%s\n' "${_scan_flat}" | grep -qE 'reviews|events|submitPullRequestReview'
+}
 
 _gate_segment() {
   local seg="$1" pre cap_kind
-  if printf '%s\n' "${seg}" | grep -qE "${_wrapped_verb_re}"; then
+  if printf '%s\n' "${seg}" | grep -qE "${_wrapped_verb_re}|${_wrapped_more_re}"; then
     # Only a wrapper before the verb counts: `git commit -F f | xargs echo` is
     # not wrapped.
     pre="$(printf '%s\n' "${seg}" | sed -E 's/(^|[^[:alnum:]_.-])(git|gh)[[:space:]].*$//')"
@@ -1633,7 +1753,19 @@ _gate_segment() {
     _destination_for_segment "${seg}" gh "PR ready for review"
     _dest_exempt pr && return 0
     _deny "gh pr ready on a review route; Andrew clicks Ready for review in the GitHub UI" "PR ready for review"
+  elif printf '%s\n' "${seg}" | grep -qE "${gh_more_re}"; then
+    _gate_gh_more "${seg}"
   elif printf '%s\n' "${seg}" | grep -qE "${api_re}"; then
+    # An ID from $( ) or backticks can hide a submit (`$(printf 77)` has a space, so _api_submits_review misses it).
+    if _api_dynamic_review "${seg}"; then
+      _suspended && exit 0
+      [[ "${seg}" == *graphql* ]] || {
+        _destination_for_segment "${seg}" api "review submission"
+        _dest_exempt pr-comment && return 0
+      }
+      _deny "review endpoint built by command substitution on a review route; write the PR and review IDs literally" \
+        "review submission"
+    fi
     # Submitting a pending review publishes its text; graphql has no route, so it never passes.
     if _api_submits_review "${seg}"; then
       _suspended && exit 0
@@ -1642,6 +1774,16 @@ _gate_segment() {
         _dest_exempt pr-comment && return 0
       fi
       _deny "submitting a review on a review route; Andrew clicks Submit review in the GitHub UI" "review submission"
+    fi
+    # The GraphQL form of gh pr ready. No route resolves from a node ID, so it never passes.
+    if _gql_marks_ready "${seg}"; then
+      _suspended && exit 0
+      _deny "${_GQL_READY_DENY}" "PR ready for review"
+    fi
+    if printf '%s\n' "${seg}" | grep -qE -- '[[:space:]]--input([[:space:]]|=)'; then
+      _suspended && exit 0
+      _verify_api_input "${seg}"
+      LINT_ONLY=0
     fi
     if _api_is_gated "${seg}"; then
       _suspended && exit 0
