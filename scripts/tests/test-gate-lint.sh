@@ -146,6 +146,13 @@ else
   _no "block mode: no personify is a tool error (rc=${rc}): ${out}"
 fi
 
+echo "--- copy extract ---"
+COPY3="${TMP}/copy3.txt"
+printf '>> a.md (added or changed text)\nFirst line.\nIt works \xe2\x80\x94 mostly.\n' >"${COPY3}"
+_case "copy: a finding names the extract line, not vale's" 1 "error Andrew.Dashes line 3" \
+  "${STUB}" copy "${COPY3}"
+_case "commit: line numbers are unchanged" 1 "error Andrew.Dashes line 3" "${STUB}" commit "${EM}"
+
 echo "--- usage ---"
 _case "unknown kind is a usage error" 64 "unknown kind" "${STUB}" novel "${CLEAN}"
 _case "missing file is a usage error" 64 "no such file" "${STUB}" commit "${TMP}/absent"
@@ -174,6 +181,17 @@ if command -v vale >/dev/null 2>&1; then
   _real "clean text passes" "!Andrew." $'fix: x\n\nThe change is small. It works.' 0
   _real "dash inside a code block is ignored" "!Andrew.Dashes" \
     $'fix: x\n\nRun this:\n\n```\na \xe2\x80\x94 b\n```' 0
+  # Six header words and a 20-word sentence: one 26-word sentence if the lines were joined.
+  WORDS20="word1"
+  for i in {2..20}; do
+    WORDS20+=" word${i}"
+  done
+  f="${TMP}/real-copy.txt"
+  printf '>> README.md (added or changed text)\n%s.\n' "${WORDS20}" >"${f}"
+  _case "real vale: copy lines are not joined into one sentence" 0 "!Andrew.SentenceLength" \
+    "${REAL}" copy "${f}"
+  _case "real vale: the same text as a commit is one sentence (control)" 1 \
+    "error Andrew.SentenceLength" "${REAL}" commit "${f}"
 else
   echo "  SKIP  real vale cases: vale is not installed here"
 fi

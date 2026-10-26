@@ -188,11 +188,21 @@ elif [[ ! -f "${VALE_CONFIG}" ]]; then
   _tool_error "no vale config at ${VALE_CONFIG}"
 else
   rc=0
+  # A copy extract is one text block per line; as Markdown, adjacent lines joined into one sentence.
+
+  # So vale gets a blank line after each copy line, and line N it reports is extract line (N + 1) / 2.
+  vale_in="${file}"
+  spread=1
+  if [[ "${kind}" == "copy" ]]; then
+    sed G "${file}" >"${TMPDIR_LINT}/copy.md"
+    vale_in="${TMPDIR_LINT}/copy.md"
+    spread=2
+  fi
   # Stdin, so an extensionless file name never picks the format.
 
   # --no-exit, so a nonzero exit always means vale itself failed.
   "${vale_path}" --config "${VALE_CONFIG}" --output=JSON --ext=.md --no-exit \
-    <"${file}" >"${TMPDIR_LINT}/vale.json" 2>"${TMPDIR_LINT}/vale.err" || rc=$?
+    <"${vale_in}" >"${TMPDIR_LINT}/vale.json" 2>"${TMPDIR_LINT}/vale.err" || rc=$?
   if ((rc != 0)); then
     msg="$(cat "${TMPDIR_LINT}/vale.err" "${TMPDIR_LINT}/vale.json" | tr '\n' ' ')"
     _tool_error "vale exited ${rc}: ${msg}"
@@ -205,7 +215,7 @@ else
     # Python, not jq: a jq expression that raises drops the record and still exits 0.
 
     # The parser exits 0 clean, 1 blocking errors, 3 unreadable output, never 1 on a crash.
-    python3 -I - "${TMPDIR_LINT}/vale.json" "${TMPDIR_LINT}/allow" \
+    python3 -I - "${TMPDIR_LINT}/vale.json" "${TMPDIR_LINT}/allow" "${spread}" \
       >"${TMPDIR_LINT}/findings" 2>"${TMPDIR_LINT}/pyerr" <<'PY' || rc=$?
 import json
 import sys
@@ -215,6 +225,7 @@ try:
         data = json.load(fh)
     with open(sys.argv[2], encoding="utf-8") as fh:
         allowed = {line.strip() for line in fh if line.strip()}
+    spread = int(sys.argv[3])
     if not isinstance(data, dict):
         raise ValueError(f"unexpected vale output: {str(data)[:200]}")
     lines = []
@@ -225,7 +236,8 @@ try:
         for a in alerts:
             check = a["Check"]
             sev = a["Severity"]
-            text = f"{check} line {a['Line']}: {a['Message']}"
+            line = (a["Line"] + spread - 1) // spread
+            text = f"{check} line {line}: {a['Message']}"
             if sev == "error" and check in allowed:
                 lines.append(f"gate-lint: allowed {text}")
             else:
