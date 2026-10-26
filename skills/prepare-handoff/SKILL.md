@@ -1,7 +1,7 @@
 ---
 name: prepare-handoff
-description: Use when the user explicitly says "prepare handoff," "wrap up for handoff," or asks to save the current session's state so another session can resume the work. Writes a dense, structured export — not a prose summary — as a Markdown file in the locally synced Google Drive `Claude Handoff` folder (or `~/.claude/handoffs/` on a host with no Drive mount) so a later session can resume with minimal re-derivation. Verifies every path, branch, and identifier it records before writing, so the next session does not inherit stale pointers. Do not trigger on generic session-ending language like "thanks" or "bye."
-version: 2.2.0
+description: Use when the user explicitly says "prepare handoff," "wrap up for handoff," or asks to save the current session's state so another session can resume the work. Writes a dense, structured export — not a prose summary — as a Markdown file in the locally synced Google Drive `Claude Handoff` folder (or `~/.local/state/claude-handoffs/` on a host with no Drive mount) so a later session can resume with minimal re-derivation. Verifies every path, branch, and identifier it records before writing, so the next session does not inherit stale pointers. Do not trigger on generic session-ending language like "thanks" or "bye."
+version: 2.3.0
 ---
 
 # Prepare Handoff
@@ -45,7 +45,7 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
 - Exactly one match → use it.
 - More than one (two synced Google accounts) → ask which one, and list them.
 - None → this machine has no synced Drive. Use the local fallback folder
-  `~/.claude/handoffs/` in place of `<mount>/Claude Handoff` everywhere
+  `~/.local/state/claude-handoffs/` in place of `<mount>/Claude Handoff` everywhere
   below. `receive-handoff` reads that folder too, so a handoff written there
   is found by a later session **on this same host**. It does not sync to any
   other machine, unless the host has the rclone sync below.
@@ -53,7 +53,7 @@ ls -d ~/Library/CloudStorage/GoogleDrive-*/My\ Drive
 **rclone sync (some hosts with no mount).** A host with no GUI session
 cannot run the Drive app, so it may sync the fallback folder with rclone
 instead: `~/.local/bin/handoff-sync.sh` runs `rclone bisync` between
-`~/.claude/handoffs` and Drive's `Claude Handoff`, from cron every 5
+`~/.local/state/claude-handoffs` and Drive's `Claude Handoff`, from cron every 5
 minutes. TILSIT has had it since 2026-10-22. Check for it:
 
 ```bash
@@ -63,10 +63,15 @@ test -x ~/.local/bin/handoff-sync.sh && echo "rclone sync present"
 The remote uses rclone's shared Google client ID, which Google has said it
 will retire during 2026. **Expect it to fail at some point** with an auth
 error. When it fails, nothing is lost: the handoff is still saved in
-`~/.claude/handoffs`, but it does not reach other machines until someone
+`~/.local/state/claude-handoffs`, but it does not reach other machines until someone
 fixes the remote (`rclone config reconnect gdrive:`, or a personal client
 ID). So never assume the sync worked; run it and read its exit status
 (steps 5 and 7).
+
+The fallback is under `~/.local/state`, not `~/.claude`: the Claude Code
+sandbox denies writes under `~/.claude`, so a sandboxed session could not
+create the folder there (claude-config#779). Until 2026-10-26 it was
+`~/.claude/handoffs`; do not write there.
 
 The fallback is one fixed path so that both skills agree on it. Do not write
 a handoff anywhere else (`~/.claude/plans/`, the repo, the scratchpad): the
@@ -77,10 +82,11 @@ exists. That happened on 2026-09-23 on a host with no Drive mount.
 
 1. Identify the workstream. List the existing handoffs first, so that a
    continuing workstream keeps its exact spelling. List the local fallback
-   too, if it exists; an earlier handoff can be there:
+   and the old fallback too, if they exist; an earlier handoff can be there:
 
    ```bash
    ls -1 "<mount>/Claude Handoff"
+   ls -1 ~/.local/state/claude-handoffs 2>/dev/null
    ls -1 ~/.claude/handoffs 2>/dev/null
    ```
 
@@ -99,9 +105,9 @@ exists. That happened on 2026-09-23 on a host with no Drive mount.
    A workstream name must not contain `/` or `:`. The first makes the path a
    subdirectory; macOS displays the second as `/`.
 
-2. The folder is `<mount>/Claude Handoff`, or `~/.claude/handoffs` when there
+2. The folder is `<mount>/Claude Handoff`, or `~/.local/state/claude-handoffs` when there
    is no mount. Confirm it exists with `ls -d`; if it does not, create it
-   with `mkdir`. No folder id is needed. (Before 2.0.0
+   with `mkdir -p` (`~/.local/state` may not exist yet). No folder id is needed. (Before 2.0.0
    this step searched the Drive API for a folder id, which a Docs-only
    connector could not return, so two handoffs landed in My Drive root.)
 
@@ -377,7 +383,7 @@ exists. That happened on 2026-09-23 on a host with no Drive mount.
    A non-zero byte count at that path is what "saved" means. A `Write` call
    that did not error is not the same claim. This proves the file is on the
    local mount, which is what a session on this machine reads; Drive uploads
-   it afterward. A file in `~/.claude/handoffs` is uploaded only on a host
+   it afterward. A file in `~/.local/state/claude-handoffs` is uploaded only on a host
    with the rclone sync, and only when that sync succeeds.
 
    Write the new file **before** retiring the old one. If the write fails,
@@ -386,8 +392,10 @@ exists. That happened on 2026-09-23 on a host with no Drive mount.
 6. Retire the previous handoff file for this workstream. List the matches
    with a glob anchored on the timestamp:
 
-   Run it in each folder from step 1 that exists, the Drive folder and the
-   local fallback, so a handoff left in the other one is retired too:
+   Run it in each folder from step 1 that exists, the Drive folder, the
+   local fallback and the old fallback, so a handoff left in another one is
+   retired too. The sandbox denies an `rm` under `~/.claude`; if one fails
+   there, name the file and tell the user to move or delete it.
 
    ```bash
    DIR="<folder>"; WS="<workstream>"
@@ -409,7 +417,7 @@ exists. That happened on 2026-09-23 on a host with no Drive mount.
    2026-09-22: a handoff retired with `rm` was in the web trash two hours
    later. The local `<mount's parent>/.Trash/` is only a staging area that
    Drive clears once the deletion syncs, so an empty one there does not mean
-   the file is gone. An `rm` in `~/.claude/handoffs` is permanent on the
+   the file is gone. An `rm` in `~/.local/state/claude-handoffs` is permanent on the
    host: there is no local trash. With the rclone sync, the next sync also
    deletes the Drive copy, which goes to the Drive web trash.
 
@@ -436,7 +444,7 @@ exists. That happened on 2026-09-23 on a host with no Drive mount.
    agent selects the newest file by the timestamp in its name regardless.
 
 7. Confirm to the user in one line: the filename, and the folder it went to.
-   If the folder is `~/.claude/handoffs`, say plainly in the same line which
+   If the folder is `~/.local/state/claude-handoffs`, say plainly in the same line which
    of these is true:
    - The rclone sync ran with exit 0 → the handoff is on Drive too.
    - The rclone sync failed → the handoff is local to this host until the
@@ -487,7 +495,7 @@ exists. That happened on 2026-09-23 on a host with no Drive mount.
   files/KB pointers themselves. If a fact is available by following a pointer,
   point to it instead of copying it in. The sole exception is a client-scoped
   store (memory, Project instructions) — inline those, per step 3.
-- If no synced Drive mount exists, write to `~/.claude/handoffs/` (see
+- If no synced Drive mount exists, write to `~/.local/state/claude-handoffs/` (see
   **Before you start**). Say whether it synced, from the rclone sync's exit
   status, or that the host has no sync. If the write fails
   in whichever folder you chose, say so plainly and
