@@ -20,8 +20,8 @@
 #   --ledger   Ledger file(s) to read. Defaults to
 #              ~/.claude/merge-locks/ledger.tsv. Pass one per machine to audit
 #              authorizations granted on several laptops.
-#   --exempt   Exempt-merge log(s) to read. Defaults to
-#              ~/.claude/merge-locks/exempt.tsv; a missing file is fine.
+#   --exempt   Exempt-merge log(s). Default: REVIEW_STATE_DIR/exempt.tsv
+#              (#779) and legacy merge-locks/exempt.tsv; missing is fine.
 #   --all      Also print LOCKED and BOT rows, not just the ones needing
 #              attention.
 #
@@ -148,7 +148,10 @@ fi
 
 [[ ${#OWNERS[@]} -gt 0 ]] || OWNERS=("${DEFAULT_OWNERS[@]}")
 [[ ${#LEDGERS[@]} -gt 0 ]] || LEDGERS=("${HOME}/.claude/merge-locks/ledger.tsv")
-[[ ${#EXEMPT_LOGS[@]} -gt 0 ]] || EXEMPT_LOGS=("${HOME}/.claude/merge-locks/exempt.tsv")
+[[ ${#EXEMPT_LOGS[@]} -gt 0 ]] || EXEMPT_LOGS=(
+  "${REVIEW_STATE_DIR:-${HOME}/.local/state/claude-review}/exempt.tsv"
+  "${HOME}/.claude/merge-locks/exempt.tsv"
+)
 
 # --- Ledger ------------------------------------------------------------------
 
