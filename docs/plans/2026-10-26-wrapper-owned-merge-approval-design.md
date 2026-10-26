@@ -79,7 +79,7 @@ lock missing
       │   ├ dialog   (Phase 1)
       │   ├ messages (Phase 2)
       │   └ github   (Phase 3)
-      ├ approved → merge-lock.sh create (internal), ledger authorized_by=<channel>
+      ├ approved → create_merge_lock (sourced), ledger authorized_by=<channel>
       │            → continue to review → merge
       ├ denied   → exit 1  "[gh] Not merged: Andrew declined owner/repo#N."
       └ timeout  → exit 1  "[gh] Not merged: no answer from Andrew for owner/repo#N."
@@ -142,6 +142,21 @@ agent cannot produce.** Everything else is convenience.
     so a fake `osascript` earlier in `PATH` could return "Approve". Hence the
     absolute path, and no environment variable may change which binary is
     used or what counts as approval (see Test seams).
+  - **`HOME` redirection (pre-existing, not created by this design).** Every
+    path in the chain is `${HOME}`-relative: the policy symlink,
+    `merge-locks/`, the ledger. `hook-block-api-merge.sh` blocks `gh` behind
+    a path or a prefix command (`env`, `sudo`, …), but its `ASSIGN` pattern
+    lets a bare `VAR=value gh pr merge N` through by design (read from the
+    regex 2026-10-26, not tested). So `HOME=<dir> gh pr merge N` reaches the
+    wrapper with an agent-chosen policy file, lock directory, and ledger. The
+    policy's "committed origin/main" check can be satisfied by a fake
+    checkout (`remote add` + `update-ref`), as the test suite's own setup
+    does. Whether `gh` still authenticates under a moved `HOME`, and whether
+    the sandbox exclusion matches the prefixed form, is unverified. This
+    design rests on the same boundary, so Phase 1 must either block
+    environment-assignment prefixes on `gh pr merge` or resolve every path
+    from the real home directory (for example `dscl`/`getpwuid`), not
+    `${HOME}`.
 
 ### Phase 2: Apple Messages
 
@@ -240,6 +255,8 @@ So:
 5. Phase 2: can sender identity in `chat.db` separate Andrew from this Mac,
    and is Full Disk Access for the wrapper's process acceptable?
 6. Should the Messages channel be a separate Apple ID?
-7. What should happen with no channel available (headless host such as
+7. `HOME=<dir> gh pr merge N`: block assignment prefixes in the hook, or
+   resolve the real home directory in the wrapper and hooks? Both?
+8. What should happen with no channel available (headless host such as
    TILSIT over ssh, no GUI session)? Proposed: `Not merged: no approval
    channel on this host`.
