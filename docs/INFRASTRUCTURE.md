@@ -50,6 +50,7 @@ entries are omitted here.
 | PreToolUse `Write`, `Edit` | `hook-block-merge-locks-write.sh`: blocks writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf`, `copy-paths.conf` and personify's `route-command` |
 | PreToolUse `EnterWorktree` | `hook-block-enter-worktree.sh` |
 | PostToolUse `Bash\|Read` | `hook-redact-secret-output.py`: redacts env secret values, gitleaks findings, vendor prefixes gitleaks lacks, and the whole stdout of credential-printing commands (`op read`, `security -w`, ...) |
+| UserPromptSubmit | `hook-gate-inline-approve.sh`: a prompt `approve <code>` approves the staged gate text with that code (text gate, below) |
 | Stop, SubagentStop | `hook-budget-guard.sh` |
 
 `hook-block-all.sh` runs these in order and stops at the first block:
@@ -59,23 +60,57 @@ entries are omitted here.
 3. `hook-block-no-verify.sh`
 4. `hook-block-short-no-verify.sh`
 5. `hook-block-main-commit.sh`
-6. `hook-block-personify.sh` (visual approval gate, below)
+6. `hook-block-personify.sh` (text gate, below)
 7. `hook-check-commit-message.py`
 8. `hook-block-merge-lock-authorize.sh`
 9. `hook-block-api-merge.sh`
 10. `hook-block-gh-auth.sh` (`gh auth token|switch|login|logout|refresh|git-credential` and `status -t`: these reach gh's keyring token)
 11. `hook-block-git-worktree.sh`
 
-### Visual Approval Gate
+### Text Gate (v3)
 
-Commit messages and PR/issue bodies need Andrew's visual approval.
+Text gate v3 shipped 2026-10-22 in claude-config #771, #772 and #773,
+dotfiles #461, and personify #122. Every destination routes to `review` or
+`exempt`.
+Pangram is out of the gate: no route calls it, and `stage` needs no check
+record. A `review` destination needs clean lint plus Andrew's approval. An
+`exempt` destination gets lint warnings only.
 
+- Lint: `scripts/gate-lint.sh [--mode block|warn] [--allow RULE --reason
+  TEXT]... <kind> <file>` runs personify's `length_check.py` (not for
+  `copy`, which has no cap) and then `vale --config prose/.vale.ini` with
+  the `prose/styles/Andrew/` style. The `--config` is always explicit: bare
+  `vale` walks up past the repo root and runs its defaults. `stage` runs it
+  in block mode on every route but `exempt`. A vale error refuses the stage
+  unless `--allow <Rule> --reason <text>` accepts it, and the reason shows
+  in the approval view. A length cap cannot be allowed. Block mode fails
+  closed when `vale` is missing (it is in the dotfiles Brewfile). On an
+  exempt destination, `hook-block-personify.sh` runs it in warn mode on the
+  message file: findings print, the command runs.
+- Approval, by any one channel:
+  - Editor: `open` writes the batch buffer and opens it in `GATE_EDITOR`
+    (default BBEdit). If `open -a` cannot find that app, it falls back to
+    `open -t`, the default text editor. Andrew may edit; the saved text is
+    what gets approved.
+  - Chat: with no GUI session (`launchctl managername` is not `Aqua`, so
+    SSH, cloud or a daemon), `open` prints each staged item with a 6-hex
+    `approve-code`, the start of its content hash. The agent shows the text
+    and the code. Andrew replies `approve <code>`, and the UserPromptSubmit
+    hook `hook-gate-inline-approve.sh` approves the item whose hash matches.
+    A restage with other text gets another code, short of a 24-bit prefix
+    collision.
+  - GitHub draft: on a review route, `gh pr create --draft` and a pending
+    `gh api` review (no `event`) pass on clean lint with no approval.
+    `gh pr ready` is denied; Andrew clicks Ready for review in the GitHub
+    UI. The GraphQL `markPullRequestReadyForReview` mutation is refused by
+    `gh-wrapper.sh` (`~/.local/bin/gh`) in every repo, but not yet by
+    `hook-block-personify.sh`; gate v3 PR 4 (landing) adds it there. The
+    dotfiles pre-push hook checks text added to a ready (non-draft)
+    Beacon PR against gate-review approval.
 - `scripts/gate-review.sh stage --kind <kind> <name> <file>` queues text.
   `--kind` is required: `commit`, `pr`, `issue`, `line-comment`,
-  `pr-comment`, `code-comment` or `docstring`. On every route but `exempt`,
-  stage runs personify's `scripts/length_check.py` first and refuses text
-  over that kind's cap, before the Pangram record check. `open` shows the
-  batch in BBEdit and waits. Each batch gets its own file,
+  `pr-comment`, `code-comment` or `docstring`. `open` shows the batch and
+  waits. Each batch gets its own file,
   `batches/<repo>-<branch>-<nonce>.txt`, removed once approved. Any other
   exit keeps it, and the next `open` for the same items starts from it;
   `open` removes buffers untouched for a day (`GATE_REVIEW_BUFFER_TTL`,
@@ -129,6 +164,8 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   it sends a `body` field or a GraphQL mutation with a `body:` argument. The
   one verifiable `gh api` form is `-F body=@/absolute/path`. Not gated:
   `gh api --input <json>`, `git tag -m`, `git notes`, `gh release --notes`.
+  A follow-up PR (gate v3 PR 4, landing) adds more `gh` forms and blocks
+  the GraphQL ready-for-review mutation; this list changes when it merges.
 - The hook joins backslash-continued lines before it checks a command, so a
   body flag on a continuation line is gated with its verb. It does not join
   inside single quotes, heredoc bodies, or comments, where bash does not
@@ -138,18 +175,17 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   through the gate still get the conventional-commits pre-flight.
 - Enforced by `hook-block-personify.sh` for the Bash tool, and by
   `gh-wrapper.sh` (`_gh_wrapper_approval_gate`) for manual `gh` calls.
-- `stage` also refuses a file with no `~/.config/personify/checks/<sha256 of
-  raw bytes>.json` check record. Run `pangram_check.py --kind <kind> --dir
-  <checkout> < <file>` on that exact file first; PASS, FAIL, and SKIPPED records are all accepted. The
-  refusal prints the full command, with the `installPath` of
-  `personify@personify` from `~/.claude/plugins/installed_plugins.json`. Use
-  that path, not a directory picked from the plugin cache: the cache keeps
-  every past version, and an old one can lack features (2.0.1 has no
-  Keychain key lookup). With no local install, it names the copy synced from
-  claude.ai under `~/.claude/plugins/synced/<bucket>/`, picking the directory
-  (`personify` or `personify~g<generation>`) from that bucket's
-  `manifest.json`. personify and pr-review load from claude.ai sync on
-  purpose, to dogfood the upload path; they are not in `enabledPlugins`.
+- `personify-path` uses the `installPath` of `personify@personify` from
+  `~/.claude/plugins/installed_plugins.json`, not a directory picked from
+  the plugin cache: the cache keeps every past version, and an old one can
+  lack features (2.0.1 had no Keychain key lookup, which the since-retired
+  Pangram check needed on 2026-09-24).
+  The marker is `scripts/length_check.py`. With no local install, it names
+  the copy synced from claude.ai under `~/.claude/plugins/synced/<bucket>/`,
+  picking the directory (`personify` or `personify~g<generation>`) from
+  that bucket's `manifest.json`. personify and pr-review load from claude.ai
+  sync on purpose, to dogfood the upload path; they are not in
+  `enabledPlugins`.
 - Updating a synced plugin: each CLI start syncs once in the background
   (Claude Code docs, plugins/loading, "Sync timing in terminal sessions").
   A sync that lands after the session started prints `Plugins changed. Run
@@ -161,12 +197,13 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   and only `/reload-plugins` loaded it (#644). If the version looks stale,
   run `/reload-plugins` first. MIMOLETTE has no claude.ai sync, so its
   personify is a CLI install that updates only via `claude plugin update`.
-- `open` shows one Pangram line per item in the header, read from that
-  item's check record.
 - `gate-rules.conf` (repo root, linked by `install.sh` to
-  `~/.claude/gate-rules.conf`) maps each destination to `pangram`, `visual`,
-  or `exempt`; `scripts/gate-route.sh` reads it. Whoever can edit it can
-  exempt a destination from the check, so both write hooks block writes to the
+  `~/.claude/gate-rules.conf`) maps each destination to `review` or
+  `exempt`; `scripts/gate-route.sh` reads it. Any other outcome, including
+  the retired `pangram` and `visual`, is a load error, so the gate fails
+  closed. A private `andrewmrich` repo is exempt and a public one is review;
+  a failed visibility lookup counts as review. Whoever can edit it can
+  exempt a destination from approval, so both write hooks block writes to the
   deployed path `~/.claude/gate-rules.conf`. Reads pass. The hooks match the
   literal path and do not resolve symlinks, so the repo copy stays editable
   through a reviewed PR, and a merged change reaches `~/.claude` on the next
@@ -184,8 +221,8 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   changed text (whole text for a new file; HTML and Markdown stripped, JSON
   string values only) is written to `~/.claude/gate-review/copy/<sha256>.txt`,
   and the commit is blocked until `gate-review.sh check --kind copy` passes on
-  it. The `copy` kind never asks `gate-route.sh`: it is always Pangram plus
-  approval, even where the commit message is exempt, and it has no length cap.
+  it. The `copy` kind never asks `gate-route.sh`: it is always `review`,
+  even where the commit message is exempt, and it has no length cap.
   In a repo with copy paths the hook also blocks `git commit -a/-i/-o/-p`, a
   pathspec, and any other index-changing git command in the same call, since
   it reads the index before the call runs. A repo covered only by `public=*`
@@ -196,15 +233,18 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
   `copy-paths.conf` header has the rule. A missing or malformed conf blocks
   every agent commit; `SUSPENDED` is the escape hatch. In-app JSX strings are
   phase 2 (dev-env#206).
-- Pangram route guard. `install.sh` writes
+- personify route command. `install.sh` writes
   `${XDG_CONFIG_HOME:-~/.config}/personify/route-command`, one line naming the
-  deployed `gate-review.sh`. With that file present, `pangram_check.py` needs
-  `--repo`, `--dir` or `--kind copy`, runs `gate-review.sh route` with them,
-  and calls Pangram only on a `pangram` route. The hints print those flags.
-  Both write hooks guard the file. `hook-block-personify.sh` denies
-  `pangram_check.py --kind copy` (any `--k...` spelling) unless it is one
-  plain command reading stdin from a file directly in
-  `~/.claude/gate-review/copy/`, since `copy` always routes to Pangram.
+  deployed `gate-review.sh`. personify reads it to ask `gate-review.sh route`
+  for a destination's route: its `pangram_check.py` calls Pangram only on a
+  literal `pangram` route, which no rule produces since 2026-10-22 (personify
+  #122), and its MCP server reads it too. Both write hooks guard the file, so
+  an agent cannot repoint it. A personify PR that deletes `pangram_check.py`
+  and removes the detector check from the MCP server is landing; the file,
+  its install step and its guards stay until nothing in personify reads it.
+- personify `checks/` and `stamps/` hold records from the retired Pangram
+  check and human approval stamps. Nothing in the gate reads them now; the
+  write hooks still guard both directories.
 
 ### Merge-Lock Subcommands
 

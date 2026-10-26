@@ -422,8 +422,8 @@ printf 'fix(v): body under a commented header\n' >"${V}"
 rm -f "${APPROVED:?}"/*
 {
   echo "# STATUS: APPROVED"
-  echo "# PANGRAM (proof the check ran; the verdict is information):"
-  echo "# item-v: FAIL (AI, fraction_ai 1.0, 212 words)"
+  echo "# LINT OVERRIDE: Dashes: a quoted title keeps its dash"
+  echo "# item-v: 212 words"
   echo "# BATCH: vh"
   echo ""
   echo "=== item-v ==="

@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # install.sh writes personify's route-command file: one line, the absolute path
-# of the deployed scripts/gate-review.sh. personify's pangram_check.py runs
-# `<that path> route ...` and calls Pangram only on a `pangram` route, so a
-# missing or wrong file means paying for calls that do not need to happen.
+# of the deployed scripts/gate-review.sh. personify (pangram_check.py and its
+# MCP server) runs `<that path> route ...` to learn a destination's route, so
+# a missing or wrong file gives it no route or a wrong one.
 #
 # Isolation: a throwaway repo plus a throwaway HOME and XDG_CONFIG_HOME, as in
 # test_install_gate_conf_links.bats. Nothing here touches the real home.

@@ -30,7 +30,6 @@ export GATE_RULES_FILE="${TMP}/rules.conf"
 printf 'owner=nightowlstudiollc exempt\n* exempt\n' >"${GATE_RULES_FILE}"
 # A length_check.py that FAILS everything: the copy kind must never call it.
 mkdir -p "${CLAUDE_CONFIG_DIR}/plugins" "${TMP}/personify/scripts"
-: >"${TMP}/personify/scripts/pangram_check.py"
 printf 'import sys\nprint("over by 999 words")\nsys.exit(1)\n' >"${TMP}/personify/scripts/length_check.py"
 jq -n --arg p "${TMP}/personify" '{plugins:{"personify@personify":[{installPath:$p}]}}' \
   >"${CLAUDE_CONFIG_DIR}/plugins/installed_plugins.json"
@@ -376,7 +375,7 @@ _eqo "route --kind copy ignores gate-rules (exempt repo)" "review" \
 _eqo "route --kind copy with no destination is still review" "review" \
   _first "${GATE}" route --kind copy
 # The whole line, not just the first field: personify's route-command client
-# reads it, and calls Pangram only when field 1 is pangram, which copy never is.
+# reads all of it. Field 1 is review; no route is pangram since 2026-10-22.
 _eqo "route --kind copy prints the full copy route line" $'review\tcopy\tpublic-facing copy (copy-paths.conf)' \
   "${GATE}" route --kind copy
 _eqo "route --kind copy --repo prints the copy route too" $'review\tcopy\tpublic-facing copy (copy-paths.conf)' \

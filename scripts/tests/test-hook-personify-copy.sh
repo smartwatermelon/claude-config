@@ -39,7 +39,6 @@ nightowlstudiollc/kebab-tax-netlify include emails/*.html
 nightowlstudiollc/kebab-tax-netlify include release-notes.json
 CONF
 mkdir -p "${CLAUDE_CONFIG_DIR}/plugins" "${TMP}/personify/scripts"
-: >"${TMP}/personify/scripts/pangram_check.py"
 printf 'import sys\nsys.exit(0)\n' >"${TMP}/personify/scripts/length_check.py"
 jq -n --arg p "${TMP}/personify" '{plugins:{"personify@personify":[{installPath:$p}]}}' \
   >"${CLAUDE_CONFIG_DIR}/plugins/installed_plugins.json"

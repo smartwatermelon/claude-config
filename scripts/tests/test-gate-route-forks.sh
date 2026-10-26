@@ -34,7 +34,6 @@ export GATE_TEST_PRIVATE="nightowlstudiollc/kebab-tax beacon-biosignals/secret n
 export GATE_TEST_GH_LOG="${TMP}/gh.log"
 # A length checker that passes everything, as in test-hook-personify-route.sh.
 mkdir -p "${CLAUDE_CONFIG_DIR}/plugins" "${TMP}/personify/scripts"
-: >"${TMP}/personify/scripts/pangram_check.py"
 printf 'import sys\nsys.exit(0)\n' >"${TMP}/personify/scripts/length_check.py"
 jq -n --arg p "${TMP}/personify" '{plugins:{"personify@personify":[{installPath:$p}]}}' \
   >"${CLAUDE_CONFIG_DIR}/plugins/installed_plugins.json"

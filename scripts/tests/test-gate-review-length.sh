@@ -42,7 +42,6 @@ mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
 PLUG="${TMP}/plug"
 mkdir -p "${PLUG}/scripts" "${HOME}/.claude/plugins"
 cp "${CHECKER_SRC}" "${PLUG}/scripts/length_check.py"
-: >"${PLUG}/scripts/pangram_check.py"
 export CLAUDE_CONFIG_DIR="${HOME}/.claude"
 jq -n --arg p "${PLUG}" '{plugins:{"personify@personify":[{installPath:$p}]}}' \
   >"${CLAUDE_CONFIG_DIR}/plugins/installed_plugins.json"
@@ -162,7 +161,6 @@ else
 fi
 BROKEN="${TMP}/broken"
 mkdir -p "${BROKEN}/scripts" "${TMP}/broken-cfg/plugins"
-: >"${BROKEN}/scripts/pangram_check.py"
 printf 'import sys\nprint("length_check: internal error: boom", file=sys.stderr)\nsys.exit(5)\n' \
   >"${BROKEN}/scripts/length_check.py"
 jq -n --arg p "${BROKEN}" '{plugins:{"personify@personify":[{installPath:$p}]}}' \
@@ -177,7 +175,6 @@ else
 fi
 NOCHK="${TMP}/nochk"
 mkdir -p "${NOCHK}/scripts" "${TMP}/nochk-cfg/plugins"
-: >"${NOCHK}/scripts/pangram_check.py"
 jq -n --arg p "${NOCHK}" '{plugins:{"personify@personify":[{installPath:$p}]}}' \
   >"${TMP}/nochk-cfg/plugins/installed_plugins.json"
 out="$( (cd "${VIS}" && CLAUDE_CONFIG_DIR="${TMP}/nochk-cfg" _cmd_stage --kind commit nochk "${SHORT}") 2>&1)"
@@ -258,7 +255,6 @@ fi
 # silent checker must come back as exit 2, never as a shell exit.
 SILENT="${TMP}/silent"
 mkdir -p "${SILENT}/scripts" "${TMP}/silent-cfg/plugins"
-: >"${SILENT}/scripts/pangram_check.py"
 printf 'import sys\nsys.exit(5)\n' >"${SILENT}/scripts/length_check.py"
 jq -n --arg p "${SILENT}" '{plugins:{"personify@personify":[{installPath:$p}]}}' \
   >"${TMP}/silent-cfg/plugins/installed_plugins.json"
@@ -333,7 +329,6 @@ printf '%s\n' "${out}" >>"${MKTEMP_LOG}"
 printf '%s\n' "${out}"
 SHIM
 chmod +x "${SHIM}/mktemp"
-: >"${SLOW}/scripts/pangram_check.py"
 # The checker sleeps so the TERM lands mid-run; bash runs the trap once it returns.
 printf 'import time\ntime.sleep(2)\n' >"${SLOW}/scripts/length_check.py"
 jq -n --arg p "${SLOW}" '{plugins:{"personify@personify":[{installPath:$p}]}}' \
