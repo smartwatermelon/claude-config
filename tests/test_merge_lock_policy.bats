@@ -66,9 +66,25 @@ policy() {
   [[ "${output}" == lock$'\t'* ]]
 }
 
-@test "every beacon-biosignals repo stays locked" {
-  policy beacon-biosignals/anything dependabot
-  [[ "${output}" == lock$'\t'* ]]
+@test "an outcome that only looks like refuse is still an error" {
+  # Adding refuse must not loosen the validator: a misspelled outcome fails the whole file.
+  printf 'owner=x refused\n* exempt\n' >"${CC}/merge-lock-policy.conf"
+  git -C "${CC}" -c user.name=t -c user.email=t@t commit -q -am typo
+  git -C "${CC}" update-ref refs/remotes/origin/main HEAD
+  policy x/y twistedmelonman
+  [[ "${status}" -ne 0 ]]
+  [[ "${output}" != refuse* && "${output}" != exempt* ]]
+}
+
+@test "every beacon-biosignals repo is refused, whoever authored the PR" {
+  local a
+  for a in andrewmrich dependabot app/dependabot twistedmelonman; do
+    policy beacon-biosignals/anything "${a}"
+    [[ "${status}" -eq 0 ]]
+    [[ "${output}" == refuse$'\t'*$'\t'owner=beacon-biosignals ]]
+  done
+  policy Beacon-Biosignals/Anything andrewmrich
+  [[ "${output}" == refuse$'\t'* ]]
 }
 
 @test "nightowlstudiollc stays locked, by its own owner rule" {
@@ -120,16 +136,70 @@ policy() {
   [[ "${output}" == lock$'\t'* ]]
 }
 
-@test "a checkout on another branch is refused" {
+@test "policy is read from main while another branch is checked out" {
   git -C "${CC}" checkout -q -b claude/x
   policy smartwatermelon/dev-env twistedmelonman
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == exempt$'\t'* ]]
+  policy smartwatermelon/claude-config twistedmelonman
+  [[ "${output}" == lock$'\t'* ]]
+}
+
+@test "known-bad: an edit committed only on the checked-out branch does not count" {
+  git -C "${CC}" checkout -q -b claude/x
+  printf '* exempt\n' >"${CC}/merge-lock-policy.conf"
+  git -C "${CC}" -c user.name=t -c user.email=t@t commit -q -am branch-only
+  # Even with origin/main moved to the branch commit, local main is what is read.
+  git -C "${CC}" update-ref refs/remotes/origin/main HEAD
+  policy smartwatermelon/claude-config twistedmelonman
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == lock$'\t'* ]]
+}
+
+@test "a detached HEAD still reads main" {
+  git -C "${CC}" checkout -q --detach
+  policy smartwatermelon/claude-config twistedmelonman
+  [[ "${output}" == lock$'\t'* ]]
+}
+
+@test "a checkout with no local main is an error, never exempt" {
+  git -C "${CC}" checkout -q -b claude/x
+  git -C "${CC}" branch -q -D main
+  policy smartwatermelon/dev-env twistedmelonman
   [[ "${status}" -ne 0 ]]
+  [[ "${output}" != exempt* ]]
 }
 
 @test "a checkout with another origin is refused" {
   git -C "${CC}" remote set-url origin git@github.com:someone/claude-config.git
   policy smartwatermelon/dev-env twistedmelonman
   [[ "${status}" -ne 0 ]]
+}
+
+@test "an SSH host-alias origin is accepted" {
+  local u
+  for u in git@github-smartwatermelon:smartwatermelon/claude-config.git \
+    git@github-smartwatermelon:smartwatermelon/claude-config \
+    git@github-a.b_c-1:smartwatermelon/claude-config.git; do
+    git -C "${CC}" remote set-url origin "${u}"
+    policy smartwatermelon/dev-env twistedmelonman
+    [[ "${status}" -eq 0 ]]
+    [[ "${output}" == exempt$'\t'* ]]
+  done
+}
+
+@test "an SSH host-alias origin for another owner or repo is refused" {
+  local u
+  for u in git@github-x:someone/claude-config.git \
+    git@github-smartwatermelon:smartwatermelon/claude-config-fork.git \
+    git@github-:smartwatermelon/claude-config.git \
+    'git@github-a/b:smartwatermelon/claude-config.git' \
+    git@gitlab-x:smartwatermelon/claude-config.git \
+    git@github-x:smartwatermelon/claude-config.git.evil; do
+    git -C "${CC}" remote set-url origin "${u}"
+    policy smartwatermelon/dev-env twistedmelonman
+    [[ "${status}" -ne 0 ]]
+  done
 }
 
 @test "a local commit on main that is not on origin/main is refused" {
@@ -189,11 +259,34 @@ policy() {
 _pre_merge() {
   local bin="${TMP_HOME}/bin"
   mkdir -p "${bin}"
-  ln -sf "${LOCK}" "${HOME}/.claude/hooks/merge-lock.sh"
+  # LOCK_MODE (default link): link the real script; missing, noexec or garbage install something else.
+  rm -f "${HOME}/.claude/hooks/merge-lock.sh"
+  case "${LOCK_MODE:-link}" in
+    link) ln -s "${LOCK}" "${HOME}/.claude/hooks/merge-lock.sh" ;;
+    missing) ;;
+    noexec)
+      cp "${LOCK}" "${HOME}/.claude/hooks/merge-lock.sh"
+      chmod 644 "${HOME}/.claude/hooks/merge-lock.sh"
+      ;;
+    garbage)
+      # policy answers with an unparseable line; check always says authorized.
+      cat >"${HOME}/.claude/hooks/merge-lock.sh" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == policy ]] && { echo "maybe"; exit 0; }
+exit 0
+STUB
+      chmod +x "${HOME}/.claude/hooks/merge-lock.sh"
+      ;;
+    *) return 1 ;;
+  esac
   cat >"${bin}/gh" <<EOF
 #!/usr/bin/env bash
 if [[ "\$1" == "pr" && "\$2" == "view" ]]; then
   printf '%s\n' '{"number":7,"title":"t","state":"OPEN","reviews":[],"comments":[],"reviewDecision":"","statusCheckRollup":[],"baseRefName":"main","url":"https://github.com/$1/pull/7","author":{"login":"$2"}}'
+  exit 0
+fi
+if [[ "\$1" == "pr" && "\$2" == "merge" ]]; then
+  printf '%s\n' "\$*" >>"${TMP_HOME}/gh-merges"
   exit 0
 fi
 if [[ "\$1" == "issue" && "\$2" == "create" ]]; then
@@ -218,7 +311,7 @@ EOF
 
 @test "exempt repo skips the lock but still runs the review" {
   _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
-  [[ "${output}" != *"MERGE AUTHORIZATION REQUIRED"* ]]
+  [[ "${output}" != *"Not merged"* ]]
   [[ "${output}" == *"Merge lock not required"* ]]
   [[ -f "${TMP_HOME}/claude-ran" ]]
   [[ "${status}" -eq 0 ]]
@@ -235,21 +328,139 @@ EOF
 @test "andrewmrich-authored PR in an exempt repo still needs the lock" {
   _pre_merge smartwatermelon/spokane-snow andrewmrich SAFE_TO_MERGE
   [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"MERGE AUTHORIZATION REQUIRED"* ]]
+  [[ "${output}" == *"[gh] Not merged: smartwatermelon/spokane-snow#7 needs Andrew's approval."* ]]
   [[ ! -f "${TMP_HOME}/claude-ran" ]]
 }
 
 @test "locked repo still needs the lock" {
   _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE
   [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"MERGE AUTHORIZATION REQUIRED"* ]]
+  [[ "${output}" == *"[gh] Not merged: smartwatermelon/claude-config#7 needs Andrew's approval."* ]]
+  [[ "${output}" != *"authorize"* ]]
 }
 
-@test "no deployed policy: every repo needs the lock" {
+# --- policy failure refuses ---------------------------------------------------
+
+# _policy_error_line <repo>: the one line a policy failure prints.
+_policy_error_line() {
+  printf '[gh] Not merged: the merge policy could not be read for %s#7; no agent merges until it is fixed.' "$1"
+}
+
+# _valid_lock <repo>: write a lock for PR 7 that merge-lock.sh check accepts.
+_valid_lock() {
+  local lock="${HOME}/.claude/merge-locks/$1/pr-7.lock"
+  mkdir -p "$(dirname "${lock}")"
+  printf 'TIMESTAMP=%s\n' "$(date +%s)" >"${lock}"
+}
+
+# _assert_policy_refused <repo> <status> <output>: policy-error line, no review, no merge, nothing logged.
+_assert_policy_refused() {
+  local out="$3"
+  [[ "$2" -eq 1 ]]
+  [[ "${out}" == *"$(_policy_error_line "$1")"* ]]
+  [[ "${out}" != *"needs Andrew's approval"* ]]
+  [[ "${out}" != *"Merge authorization verified"* ]]
+  [[ "${out}" != *"Merge lock not required"* ]]
+  [[ ! -f "${TMP_HOME}/claude-ran" ]]
+  [[ ! -e "${TMP_HOME}/gh-merges" ]]
+  [[ ! -s "${HOME}/.claude/merge-locks/exempt.tsv" ]]
+}
+
+@test "known-bad: no deployed policy refuses even with a valid lock" {
+  _valid_lock smartwatermelon/dev-env
   rm "${HOME}/.claude/merge-lock-policy.conf"
   _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  _assert_policy_refused smartwatermelon/dev-env "${status}" "${output}"
+}
+
+@test "no deployed policy refuses without a lock too" {
+  rm "${HOME}/.claude/merge-lock-policy.conf"
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  _assert_policy_refused smartwatermelon/dev-env "${status}" "${output}"
+}
+
+@test "known-bad: a missing merge-lock.sh refuses, it does not skip the lock" {
+  LOCK_MODE=missing _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE
+  _assert_policy_refused smartwatermelon/claude-config "${status}" "${output}"
+}
+
+@test "known-bad: a non-executable merge-lock.sh refuses, it does not skip the lock" {
+  LOCK_MODE=noexec _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  _assert_policy_refused smartwatermelon/dev-env "${status}" "${output}"
+}
+
+@test "known-bad: an unparseable policy answer refuses even when check would pass" {
+  LOCK_MODE=garbage _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  _assert_policy_refused smartwatermelon/dev-env "${status}" "${output}"
+}
+
+@test "known-bad: an unknown PR author refuses even with a valid lock" {
+  _valid_lock smartwatermelon/claude-config
+  _pre_merge smartwatermelon/claude-config "" SAFE_TO_MERGE
+  _assert_policy_refused smartwatermelon/claude-config "${status}" "${output}"
+}
+
+@test "a policy error prints exactly one stdout line" {
+  rm "${HOME}/.claude/merge-lock-policy.conf"
+  _pre_merge smartwatermelon/dev-env twistedmelonman SAFE_TO_MERGE
+  local bin="${TMP_HOME}/bin"
+  run bash -c '"$@" 2>/dev/null' _ env PATH="${bin}:${PATH}" CLAUDE_CLI="${bin}/claude" \
+    "${PRE_MERGE}" pr merge 7 --repo smartwatermelon/dev-env --squash --delete-branch
   [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"MERGE AUTHORIZATION REQUIRED"* ]]
+  [[ "${#lines[@]}" -eq 1 ]]
+  [[ "${lines[0]}" == "$(_policy_error_line smartwatermelon/dev-env)" ]]
+}
+
+# --- refuse ------------------------------------------------------------------
+
+_refuse_line() {
+  printf '[gh] Not merged: %s#7 is merged by Andrew in the GitHub UI after its own approval process; agents do not merge it.' "$1"
+}
+
+@test "refused repo: Not merged, no review, no lock prompt" {
+  local a
+  for a in andrewmrich dependabot twistedmelonman; do
+    _pre_merge beacon-biosignals/anything "${a}" SAFE_TO_MERGE
+    [[ "${status}" -eq 1 ]]
+    [[ "${output}" == *"$(_refuse_line beacon-biosignals/anything)"* ]]
+    [[ "${output}" != *"needs Andrew's approval"* ]]
+    [[ "${output}" != *"authorize"* ]]
+    [[ ! -f "${TMP_HOME}/claude-ran" ]]
+  done
+}
+
+@test "known-bad: a valid lock does not override refuse" {
+  local lock="${HOME}/.claude/merge-locks/beacon-biosignals/anything/pr-7.lock"
+  mkdir -p "$(dirname "${lock}")"
+  printf 'TIMESTAMP=%s\n' "$(date +%s)" >"${lock}"
+  # Prove the lock is one check accepts, so the refusal below is the policy's doing.
+  run "${LOCK}" check 7 --repo beacon-biosignals/anything
+  [[ "${status}" -eq 0 ]]
+  _pre_merge beacon-biosignals/anything andrewmrich SAFE_TO_MERGE
+  [[ "${status}" -eq 1 ]]
+  [[ "${output}" == *"$(_refuse_line beacon-biosignals/anything)"* ]]
+  [[ "${output}" != *"Merge authorization verified"* ]]
+  [[ ! -f "${TMP_HOME}/claude-ran" ]]
+  [[ ! -e "${TMP_HOME}/gh-merges" ]]
+  [[ ! -s "${HOME}/.claude/merge-locks/exempt.tsv" ]]
+}
+
+@test "refuse stdout is exactly one line" {
+  _pre_merge beacon-biosignals/anything andrewmrich SAFE_TO_MERGE
+  local bin="${TMP_HOME}/bin"
+  # stdout only: the line the Bash tool surfaces.
+  run bash -c '"$@" 2>/dev/null' _ env PATH="${bin}:${PATH}" CLAUDE_CLI="${bin}/claude" \
+    "${PRE_MERGE}" pr merge 7 --repo beacon-biosignals/anything --squash --delete-branch
+  [[ "${status}" -eq 1 ]]
+  [[ "${#lines[@]}" -eq 1 ]]
+  [[ "${lines[0]}" == "$(_refuse_line beacon-biosignals/anything)" ]]
+}
+
+@test "known-bad: a policy error on a beacon-biosignals PR refuses even with a valid lock" {
+  _valid_lock beacon-biosignals/anything
+  rm "${HOME}/.claude/merge-lock-policy.conf"
+  _pre_merge beacon-biosignals/anything andrewmrich SAFE_TO_MERGE
+  _assert_policy_refused beacon-biosignals/anything "${status}" "${output}"
 }
 
 # --- non-blocking issue dedup for exempt merges (#702) ----------------------

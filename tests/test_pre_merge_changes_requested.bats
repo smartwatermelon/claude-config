@@ -14,24 +14,24 @@
 SCRIPT="${BATS_TEST_DIRNAME}/../hooks/pre-merge-review.sh"
 
 # PR JSON with reviewDecision = CHANGES_REQUESTED
-JSON_CHANGES_REQUESTED='{"number":640,"title":"fix: something","reviewDecision":"CHANGES_REQUESTED","reviews":[{"author":{"login":"alice"},"state":"CHANGES_REQUESTED","body":"needs work","submittedAt":"2026-01-20T18:00:00Z"}],"comments":[],"state":"OPEN","statusCheckRollup":[]}'
+JSON_CHANGES_REQUESTED='{"number":640,"title":"fix: something","reviewDecision":"CHANGES_REQUESTED","reviews":[{"author":{"login":"alice"},"state":"CHANGES_REQUESTED","body":"needs work","submittedAt":"2026-01-20T18:00:00Z"}],"comments":[],"state":"OPEN","statusCheckRollup":[],"url":"https://github.com/o/r/pull/640","author":{"login":"someone"}}'
 
 # PR JSON with reviewDecision = APPROVED
-JSON_APPROVED='{"number":640,"title":"fix: something","reviewDecision":"APPROVED","reviews":[{"author":{"login":"alice"},"state":"APPROVED","body":"lgtm","submittedAt":"2026-01-20T18:00:00Z"}],"comments":[],"state":"OPEN","statusCheckRollup":[]}'
+JSON_APPROVED='{"number":640,"title":"fix: something","reviewDecision":"APPROVED","reviews":[{"author":{"login":"alice"},"state":"APPROVED","body":"lgtm","submittedAt":"2026-01-20T18:00:00Z"}],"comments":[],"state":"OPEN","statusCheckRollup":[],"url":"https://github.com/o/r/pull/640","author":{"login":"someone"}}'
 
 # PR JSON with no reviewDecision but individual CHANGES_REQUESTED review
-JSON_NO_DECISION_CHANGES='{"number":640,"title":"fix: something","reviewDecision":"NONE","reviews":[{"author":{"login":"bob"},"state":"CHANGES_REQUESTED","body":"nope","submittedAt":"2026-01-20T18:00:00Z"}],"comments":[],"state":"OPEN","statusCheckRollup":[]}'
+JSON_NO_DECISION_CHANGES='{"number":640,"title":"fix: something","reviewDecision":"NONE","reviews":[{"author":{"login":"bob"},"state":"CHANGES_REQUESTED","body":"nope","submittedAt":"2026-01-20T18:00:00Z"}],"comments":[],"state":"OPEN","statusCheckRollup":[],"url":"https://github.com/o/r/pull/640","author":{"login":"someone"}}'
 
 # PR JSON with a dismissed review (should NOT block)
-JSON_DISMISSED='{"number":640,"title":"fix: something","reviewDecision":"APPROVED","reviews":[{"author":{"login":"carol"},"state":"DISMISSED","body":"was blocked, now dismissed","submittedAt":"2026-01-20T18:00:00Z"},{"author":{"login":"alice"},"state":"APPROVED","body":"lgtm","submittedAt":"2026-01-20T19:00:00Z"}],"comments":[],"state":"OPEN","statusCheckRollup":[]}'
+JSON_DISMISSED='{"number":640,"title":"fix: something","reviewDecision":"APPROVED","reviews":[{"author":{"login":"carol"},"state":"DISMISSED","body":"was blocked, now dismissed","submittedAt":"2026-01-20T18:00:00Z"},{"author":{"login":"alice"},"state":"APPROVED","body":"lgtm","submittedAt":"2026-01-20T19:00:00Z"}],"comments":[],"state":"OPEN","statusCheckRollup":[],"url":"https://github.com/o/r/pull/640","author":{"login":"someone"}}'
 
 # PR JSON with no reviews at all
-JSON_NO_REVIEWS='{"number":640,"title":"fix: something","reviewDecision":"NONE","reviews":[],"comments":[],"state":"OPEN","statusCheckRollup":[]}'
+JSON_NO_REVIEWS='{"number":640,"title":"fix: something","reviewDecision":"NONE","reviews":[],"comments":[],"state":"OPEN","statusCheckRollup":[],"url":"https://github.com/o/r/pull/640","author":{"login":"someone"}}'
 
 # PR JSON where a reviewer requested changes then later approved the same PR.
 # The `reviews` field contains both entries; only the latest (APPROVED) counts.
 # reviewDecision is APPROVED (GitHub's rollup), and the block must NOT trigger.
-JSON_REREVIEWED='{"number":640,"title":"fix: something","reviewDecision":"APPROVED","reviews":[{"author":{"login":"alice"},"state":"CHANGES_REQUESTED","body":"needs work","submittedAt":"2026-01-20T18:00:00Z"},{"author":{"login":"alice"},"state":"APPROVED","body":"lgtm now","submittedAt":"2026-01-20T20:00:00Z"}],"comments":[],"state":"OPEN","statusCheckRollup":[]}'
+JSON_REREVIEWED='{"number":640,"title":"fix: something","reviewDecision":"APPROVED","reviews":[{"author":{"login":"alice"},"state":"CHANGES_REQUESTED","body":"needs work","submittedAt":"2026-01-20T18:00:00Z"},{"author":{"login":"alice"},"state":"APPROVED","body":"lgtm now","submittedAt":"2026-01-20T20:00:00Z"}],"comments":[],"state":"OPEN","statusCheckRollup":[],"url":"https://github.com/o/r/pull/640","author":{"login":"someone"}}'
 
 setup() {
   MOCK_DIR="$(mktemp -d)"
@@ -52,6 +52,10 @@ CLAUDE_EOF
   # Mock merge-lock.sh — always authorized so we test only the review state check.
   cat >"${MOCK_DIR}/merge-lock.sh" <<'LOCK_EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "policy" ]]; then
+  printf 'lock\trule 1\t*\n'
+  exit 0
+fi
 if [[ "${1:-}" == "check" ]]; then
   exit 0
 fi

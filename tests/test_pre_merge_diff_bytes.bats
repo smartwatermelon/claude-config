@@ -214,8 +214,10 @@ _byte_count() {
   _set_pr_diff data/climate.json 1245090
 
   mkdir -p "${MOCK_DIR}/home/.claude/hooks"
+  # The policy says lock and check passes, so the run reaches the code under test.
   cat >"${MOCK_DIR}/home/.claude/hooks/merge-lock.sh" <<'EOF'
 #!/usr/bin/env bash
+[[ "${1:-}" == "policy" ]] && printf 'lock\trule 1\t*\n'
 exit 0
 EOF
   chmod +x "${MOCK_DIR}/home/.claude/hooks/merge-lock.sh"
@@ -223,7 +225,7 @@ EOF
   cat >"${MOCK_DIR}/gh" <<EOF
 #!/usr/bin/env bash
 if [[ "\$1" == "pr" && "\$2" == "view" ]]; then
-  echo '{"number":24,"title":"data","reviewDecision":"","reviews":[],"comments":[],"state":"OPEN","statusCheckRollup":[]}'
+  echo '{"number":24,"title":"data","reviewDecision":"","reviews":[],"comments":[],"state":"OPEN","statusCheckRollup":[],"url":"https://github.com/o/r/pull/24","author":{"login":"someone"}}'
   exit 0
 fi
 if [[ "\$1" == "pr" && "\$2" == "diff" ]]; then

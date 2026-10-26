@@ -883,57 +883,65 @@ else
 fi
 
 LOCK_REPO_FLAG=()
-LOCK_REPO_HINT=""
 if [[ -n "${REPO_OWNER}" && -n "${REPO_NAME}" ]]; then
   LOCK_REPO_FLAG=(--repo "${REPO_OWNER}/${REPO_NAME}")
-  LOCK_REPO_HINT=" --repo ${REPO_OWNER}/${REPO_NAME}"
 fi
 
 MERGE_LOCK="${HOME}/.claude/hooks/merge-lock.sh"
 
-# Lock policy (dev-env#176): some repos need no human lock. Everything after this step still runs.
+# Lock policy (dev-env#176). Three paths: exempt skips the lock, lock checks it, anything else refuses.
 
-# The repo comes from the PR's own URL, which GitHub canonicalizes, so an old owner name cannot dodge a lock.
-LOCK_POLICY="lock"
+# Default "error": a missing merge-lock.sh, an unknown repo or author, or a bad policy answer all refuse.
+LOCK_POLICY="error"
 LOCK_POLICY_WHY=""
 _pr_url=$(echo "${PR_JSON}" | jq -r '.url // empty' 2>/dev/null || true)
 _pr_author=$(echo "${PR_JSON}" | jq -r '.author.login // empty' 2>/dev/null || true)
 _canon_repo=""
+# The repo comes from the PR's own URL, which GitHub canonicalizes, so an old owner name cannot dodge a lock.
 if [[ "${_pr_url}" =~ ^https://github\.com/([^/]+/[^/]+)/pull/[0-9]+$ ]]; then
   _canon_repo="${BASH_REMATCH[1]}"
 fi
 if [[ -x "${MERGE_LOCK}" && -n "${_canon_repo}" && -n "${_pr_author}" ]]; then
-  # Fail closed: only an exit-0 line that starts with "exempt" skips the lock.
   _policy_out=$("${MERGE_LOCK}" policy --repo "${_canon_repo}" --author "${_pr_author}" 2>/dev/null) || _policy_out=""
-  if [[ "${_policy_out}" == exempt$'\t'* ]]; then
-    LOCK_POLICY="exempt"
-    LOCK_POLICY_WHY="${_policy_out#exempt$'\t'}"
-  fi
+  case "${_policy_out}" in
+    exempt$'\t'*)
+      LOCK_POLICY="exempt"
+      LOCK_POLICY_WHY="${_policy_out#exempt$'\t'}"
+      ;;
+    lock$'\t'*) LOCK_POLICY="lock" ;;
+    refuse$'\t'*) LOCK_POLICY="refuse" ;;
+    *) ;;
+  esac
 fi
 
-if [[ "${LOCK_POLICY}" == "exempt" ]]; then
-  log_success "Merge lock not required for ${_canon_repo}#${PR_NUMBER} by ${_pr_author} (${LOCK_POLICY_WHY//$'\t'/: }); CI and review still apply"
-elif [[ -x "${MERGE_LOCK}" ]]; then
-  if ! "${MERGE_LOCK}" check "${PR_NUMBER}" "${LOCK_REPO_FLAG[@]}" >/dev/null 2>&1; then
-    echo "" >&2
-    log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    log_error "MERGE AUTHORIZATION REQUIRED"
-    log_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "" >&2
-    log_error "Merge requires human authorization before review runs."
-    log_error ""
-    log_error "To authorize (valid 30 min):"
-    log_error "  ~/.claude/hooks/merge-lock.sh authorize ${PR_NUMBER} \"reason\"${LOCK_REPO_HINT}"
-    log_error ""
-    log_error "Then retry: gh pr merge ${PR_NUMBER}"
-    echo "" >&2
-    # Write to stdout as well: Bash tool surfaces stdout more reliably than
-    # stderr for commands that complete quickly (before any claude invocation).
-    printf '🛑 MERGE AUTHORIZATION REQUIRED: run ~/.claude/hooks/merge-lock.sh authorize %s "reason"%s then retry gh pr merge %s\n' "${PR_NUMBER}" "${LOCK_REPO_HINT}" "${PR_NUMBER}"
-    exit 1
-  fi
-  log_success "Merge authorization verified for ${REPO_OWNER:-?}/${REPO_NAME:-?}#${PR_NUMBER}"
+# Agents see one stdout line that names no command; they report it to Andrew as is.
+_msg_repo="${_canon_repo:-}"
+if [[ -z "${_msg_repo}" && -n "${REPO_OWNER}" && -n "${REPO_NAME}" ]]; then
+  _msg_repo="${REPO_OWNER}/${REPO_NAME}"
 fi
+_msg_repo="${_msg_repo:-unknown}"
+
+# refuse and error are checked before the lock and the review: no existing lock overrides them.
+case "${LOCK_POLICY}" in
+  exempt)
+    log_success "Merge lock not required for ${_canon_repo}#${PR_NUMBER} by ${_pr_author} (${LOCK_POLICY_WHY//$'\t'/: }); CI and review still apply"
+    ;;
+  lock)
+    if ! "${MERGE_LOCK}" check "${PR_NUMBER}" "${LOCK_REPO_FLAG[@]}" >/dev/null 2>&1; then
+      printf "[gh] Not merged: %s#%s needs Andrew's approval.\n" "${_msg_repo}" "${PR_NUMBER}"
+      exit 1
+    fi
+    log_success "Merge authorization verified for ${REPO_OWNER:-?}/${REPO_NAME:-?}#${PR_NUMBER}"
+    ;;
+  refuse)
+    printf '[gh] Not merged: %s#%s is merged by Andrew in the GitHub UI after its own approval process; agents do not merge it.\n' "${_msg_repo}" "${PR_NUMBER}"
+    exit 1
+    ;;
+  *)
+    printf '[gh] Not merged: the merge policy could not be read for %s#%s; no agent merges until it is fixed.\n' "${_msg_repo}" "${PR_NUMBER}"
+    exit 1
+    ;;
+esac
 
 # Track lock file path for dedup guard below (empty if merge-lock is not in use).
 # Mirrors merge-lock.sh's layout: merge-locks/<owner>/<repo>/pr-<N>.lock

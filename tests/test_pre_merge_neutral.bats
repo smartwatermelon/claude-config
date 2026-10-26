@@ -31,8 +31,10 @@ setup() {
   MOCK_DIR="${BATS_TEST_TMPDIR}"
   export MOCK_DIR
   mkdir -p "${MOCK_DIR}/home/.claude/hooks"
+  # The policy says lock and check passes, so the run reaches the code under test.
   cat >"${MOCK_DIR}/home/.claude/hooks/merge-lock.sh" <<'EOF'
 #!/usr/bin/env bash
+[[ "${1:-}" == "policy" ]] && printf 'lock\trule 1\t*\n'
 exit 0
 EOF
   chmod +x "${MOCK_DIR}/home/.claude/hooks/merge-lock.sh"

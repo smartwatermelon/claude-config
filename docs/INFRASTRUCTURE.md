@@ -210,7 +210,13 @@ Commit messages and PR/issue bodies need Andrew's visual approval.
 
 `merge-lock authorize`, its alias `auth`, and `tui` (a bulk picker) all grant
 locks. All three are human-only. `hook-block-merge-lock-authorize.sh` blocks
-them for agents. `pre-merge-review.sh` checks for a valid lock before a merge.
+them for agents. Before a merge, `pre-merge-review.sh` asks `merge-lock.sh
+policy` for the PR's outcome in `merge-lock-policy.conf` (read from the
+claude-config checkout's local main): `lock` needs a valid lock, `exempt` needs
+none, and `refuse` stops the merge even with a valid lock. Anything else is
+treated as `refuse`: a policy error, an unparseable answer, a missing or
+non-executable `merge-lock.sh`, or an unknown repo or PR author. An agent sees
+one `[gh] Not merged: ...` line, never the authorize command.
 
 ---
 

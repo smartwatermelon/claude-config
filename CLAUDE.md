@@ -46,7 +46,7 @@ The first two mostly agree — active voice, one instruction per sentence, numbe
 - **Hedges.** Keep real modality. "May have failed" is not "failed." Terseness never justifies upgrading a hedge to a fact — that is the PRIME DIRECTIVE, and it wins.
 - **Fragments.** STE wants complete sentences; ADHD wants terse lines. A numbered list of short complete sentences satisfies both.
 
-This shape does not override: confirmation before destructive actions, the merge-lock requirement, or the protocols below. Where a protocol requires output, that output is written in this shape — the requirement stands, the ceremony does not. The blocks below were compressed deliberately; every gate they named, they still name.
+This shape does not override: confirmation before destructive actions, the merge rules in Protocol 6, or the protocols below. Where a protocol requires output, that output is written in this shape — the requirement stands, the ceremony does not. The blocks below were compressed deliberately; every gate they named, they still name.
 
 ---
 
@@ -216,20 +216,24 @@ before merge.
   turn/response that follows its creation — never left for the user to
   discover by asking. State repo, PR number, URL, and one line on what it
   addresses.
-- Merge requires: CI green + a valid merge-lock from the user, created via
-  `merge-lock authorize <PR#> "ok"` (30 min TTL; `merge-lock` is on PATH at
-  `~/.local/bin/merge-lock`). Locks are keyed on repo +
-  PR number, so a lock for one repo's PR never satisfies another repo's PR of
-  the same number. Enforced by `hook-block-merge-lock-authorize.sh` (in the
-  `hook-block-all.sh` Bash chain; blocks `authorize`/`auth`/`tui`),
-  `hook-block-merge-locks-write.sh` (Write/Edit into `merge-locks/`), and
-  pre-merge-review.sh's lock check.
-- **The lock IS the approval.** Creating it is a human-only operation, so a
-  valid lock plus green CI is sufficient to merge — do NOT additionally wait
-  for the user to type "approved". Asking for a second confirmation treats the
-  lock as if an agent could have forged it, which it cannot, and stalls the
-  merge on a signal that carries no authority the lock doesn't already supply.
-  If CI is green and the lock is valid, proceed to merge.
+- **Merges.** `merge-lock-policy.conf` decides how each repo merges, never the
+  agent.
+  - **Default: the merge-lock workflow applies.** Every repo that the policy
+    does not specifically exempt requires Andrew's second-factor approval, in
+    whatever form the workflow currently takes. When CI is green and review
+    findings are handled, run `gh pr merge <N> --squash --delete-branch`. The
+    command checks the policy and obtains the approval itself. Its result is
+    final: if it prints a `Not merged` line, report that line to Andrew as is.
+    Do not ask for approval in advance, predict whether a repo needs it, or
+    retry unless he says so.
+  - **Exempt repos.** A repo or org is exempt when the second factor is
+    unnecessary or already provided some other way. Examples:
+    - The org has its own approval process, such as review by a separate SRE
+      team. Agents never merge there; Andrew merges in the GitHub UI after
+      that approval.
+    - The repo is personally owned, and a second factor adds nothing.
+
+    Exempt or not, every merge still needs green CI and the pre-merge review.
 - Only allowed merge command: `gh pr merge <number> --squash --delete-branch`.
 - **`Closes #N` fires from the commit message, not just the PR body.** Decide
   which issues a PR closes *before writing the commit* — squash-merge prefills
@@ -239,7 +243,7 @@ before merge.
   "Advances #N" and close it deliberately. Verifying which one fired:
   `~/.claude/docs/CHECKLISTS.md` ("Did the commit close that issue?").
 
-"Merge it" does not authorize skipping CI, review, or the merge-lock. The allowed merge command routes through pre-merge-review.sh.
+"Merge it" does not authorize skipping CI or review. The allowed merge command routes through pre-merge-review.sh.
 
 If `gh pr merge` fails: report the failure, ask the human to merge manually. Never use REST API, GraphQL, or workarounds. These are blocked by hooks. Enforcement details: `~/.claude/docs/INFRASTRUCTURE.md`
 
