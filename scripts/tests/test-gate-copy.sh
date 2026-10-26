@@ -255,6 +255,29 @@ See the receipt screen here.
 Fees run < 5 dollars and > 1 dollar." "${got}"
 git -C "${REPO}" rm -q --cached post.md
 
+printf '%s\n' 'Intro line.' '| Script | Purpose |' '| --- | :-: |' '| **a.sh** | Does a — long old text. |' \
+  '| b.sh | Pipes \| survive. |' 'After the table.' >"${REPO}/table.md"
+printf 'o/site include table.md\n' >>"${CONF}"
+git -C "${REPO}" add table.md
+got="$(_text)"
+_eq "Markdown table: one line per cell, no separator row" ">> table.md (new file, whole text)
+Intro line.
+Script
+Purpose
+a.sh
+Does a — long old text.
+b.sh
+Pipes | survive.
+After the table." "${got}"
+git -C "${REPO}" commit -q -m table
+sed -i.bak -e 's#Pipes \\| survive.#Pipes still survive.#' "${REPO}/table.md"
+git -C "${REPO}" add table.md
+got="$(_text)"
+_eq "changed table row: only that cell, not the whole table" ">> table.md (added or changed text)
+Pipes still survive." "${got}"
+git -C "${REPO}" rm -q --cached table.md
+git -C "${REPO}" commit -q -m drop-table
+
 printf '%s\n' '---' "import Base from '../x.astro';" '---' '<Base title="Now">' '<h1>Now</h1>' \
   '<p>Reading {books.length} books.</p>' '</Base>' >"${REPO}/now.astro"
 printf 'o/site include now.astro\n' >>"${CONF}"

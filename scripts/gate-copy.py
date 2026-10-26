@@ -329,6 +329,16 @@ def md_text(src, mdx=False):
         if mdx and MDX_STATEMENT.match(s):
             flush()
             continue
+        # One line per table cell: a table has no blank lines, so as a paragraph one changed row re-linted every row.
+        if s.startswith("|"):
+            flush()
+            for cell in re.split(r"(?<!\\)\|", s):
+                if re.fullmatch(r"\s*:?-+:?\s*", cell):
+                    continue
+                t = _md_inline(cell.replace("\\|", "|"))
+                if t:
+                    lines.append(t)
+            continue
         block = re.match(r"^(#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s?)", s)
         if block:
             flush()
