@@ -168,10 +168,24 @@ if [[ -n "${account_email}" ]]; then
   account_segment=$(printf '\033[35m[%s]\033[0m ' "${account_label}")
 fi
 
+# --- dev mode (#453) ------------------------------------------------------
+# Hooks off an existing deploy clone: dev mode or a broken deploy.
+dev_segment=""
+deploy_clone="${HOME}/.local/share/claude-config"
+if [[ -e "${deploy_clone}/.git" ]]; then
+  hook_link=$(readlink "${HOME}/.claude/hooks/run-review.sh" 2>/dev/null || true)
+  if [[ -z "${hook_link}" ]]; then
+    dev_segment=$'\033[1;31m[hooks unlinked]\033[0m '
+  elif [[ "${hook_link}" != "${deploy_clone}/"* ]]; then
+    dev_segment=$'\033[1;31m[DEV hooks]\033[0m '
+  fi
+fi
+
 user_name=$(whoami || true)
 host_name=$(hostname -s || true)
 
-printf "%s\033[32m%s@%s\033[0m:\033[34m%s\033[31m%s%s\033[0m%s%s" \
+printf "%s%s\033[32m%s@%s\033[0m:\033[34m%s\033[31m%s%s\033[0m%s%s" \
+  "${dev_segment}" \
   "${account_segment}" \
   "${user_name}" \
   "${host_name}" \

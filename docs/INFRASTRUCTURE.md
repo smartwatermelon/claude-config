@@ -39,6 +39,94 @@ here previously. They no longer exist in claude-config or dotfiles.
 
 ---
 
+## Deployment (#453)
+
+`~/.claude` links into a deploy clone, never into the working checkout.
+
+| Path | Role | Who writes it |
+|------|------|---------------|
+| `~/Developer/claude-config` | working checkout | agents and Andrew: edit, branch, pull |
+| `~/.local/share/claude-config` | deploy clone, on `origin/main` | only `claude-config-deploy.sh`, outside Claude Code |
+| `~/.claude/**` | symlinks into the deploy clone | the clone's `install.sh` |
+
+Before this, `~/.claude` linked into the working checkout, so a mid-edit hook
+or a branch switch there became the hook set every session ran (#453). The
+clone also sits outside the sandbox's writable paths, so the sandbox's
+protected-path rule for `CLAUDE.md` no longer blocks agents from pulling the
+working checkout.
+
+**The deploy job.** `scripts/claude-config-deploy.sh` (on `PATH` as
+`claude-config-deploy`, linked straight to the clone's copy):
+
+1. Takes a lock (`~/.local/state/claude-config/deploy.lock`, a symlink naming
+   the holder's pid; a dead holder's lock is removed). Exit 3 if held.
+2. Refuses (exit 2, logs, notifies once per new problem, changes nothing) when
+   the clone is missing, off `main`, has tracked changes, or cannot
+   fast-forward.
+3. Fetches origin over anonymous HTTPS. The repo is public, so launchd needs
+   no SSH agent or key. A failed fetch logs and exits 1 without a
+   notification (an offline laptop is normal).
+4. `git merge --ff-only` to `origin/main`. Never `reset --hard`.
+5. Runs the clone's own `install.sh --sync` when main moved, when
+   `~/.claude/hooks/run-review.sh` does not link into the clone, or always on
+   a manual run.
+
+The LaunchAgent `com.smartwatermelon.claude-config-deploy` runs
+`deploy --scheduled` every 600 s and at load. `bootstrap` generates its plist
+(no tracked plist copy) and `uninstall` removes it, the lock-sync pattern.
+Log: `~/.local/state/claude-config/deploy.log`; launchd's own stdout and
+stderr go to `~/.local/state/com.smartwatermelon.claude-config-deploy.log`.
+
+**Dev mode.** `~/Developer/claude-config/install.sh --dev` links `~/.claude`
+to the working checkout and writes `~/.local/state/claude-config/dev-mode`
+(`path=`, `since=`). It shows in three places: a red `[DEV hooks]` at the
+start of the status line, a SessionStart notice (stdout, so the model sees
+it), and a line in the deploy log on every scheduled run. The scheduled run
+keeps dev mode for 12 hours (`CLAUDE_CONFIG_DEV_TTL_HOURS`), still
+fast-forwarding the clone, then redeploys `main` and notifies. Reason: an
+unrelated merge must not swap hooks out from under a test in progress, but a
+forgotten dev mode must not outlive the day. A manual `claude-config-deploy`
+ends it at once. If `~/.claude` is off the clone with no marker (for example,
+an old `install.sh --sync` from the working checkout), the next scheduled run
+relinks it.
+
+**The working checkout hands off.** Once the clone exists, the working
+checkout's `install.sh` runs `claude-config-deploy` for `--sync` and a full
+install, and the clone's `install.sh` for `--repair` and `--dry-run`, passing
+the exit status back. Only `--dev` links the working checkout. So every old
+"run `~/Developer/claude-config/install.sh --sync`" instruction, and the
+dotfiles `allup` and `dotclaude` functions, deploy `main` instead of quietly
+undoing the clone. If the clone has no deploy script it refuses (exit 1). The
+clone's `install.sh` refuses `--dev`.
+
+**Repair and audit.** `update-tools.sh` runs the clone's `install.sh
+--repair`, or skips repair in dev mode. In the clone, `--repair` no longer
+copies a regular file at a link path back into the repo (that would leave the
+clone dirty and stop every deploy); it backs the file up to
+`~/.claude/backups/symlink-migration/` and relinks. `--learn` still writes the
+working checkout's `scripts/known-runtime.txt`, which is where a commit can
+come from.
+
+**Atomicity.** `git merge --ff-only` rewrites each changed file in turn, so for
+the time it runs (not measured; a handful of small files) a hook can see an old file next to a new one, or
+a changed file briefly missing (`hook-block-all.sh` then blocks that one Bash
+call). A file a pull adds has no `~/.claude` link until the `install.sh
+--sync` that follows, seconds later; that includes a new `REQUIRED_HOOKS`
+entry, so the #660 lockout lasts seconds instead of until someone runs
+`--sync`. The old window was every edit and every branch switch, for as long
+as it lasted. A staging clone with a symlink swap would close the gap; it is
+not built.
+
+**Bootstrap** (once per machine, in a terminal):
+`~/Developer/claude-config/scripts/claude-config-deploy.sh bootstrap`. It
+clones over HTTPS if the clone is missing, re-runs itself as the clone's copy,
+deploys, links `~/.local/bin/claude-config-deploy`, and loads the agent. It is
+idempotent, and refuses without changes if the clone path is not a git clone
+or the command path is a regular file. `claude-config-deploy status` reports
+the clone, the link mode and the agent.
+
+---
+
 ## Claude Code Tool Hooks
 
 Configured in `settings.json` under `hooks`. The status-line `cc-status`
@@ -213,7 +301,7 @@ record. A `review` destination needs clean lint plus Andrew's approval. An
   deployed path `~/.claude/gate-rules.conf`. Reads pass. The hooks match the
   literal path and do not resolve symlinks, so the repo copy stays editable
   through a reviewed PR, and a merged change reaches `~/.claude` on the next
-  `install.sh --sync`.
+  deploy (within 10 minutes; see Deployment).
 - `copy-paths.conf` (repo root, linked to `~/.claude/copy-paths.conf`, guarded
   by both write hooks the same way) lists each repo's public-facing copy:
   `<owner/name> <include|exclude> <glob>`. A `public=*` line applies to every

@@ -48,4 +48,27 @@ for PENDING_DIR in "${PENDING_DIRS[@]}"; do
   printf '   Each records its target repo in its Repo header line; drain them by filing\n' >&2
   printf '   each in that repo, then deleting the file.\n' >&2
 done
+
+# Dev mode (#453): stdout so the model knows which hooks run; stderr for the human. Same paths as install.sh.
+deploy_clone="${HOME}/.local/share/claude-config"
+if [[ -e "${deploy_clone}/.git" ]]; then
+  hook_link="$(readlink "${HOME}/.claude/hooks/run-review.sh" 2>/dev/null || true)"
+  if [[ "${hook_link}" != "${deploy_clone}/"* ]]; then
+    dev_path="${hook_link%/hooks/run-review.sh}"
+    dev_since=""
+    marker="${HOME}/.local/state/claude-config/dev-mode"
+    if [[ -f "${marker}" ]]; then
+      dev_since="$(sed -n 's/^since=//p' "${marker}" 2>/dev/null || true)"
+    fi
+    if [[ "${dev_since}" =~ ^[0-9]+$ ]]; then
+      dev_since=" since $(date -r "${dev_since}" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '%s' "${dev_since}")"
+    else
+      dev_since=""
+    fi
+    notice="claude-config DEV MODE${dev_since}: ~/.claude hooks run from ${dev_path:-nowhere (no link)}, not ${deploy_clone}."
+    notice+=" Run claude-config-deploy in a terminal to return to origin/main."
+    printf '%s\n' "${notice}"
+    printf '⚠️  %s\n' "${notice}" >&2
+  fi
+fi
 exit 0
