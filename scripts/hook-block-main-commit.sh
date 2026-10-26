@@ -291,7 +291,7 @@ _segment_starts() {
   '
 }
 
-# One word per line, quotes honored and dropped; stops at ) } < > & or a backtick. \001 marks a word with $ or a backtick.
+# One word per line, quotes honored and dropped; stops at ) < > & or a backtick. \001 marks a word with $ or a backtick.
 _words() {
   printf '%s' "$1" | LC_ALL=C awk '
     BEGIN { RS = "\001"; q = 0; w = ""; have = 0; dyn = 0 }
@@ -311,7 +311,7 @@ _words() {
           if (have) print (dyn ? "\001" : "") w
           w = ""; have = 0; dyn = 0; continue
         }
-        if (c == ")" || c == "}" || c == "<" || c == ">" || c == "&" || c == "\140") break
+        if (c == ")" || c == "<" || c == ">" || c == "&" || c == "\140") break
         if (c == "$") dyn = 1
         w = w c; have = 1
       }
@@ -376,7 +376,7 @@ _default_branch() {
 
 # $1 is one piece; $2 is 1 when an earlier piece ran cd, pushd or popd.
 _guard_piece() {
-  local piece="$1" cd_seen="$2" m git_part wrap_part d top def base kind
+  local piece="$1" cd_seen="$2" m git_part wrap_part part d top def base kind
   [[ "${piece}" =~ ${move_re} ]] || return 0
   m="${BASH_REMATCH[0]}"
   local args="${piece#*"${m}"}"
@@ -426,13 +426,14 @@ _guard_piece() {
   local words
   words=$(_words "${args}")
   [[ -z "${words}" ]] || mapfile -t w <<<"${words}"
-  if [[ "${git_part}" =~ gh[[:space:]] ]]; then
+  # Read the subcommand from the END of the match, so an option value such as -c x=gh cannot decide it.
+  if [[ "${git_part}" =~ ^${_gh_move}$ ]]; then
     _deny_branch_move 'gh pr checkout' "${top}" "${def}" "${base}"
   fi
-  if [[ "${git_part}" =~ stash[[:space:]]+branch ]]; then
+  if [[ "${git_part}" =~ [[:space:]]stash[[:space:]]+branch[[:space:]]*$ ]]; then
     _deny_branch_move 'git stash branch' "${top}" "${def}" "${base}"
   fi
-  if [[ "${git_part}" =~ switch([[:space:]]|$) ]]; then kind=switch; else kind=checkout; fi
+  if [[ "${git_part}" =~ [[:space:]]switch[[:space:]]*$ ]]; then kind=switch; else kind=checkout; fi
 
   local i=0 tok create='' has_create=0 detach=0 dashdash=0 pathmode=0 op='' have_op=0
   while ((i < ${#w[@]})); do
@@ -447,6 +448,7 @@ _guard_piece() {
         has_create=1; create="${w[i + 1]-}"; ((i += 2)); continue ;;
       --orphan=* | --create=* | --force-create=*) has_create=1; create="${tok#*=}" ;;
       -b?* | -B?*) has_create=1; create="${tok:2}" ;;
+      -c?* | -C?*) [[ "${kind}" == switch ]] && { has_create=1; create="${tok:2}"; } ;;
       --detach) detach=1 ;;
       -d) [[ "${kind}" == switch ]] && detach=1 ;;
       -p | --patch | --pathspec-from-file | --pathspec-from-file=*) pathmode=1 ;;
@@ -468,13 +470,13 @@ _guard_piece() {
   if [[ "${op}" == $'\001'* ]]; then
     _deny_branch_unknown "the ${kind} target ${op#?} is only known when the shell runs"
   fi
-  if [[ "${op}" == '-' ]]; then
-    # The previous branch. Unresolved, it stays `-` and is denied below.
-    op=$(git "${cargs[@]}" rev-parse --abbrev-ref '@{-1}' 2>/dev/null) || op='-'
-    [[ -n "${op}" ]] || op='-'
-  fi
-  [[ "${op}" == "${def}" || "${op}" == "refs/heads/${def}" ]] && return 0
-  if [[ "${kind}" == checkout && "${op}" != '-' ]]; then
+  [[ "${op}" == "${def}" || "${op}" == "refs/heads/${def}" || "${op}" == HEAD ]] && return 0
+  # `-`, @{-N} and other spellings of the default branch resolve to refs/heads/<default>.
+  local full='' spec="${op}"
+  [[ "${spec}" == '-' ]] && spec='@{-1}'
+  full=$(git "${cargs[@]}" rev-parse --symbolic-full-name "${spec}" 2>/dev/null) || full=''
+  [[ "${full}" == "refs/heads/${def}" ]] && return 0
+  if [[ "${kind}" == checkout && "${op}" != '-' && "${op}" != *'@{'* ]]; then
     # Neither a commit nor a remote branch DWIM would create: git reads a path.
     local remote_ref=''
     remote_ref=$(git "${cargs[@]}" for-each-ref --count=1 "refs/remotes/*/${op}" 2>/dev/null) || remote_ref=''

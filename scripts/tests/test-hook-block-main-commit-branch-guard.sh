@@ -15,13 +15,16 @@ export GIT_CONFIG_GLOBAL=/dev/null
 export GIT_CONFIG_SYSTEM=/dev/null
 unset GIT_DIR GIT_WORK_TREE
 
-ROOT="$(mktemp -d)"
+ROOT="$(mktemp -d "${TMPDIR:-/tmp}/branch-guard-test.XXXXXX")"
 # Keep any log a hook writes inside the temp dir, not the real ~/.claude.
 export HOME="${ROOT}/home"
 mkdir -p "${HOME}/.claude"
 
+# Protocol 3: rm is injectable, and it only ever removes this suite's own mktemp dir.
+RM_BIN="${RM_BIN:-rm}"
 cleanup() {
-  rm -rf "${ROOT}"
+  [[ "${ROOT}" == */branch-guard-test.?????? && -d "${ROOT}" ]] || return 0
+  "${RM_BIN}" -rf "${ROOT}"
 }
 trap cleanup EXIT
 
@@ -96,6 +99,9 @@ check "git checkout <sha> (detached)" 2 "${PRIMARY}" "git checkout ${SHA}"
 check "git checkout origin/main (detached)" 2 "${PRIMARY}" 'git checkout origin/main'
 check "git checkout <remote-only> (DWIM creates it)" 2 "${PRIMARY}" 'git checkout remote-only'
 check "git checkout - (previous branch is not the default)" 2 "${PRIMARY}" 'git checkout -'
+check "git checkout @{-1}" 2 "${PRIMARY}" 'git checkout @{-1}'
+check "git checkout HEAD@{1}" 2 "${PRIMARY}" 'git checkout HEAD@{1}'
+check "git switch -cNAME (attached value)" 2 "${PRIMARY}" 'git switch -cclaude/new'
 check "git switch <branch>" 2 "${PRIMARY}" 'git switch feature'
 check "git switch -c" 2 "${PRIMARY}" 'git switch -c claude/new'
 check "git switch -C" 2 "${PRIMARY}" 'git switch -C claude/new'
@@ -151,6 +157,9 @@ check "git worktree add (the replacement)" 0 "${PRIMARY}" 'git worktree add .cla
 check "git restore" 0 "${PRIMARY}" 'git restore a.txt'
 check "git branch (creates, does not move HEAD)" 0 "${PRIMARY}" 'git branch claude/new'
 check "git checkout-index is not checkout" 0 "${PRIMARY}" 'git checkout-index -a'
+check "git checkout HEAD (no move)" 0 "${PRIMARY}" 'git checkout HEAD'
+check "an option value of gh does not read as gh pr checkout" 0 "${PRIMARY}" 'git -c user.name=gh switch main'
+check "an option value of switch does not make checkout a switch" 0 "${PRIMARY}" 'git -c user.name=switch checkout a.txt'
 
 echo "--- allowed: the phrase is text, not a command ---"
 check "printf mentioning git checkout -b" 0 "${PRIMARY}" "printf '%s\\n' 'run git checkout -b x first'"
@@ -199,6 +208,7 @@ else
 fi
 # Fill the placeholder the way an agent would, then run it past the worktree hook.
 concrete="${suggested//<name>/feat-x}"
+concrete="${concrete//<branch>/claude/feat-x}"
 actual=0
 jq -n --arg cmd "${concrete}" '{"tool_input":{"command":$cmd}}' | "${WT_HOOK}" >/dev/null 2>&1 || actual=$?
 if [[ "${actual}" -eq 0 ]]; then

@@ -65,7 +65,7 @@ entries are omitted here.
    - Default branch: `refs/remotes/origin/HEAD`, else `main` if it exists, else `master`.
    - Allowed: a switch to the default branch, `git checkout -- <path>`, `git checkout <ref> -- <path>`, `git checkout .`, `-p`, a checkout operand that is not a ref (a path), `git pull` and `git worktree add`.
    - Only real invocations count. A piece of the command is checked only when a command starts there, not in quotes, a heredoc or a comment, so a commit message or `printf` that mentions `git checkout -b` passes.
-   - Not covered: `git reset --hard`, `git rebase`, `git bisect`, `bash -c`/`eval` strings, aliases and variables.
+   - Not covered: `git reset --hard`, `git rebase`, `git bisect`, `bash -c`/`eval` strings, command substitution (`$(...)`, backticks), a command after a single `&`, aliases and variables.
 6. `hook-block-personify.sh` (text gate, below)
 7. `hook-check-commit-message.py`
 8. `hook-block-merge-lock-authorize.sh`
