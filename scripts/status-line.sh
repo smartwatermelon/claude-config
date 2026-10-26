@@ -127,10 +127,41 @@ if [[ "${cache_warm}" == "false" ]]; then
   cache_segment=$'\033[33m cold\033[0m'
 fi
 
+# --- account --------------------------------------------------------------
+# Several Claude accounts share one machine, switched with /login. Nothing
+# on screen said which one a session was billing to. The statusLine stdin
+# schema has no account field, so read the email /login writes to
+# .claude.json. That file reflects the most recent /login in this config
+# dir: a session started before another session's /login may still hold the
+# earlier account's token until it re-reads credentials.
+#
+# Optional labels file, one `email=label` per line, so each account reads as
+# a short word rather than a full address. It lives beside the runtime
+# config, not in this repo, so no addresses are committed.
+account_segment=""
+claude_json="${CLAUDE_CONFIG_DIR:-${HOME}}/.claude.json"
+account_email=$(jq -r '.oauthAccount.emailAddress // empty' \
+  "${claude_json}" 2>/dev/null || true)
+if [[ -n "${account_email}" ]]; then
+  account_label="${account_email}"
+  labels_file="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/account-labels"
+  if [[ -r "${labels_file}" ]]; then
+    # `|| [[ -n ... ]]` keeps a last line that has no trailing newline.
+    while IFS='=' read -r label_key label_value || [[ -n "${label_key}" ]]; do
+      if [[ "${label_key}" == "${account_email}" && -n "${label_value}" ]]; then
+        account_label="${label_value}"
+        break
+      fi
+    done <"${labels_file}"
+  fi
+  account_segment=$(printf '\033[35m[%s]\033[0m ' "${account_label}")
+fi
+
 user_name=$(whoami || true)
 host_name=$(hostname -s || true)
 
-printf "\033[32m%s@%s\033[0m:\033[34m%s\033[31m%s%s\033[0m%s%s" \
+printf "%s\033[32m%s@%s\033[0m:\033[34m%s\033[31m%s%s\033[0m%s%s" \
+  "${account_segment}" \
   "${user_name}" \
   "${host_name}" \
   "${current_dir/#"${HOME}"/"~"}" \
