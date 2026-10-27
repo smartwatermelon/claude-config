@@ -121,6 +121,7 @@ scope() {
 }
 
 # The skip is safe only while no suite reads known-runtime.txt. A suite that starts to must update the script first.
+# Exempt: test-update-tools-deploy-clone.sh writes its own fixture copy in a temp dir, never the tracked file.
 
 @test "no test suite reads known-runtime.txt or runs update-tools.sh" {
   local hits dir
@@ -130,7 +131,8 @@ scope() {
   done
   hits="$(grep -rnE 'known-runtime|update-tools\.sh' "${REPO_ROOT}/tests" "${REPO_ROOT}/scripts/tests" \
     "${REPO_ROOT}/hooks/tests" "${REPO_ROOT}/test-pre-merge-review.sh" \
-    | grep -v '/tests/test_ci_tests_scope\.bats:' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+    | grep -v '/tests/test_ci_tests_scope\.bats:' | grep -v '/scripts/tests/test-update-tools-deploy-clone\.sh:' \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
   if [[ -n "${hits}" ]]; then
     echo "these suite lines touch known-runtime.txt; make ci-tests-scope.sh stop skipping for it:"
     echo "${hits}"
