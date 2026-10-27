@@ -48,6 +48,7 @@ fresh() {
   DEV="${HOME}/Developer/claude-config"
   LOG="${HOME}/.local/state/claude-config/deploy.log"
   MARKER="${HOME}/.local/state/claude-config/dev-mode"
+  OKF="${HOME}/.local/state/claude-config/deploy.ok"
   PLIST="${HOME}/Library/LaunchAgents/com.smartwatermelon.claude-config-deploy.plist"
 
   local seed="${T}/seed"
@@ -89,7 +90,7 @@ EOF
   export CLAUDE_CONFIG_DEPLOY_URL="${ORIGIN}"
   export CLAUDE_CONFIG_LAUNCHCTL_BIN="${T}/bin/launchctl"
   export CLAUDE_CONFIG_OSASCRIPT_BIN="${T}/bin/osascript"
-  unset STUB_INSTALL_RC STUB_LOADED_RC CLAUDE_CONFIG_DEV_TTL_HOURS
+  unset STUB_INSTALL_RC STUB_LOADED_RC CLAUDE_CONFIG_DEV_TTL_HOURS CLAUDE_CONFIG_MV_BIN
   touch "${STUB_INSTALL_LOG}" "${STUB_LAUNCHCTL_LOG}" "${STUB_NOTIFY_LOG}"
 }
 
@@ -113,6 +114,20 @@ run_clone_script() {
   out="$("${CLONE}/scripts/claude-config-deploy.sh" "$@" 2>&1)" || rc=$?
 }
 
+# The last-good stamp: present and an epoch. seed_ok writes an old one, so a rewrite is visible.
+ok_is_epoch() { [[ -f "${OKF}" ]] && grep -qxE '[0-9]+' "${OKF}"; }
+seed_ok() {
+  mkdir -p "${OKF%/*}"
+  printf '1\n' >"${OKF}"
+}
+ok_is_seed() { grep -qx 1 "${OKF}" 2>/dev/null; }
+no_stamp_tmp() { # mktemp names it deploy.ok.XXXXXX
+  local hits
+  hits="$(find "${OKF%/*}" -name 'deploy.ok.*')" || return 1
+  [[ -z "${hits}" ]]
+}
+ok_rewritten() { ok_is_epoch && ! ok_is_seed; }
+
 lines() {
   local n
   n="$(wc -l <"$1")"
@@ -133,6 +148,7 @@ fresh
 run_deploy deploy
 check "no clone: refuses with exit 2" test "${rc}" -eq 2
 check "no clone: names bootstrap" grep -q "bootstrap" "${LOG}"
+check "no clone: no last-good stamp" test ! -e "${OKF}"
 
 fresh
 make_clone
@@ -143,6 +159,7 @@ check "dirty clone: the edit is kept" grep -qx 'local edit' "${CLONE}/CLAUDE.md"
 check "dirty clone: the log names the file" grep -q "CLAUDE.md" "${LOG}"
 check_eq "dirty clone: install.sh did not run" 0 lines "${STUB_INSTALL_LOG}"
 check_eq "dirty clone: one notification" 1 lines "${STUB_NOTIFY_LOG}"
+check "dirty clone: no last-good stamp" test ! -e "${OKF}"
 run_deploy deploy --scheduled
 check "dirty clone again: still refuses" test "${rc}" -eq 2
 check_eq "dirty clone again: no repeat notification" 1 lines "${STUB_NOTIFY_LOG}"
@@ -150,7 +167,9 @@ check_eq "dirty clone again: no repeat notification" 1 lines "${STUB_NOTIFY_LOG}
 fresh
 make_clone
 gitq -C "${CLONE}" switch -q -c side
+seed_ok
 run_deploy deploy --scheduled
+check "clone off main: last-good stamp not rewritten" ok_is_seed
 check "clone off main: refuses with exit 2" test "${rc}" -eq 2
 check_eq "clone off main: branch is left as is" side git -C "${CLONE}" symbolic-ref --short HEAD
 
@@ -161,8 +180,10 @@ gitq -C "${CLONE}" add local.txt
 gitq -C "${CLONE}" commit -q -m local
 local_head="$(head_of "${CLONE}")"
 advance_origin v2 >/dev/null
+seed_ok
 run_deploy deploy --scheduled
 check "diverged clone: refuses with exit 2" test "${rc}" -eq 2
+check "diverged clone: last-good stamp not rewritten" ok_is_seed
 check_eq "diverged clone: local commit is kept" "${local_head}" head_of "${CLONE}"
 check "diverged clone: log says it cannot fast-forward" grep -q "fast-forward" "${LOG}"
 
@@ -175,32 +196,53 @@ check "manual deploy: runs the clone's install.sh --sync" grep -qx "${CLONE} --s
 check_eq "manual deploy: ~/.claude links into the clone" \
   "${CLONE}/hooks/run-review.sh" readlink "${HOME}/.claude/hooks/run-review.sh"
 check "manual deploy: prints what it did" grep -q "install.sh --sync" <<<"${out}"
+check "manual deploy: writes the last-good stamp" ok_is_epoch
+check "manual deploy: leaves no stamp temp file" no_stamp_tmp
 
+seed_ok
 run_deploy deploy --scheduled
 check "scheduled, nothing new: exit 0" test "${rc}" -eq 0
+check "scheduled, nothing new: rewrites the last-good stamp" ok_rewritten
 check_eq "scheduled, nothing new: install.sh not re-run" 1 lines "${STUB_INSTALL_LOG}"
 check "scheduled, nothing new: logs that it is up to date" grep -q "up to date" "${LOG}"
 check "scheduled: nothing on stdout (launchd logs it already)" test -z "${out}"
 
 new_sha="$(advance_origin v2)"
+seed_ok
 run_deploy deploy --scheduled
 check "scheduled, origin moved: exit 0" test "${rc}" -eq 0
+check "scheduled, origin moved: rewrites the last-good stamp" ok_rewritten
 check_eq "scheduled, origin moved: clone fast-forwarded" "${new_sha}" head_of "${CLONE}"
 check_eq "scheduled, origin moved: install.sh re-run" 2 lines "${STUB_INSTALL_LOG}"
 check "scheduled, origin moved: logs the deploy" grep -q "deployed" "${LOG}"
 
 fresh
 make_clone
+seed_ok
 STUB_INSTALL_RC=1 run_deploy deploy
 check "install.sh failure: exit 1" test "${rc}" -eq 1
 check_eq "install.sh failure: notifies" 1 lines "${STUB_NOTIFY_LOG}"
+check "install.sh failure: last-good stamp not rewritten" ok_is_seed
 
 fresh
 make_clone
 git -C "${CLONE}" remote set-url origin "${T}/no-such-origin.git"
+seed_ok
 run_deploy deploy --scheduled
 check "fetch failure: exit 1" test "${rc}" -eq 1
 check "fetch failure: logged" grep -q "fetch" "${LOG}"
+check "fetch failure: last-good stamp not rewritten" ok_is_seed
+
+# The stamp goes through the injected mv; a failing one must not fail the deploy or leave a temp file.
+fresh
+make_clone
+printf '#!/usr/bin/env bash\nexit 1\n' >"${T}/bin/mv-fails"
+chmod +x "${T}/bin/mv-fails"
+CLAUDE_CONFIG_MV_BIN="${T}/bin/mv-fails" run_deploy deploy
+check "stamp mv fails: deploy still exit 0" test "${rc}" -eq 0
+check "stamp mv fails: no stamp" test ! -e "${OKF}"
+check "stamp mv fails: temp file removed" no_stamp_tmp
+check "stamp mv fails: logged" grep -q "could not write" "${LOG}"
 
 # --- lock --------------------------------------------------------------------
 fresh
@@ -234,9 +276,12 @@ fresh
 make_clone
 dev_mode 60
 new_sha="$(advance_origin v2)"
+printf 'dirty\n' >"${HOME}/.local/state/claude-config/deploy.problem"
 run_deploy deploy --scheduled
+check "fresh dev mode, scheduled: clears an earlier problem" test ! -e "${HOME}/.local/state/claude-config/deploy.problem"
 check "fresh dev mode, scheduled: exit 0" test "${rc}" -eq 0
 check_eq "fresh dev mode, scheduled: install.sh not run" 0 lines "${STUB_INSTALL_LOG}"
+check "fresh dev mode, scheduled: writes the last-good stamp" ok_is_epoch
 check_eq "fresh dev mode, scheduled: links stay on the working checkout" \
   "${DEV}/hooks/run-review.sh" readlink "${HOME}/.claude/hooks/run-review.sh"
 check_eq "fresh dev mode, scheduled: clone still fast-forwarded" "${new_sha}" head_of "${CLONE}"
@@ -355,11 +400,16 @@ check "uninstall: clone kept" test -d "${CLONE}/.git"
 
 # --- status --------------------------------------------------------------------
 fresh
+run_deploy status
+check "status, nothing deployed: last ok never" grep -q "^last ok: never" <<<"${out}"
+
+fresh
 "${SCRIPT}" bootstrap >/dev/null 2>&1
 run_clone_script status
 check "status: exit 0" test "${rc}" -eq 0
 check "status: names the clone" grep -q "${CLONE}" <<<"${out}"
 check "status: says deployed" grep -qi "deployed" <<<"${out}"
+check "status: shows the last good run time" grep -qE "^last ok: [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}" <<<"${out}"
 
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"

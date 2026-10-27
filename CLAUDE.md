@@ -402,6 +402,7 @@ A denial from the auto-mode classifier ("Permission for this action was denied b
 - **`~/.claude`** is the deployed runtime directory: symlinks into the deploy clone, created by the clone's `install.sh`. It must NOT be a git repo (`install.sh` removes `~/.claude/.git` if present).
 - **Deploy now:** `claude-config-deploy`, in a terminal (outside Claude Code). The old `~/Developer/claude-config/install.sh --sync` now just runs that deploy (only `--dev` links the working checkout).
 - **Dev mode:** `~/Developer/claude-config/install.sh --dev` links `~/.claude` to the working checkout. The status line shows `[DEV hooks]` and SessionStart says so. The LaunchAgent leaves it for 12 hours, then redeploys main. `claude-config-deploy` ends it at once.
+- **Deploy health:** a refused deploy shows `[DEPLOY: <key>]` in red in the status line; no good run in 2 hours shows `[DEPLOY stale <age>]`. SessionStart prints the same notice. Next step: `claude-config-deploy status` in a terminal.
 - This repo tracks no submodules. Plugin marketplaces under `~/.claude/plugins/marketplaces/` are cloned and kept current by Claude Code itself — runtime state, not repo content. Do not re-add one to track a marketplace.
 - `docs/plans/` directory exists for design/planning docs and should be committed
 - Key scripts: `install.sh` (symlink bootstrap), `scripts/claude-config-deploy.sh` (deploy job, bootstrap, LaunchAgent), `scripts/update-tools.sh` (symlink repair + `~/.claude` audit), `scripts/post-push-status.sh <PR#>` (CI status polling)

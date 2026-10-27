@@ -77,6 +77,24 @@ The LaunchAgent `com.smartwatermelon.claude-config-deploy` runs
 Log: `~/.local/state/claude-config/deploy.log`; launchd's own stdout and
 stderr go to `~/.local/state/com.smartwatermelon.claude-config-deploy.log`.
 
+**Deploy health.** A refusal notifies only once, and a LaunchAgent that has
+stopped writes nothing, so neither can depend on a notification being seen.
+Two state files back persistent indicators, shown only while the deploy clone
+exists:
+
+- `~/.local/state/claude-config/deploy.problem` holds the last refusal's key
+  (`dirty`, `diverged`, `install-failed`, ...). A good run removes it. The
+  status line shows a red `[DEPLOY: <key>]`.
+- `~/.local/state/claude-config/deploy.ok` holds the epoch of the last run
+  that ended up to date, deployed, or kept dev mode (written atomically). A
+  failed fetch, a refusal, or a failed install does not write it. When it is
+  missing or older than 2 hours (`CLAUDE_CONFIG_DEPLOY_STALE_HOURS`), the
+  status line shows a red `[DEPLOY stale <age>]` (`3h`, `2d`, `never`).
+
+A problem is more specific, so it replaces the stale segment. SessionStart
+prints the matching notice on stdout (for the model) and stderr (for the
+human). `claude-config-deploy status` shows the last good run time.
+
 **Dev mode.** `~/Developer/claude-config/install.sh --dev` links `~/.claude`
 to the working checkout and writes `~/.local/state/claude-config/dev-mode`
 (`path=`, `since=`). It shows in three places: a red `[DEV hooks]` at the

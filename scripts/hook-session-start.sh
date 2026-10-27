@@ -70,5 +70,54 @@ if [[ -e "${deploy_clone}/.git" ]]; then
     printf '%s\n' "${notice}"
     printf '⚠️  %s\n' "${notice}" >&2
   fi
+
+  # Deploy health (#453): a refusal notifies once; a dead agent writes nothing. A problem beats stale. As status-line.sh.
+  deploy_state="${HOME}/.local/state/claude-config"
+  deploy_log="${deploy_state}/deploy.log"
+  deploy_notice=""
+  if [[ -f "${deploy_state}/deploy.problem" ]]; then
+    problem_key=""
+    { read -r problem_key <"${deploy_state}/deploy.problem"; } 2>/dev/null || true
+    problem_key="${problem_key//[^A-Za-z0-9._-]/}"
+    problem_key="${problem_key:0:24}"
+    deploy_notice="claude-config DEPLOY PROBLEM (${problem_key:-unknown}): the last scheduled deploy refused or failed,"
+    deploy_notice+=" so ~/.claude may not be on origin/main. Details: ${deploy_log}."
+    deploy_notice+=" Next: run claude-config-deploy status in a terminal."
+  else
+    stale_hours="${CLAUDE_CONFIG_DEPLOY_STALE_HOURS:-2}"
+    [[ "${stale_hours}" =~ ^[0-9]+$ ]] || stale_hours=2
+    ok_at=""
+    { read -r ok_at <"${deploy_state}/deploy.ok"; } 2>/dev/null || true
+    stale_text=""
+    if [[ ! -e "${deploy_state}/deploy.ok" ]]; then
+      stale_text="has never recorded a completed run"
+    elif [[ ! "${ok_at}" =~ ^[0-9]+$ ]]; then
+      stale_text="has no readable last-good time in ${deploy_state}/deploy.ok"
+    else
+      now="$(date +%s)"
+      ok_age=$((now - 10#${ok_at}))
+      # A stamp from the future (clock change) counts as fresh, not stale.
+      if ((ok_age >= 0 && ok_age >= 10#${stale_hours} * 3600)); then
+        if ((ok_age >= 86400)); then
+          age_text="$((ok_age / 86400))d"
+        elif ((ok_age >= 3600)); then
+          age_text="$((ok_age / 3600))h"
+        else
+          age_text="$((ok_age / 60))m"
+        fi
+        ok_when="$(date -r "${ok_at}" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '%s' "${ok_at}")"
+        stale_text="has not completed a run in ${age_text} (last good run ${ok_when})"
+      fi
+    fi
+    if [[ -n "${stale_text}" ]]; then
+      deploy_notice="claude-config DEPLOY STALE: the deploy agent ${stale_text}, so ~/.claude may be behind origin/main."
+      deploy_notice+=" Check: claude-config-deploy status; launchctl print gui/\$(id -u)/com.smartwatermelon.claude-config-deploy."
+      deploy_notice+=" Log: ${deploy_log}."
+    fi
+  fi
+  if [[ -n "${deploy_notice}" ]]; then
+    printf '%s\n' "${deploy_notice}"
+    printf '⚠️  %s\n' "${deploy_notice}" >&2
+  fi
 fi
 exit 0

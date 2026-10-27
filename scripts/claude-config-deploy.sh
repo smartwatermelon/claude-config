@@ -14,6 +14,8 @@ STATE_DIR="${HOME}/.local/state/claude-config"
 LOG_FILE="${STATE_DIR}/deploy.log"
 LOCK="${STATE_DIR}/deploy.lock"
 PROBLEM_FILE="${STATE_DIR}/deploy.problem"
+# Epoch of the last run that ended in a good state. The status line and SessionStart flag it when old.
+OK_FILE="${STATE_DIR}/deploy.ok"
 DEV_MARKER="${STATE_DIR}/dev-mode"
 CANARY="hooks/run-review.sh"
 URL="${CLAUDE_CONFIG_DEPLOY_URL:-https://github.com/smartwatermelon/claude-config.git}"
@@ -45,7 +47,7 @@ Usage: claude-config-deploy [command]
                        ~/.claude is off the clone; keeps dev mode for ${DEV_TTL_HOURS}h.
   bootstrap            Clone (if needed), deploy, and install the LaunchAgent.
   uninstall            Remove the LaunchAgent and the command link. Keeps the clone.
-  status               Show the clone, the link mode, and the agent.
+  status               Show the clone, the link mode, the agent, and the last good run.
 
 Exit: 0 ok, 1 failed, 2 refused (clone changed or diverged), 3 another run holds the lock, 64 usage.
 Log: ${LOG_FILE}
@@ -83,6 +85,22 @@ _clear_problem() {
   if [[ -e "${PROBLEM_FILE}" ]]; then
     "${RM_BIN}" -f "${PROBLEM_FILE}" || true
   fi
+}
+
+# Atomic (temp file, then mv). A failed write only logs: a missing stamp reads as stale, never as fine.
+_mark_ok() {
+  local tmp now
+  now="$(date +%s)"
+  mkdir -p "${STATE_DIR}"
+  if ! tmp="$(mktemp "${OK_FILE}.XXXXXX" 2>/dev/null)"; then
+    _log "could not create a temp file for ${OK_FILE}"
+    return 0
+  fi
+  if printf '%s\n' "${now}" >"${tmp}" && "${MV_BIN}" -f "${tmp}" "${OK_FILE}"; then
+    return 0
+  fi
+  _log "could not write ${OK_FILE}"
+  "${RM_BIN}" -f "${tmp}" || true
 }
 
 _fmt_epoch() {
@@ -219,6 +237,8 @@ deploy_once() {
         from="$(_fmt_epoch "${DEV_SINCE}")"
         upto="$(_fmt_epoch $((DEV_SINCE + ttl)))"
         _log "dev mode since ${from}: ${DEPLOY_DIR} runs ${DEV_PATH}; kept until ${upto}; install skipped"
+        _clear_problem
+        _mark_ok
         return 0
       fi
       _log "dev mode (${DEV_PATH}) is past its ${DEV_TTL_HOURS}h window; ending it"
@@ -228,6 +248,7 @@ deploy_once() {
     elif ! ${moved} && [[ -z "${DEV_PATH}" ]]; then
       _log "up to date at ${new:0:7}"
       _clear_problem
+      _mark_ok
       return 0
     fi
   fi
@@ -243,6 +264,7 @@ deploy_once() {
     _log "deployed ${new:0:7}; ~/.claude linked to ${CLONE}"
   fi
   _clear_problem
+  _mark_ok
   return 0
 }
 
@@ -396,7 +418,7 @@ uninstall() {
 }
 
 status() {
-  local target head behind="" since
+  local target head behind="" since ok_at=""
   target="$(_link_target)"
   _read_marker
   if [[ -e "${CLONE}/.git" ]]; then
@@ -418,6 +440,15 @@ status() {
     printf 'agent:  %s loaded\n' "${LABEL}"
   else
     printf 'agent:  %s not loaded\n' "${LABEL}"
+  fi
+  if [[ -f "${OK_FILE}" ]]; then
+    read -r ok_at <"${OK_FILE}" || true
+  fi
+  if [[ "${ok_at}" =~ ^[0-9]+$ ]]; then
+    since="$(_fmt_epoch "${ok_at}")"
+    printf 'last ok: %s (last deploy run that ended in a good state)\n' "${since}"
+  else
+    printf 'last ok: never (no good run recorded in %s)\n' "${OK_FILE}"
   fi
   if [[ -f "${LOG_FILE}" ]]; then
     printf 'log:    %s (last lines)\n' "${LOG_FILE}"
