@@ -69,7 +69,8 @@ done
 if ((${#missing[@]} > 0)); then
   printf 'hook-block-all.sh: BLOCKED: required hook(s) cannot run, so no Bash command is checked:\n' >&2
   printf '  %s\n' "${missing[@]}" >&2
-  printf 'Fix (in a terminal; Bash tool calls stay blocked until then): run install.sh --sync from the claude-config clone.\n' >&2
+  printf 'Fix (in a terminal; Bash tool calls stay blocked until then): run claude-config-deploy\n' >&2
+  printf '  (same as ~/.local/share/claude-config/install.sh --sync; before that clone exists, ~/Developer/claude-config/install.sh --sync).\n' >&2
   printf 'If a hook is "not executable", chmod +x it in the repo and commit.\n' >&2
   exit 2
 fi

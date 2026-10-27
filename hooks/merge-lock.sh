@@ -401,7 +401,7 @@ POLICY_LINK="${HOME}/.claude/merge-lock-policy.conf"
 policy_text() {
   local target dir top origin rel
   if [[ ! -L "${POLICY_LINK}" ]]; then
-    echo "policy: ${POLICY_LINK} is missing or not a symlink (run install.sh --sync)" >&2
+    echo "policy: ${POLICY_LINK} is missing or not a symlink (run claude-config-deploy, or install.sh --sync before the deploy clone exists)" >&2
     return 1
   fi
   target="$(readlink "${POLICY_LINK}")" || return 1

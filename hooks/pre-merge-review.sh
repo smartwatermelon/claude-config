@@ -584,7 +584,7 @@ _reread_with_app_token() {
   if [[ "${PRE_MERGE_APP_DISABLE:-0}" == "1" ]]; then
     reason="disabled by PRE_MERGE_APP_DISABLE"
   elif [[ "${_APP_LIB_LOADED}" != "true" ]]; then
-    reason="lib-app-token.sh not installed (re-run install.sh)"
+    reason="lib-app-token.sh not installed (run claude-config-deploy)"
   fi
   if [[ -n "${reason:-}" ]]; then
     log_warn "App token unavailable: ${reason}; using default gh credentials"

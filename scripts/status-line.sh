@@ -168,10 +168,66 @@ if [[ -n "${account_email}" ]]; then
   account_segment=$(printf '\033[35m[%s]\033[0m ' "${account_label}")
 fi
 
+# --- dev mode (#453) ------------------------------------------------------
+# Hooks off an existing deploy clone: dev mode or a broken deploy.
+dev_segment=""
+deploy_clone="${HOME}/.local/share/claude-config"
+if [[ -e "${deploy_clone}/.git" ]]; then
+  hook_link=$(readlink "${HOME}/.claude/hooks/run-review.sh" 2>/dev/null || true)
+  if [[ -z "${hook_link}" ]]; then
+    dev_segment=$'\033[1;31m[hooks unlinked]\033[0m '
+  elif [[ "${hook_link}" != "${deploy_clone}/"* ]]; then
+    dev_segment=$'\033[1;31m[DEV hooks]\033[0m '
+  fi
+fi
+
+# --- deploy health (#453) -------------------------------------------------
+# Notifications get missed. A problem beats stale. Builtins only.
+deploy_segment=""
+deploy_state="${HOME}/.local/state/claude-config"
+if [[ -e "${deploy_clone}/.git" ]]; then
+  if [[ -f "${deploy_state}/deploy.problem" ]]; then
+    problem_key=""
+    { read -r problem_key <"${deploy_state}/deploy.problem"; } 2>/dev/null || true
+    # Keep a short safe token: no escape codes or long lines from the file.
+    problem_key="${problem_key//[^A-Za-z0-9._-]/}"
+    problem_key="${problem_key:0:24}"
+    printf -v deploy_segment '\033[1;31m[DEPLOY: %s]\033[0m ' "${problem_key:-unknown}"
+  else
+    stale_hours="${CLAUDE_CONFIG_DEPLOY_STALE_HOURS:-2}"
+    [[ "${stale_hours}" =~ ^[0-9]+$ ]] || stale_hours=2
+    ok_at=""
+    { read -r ok_at <"${deploy_state}/deploy.ok"; } 2>/dev/null || true
+    stale_age=""
+    if [[ ! -e "${deploy_state}/deploy.ok" ]]; then
+      stale_age="never"
+    elif [[ ! "${ok_at}" =~ ^[0-9]+$ ]]; then
+      stale_age="unreadable"
+    else
+      ok_age=$((${EPOCHSECONDS:-$(date +%s)} - 10#${ok_at}))
+      # A stamp from the future (clock change) counts as fresh, not stale.
+      if ((ok_age >= 0 && ok_age >= 10#${stale_hours} * 3600)); then
+        if ((ok_age >= 86400)); then
+          stale_age="$((ok_age / 86400))d"
+        elif ((ok_age >= 3600)); then
+          stale_age="$((ok_age / 3600))h"
+        else
+          stale_age="$((ok_age / 60))m"
+        fi
+      fi
+    fi
+    if [[ -n "${stale_age}" ]]; then
+      printf -v deploy_segment '\033[1;31m[DEPLOY stale %s]\033[0m ' "${stale_age}"
+    fi
+  fi
+fi
+
 user_name=$(whoami || true)
 host_name=$(hostname -s || true)
 
-printf "%s\033[32m%s@%s\033[0m:\033[34m%s\033[31m%s%s\033[0m%s%s" \
+printf "%s%s%s\033[32m%s@%s\033[0m:\033[34m%s\033[31m%s%s\033[0m%s%s" \
+  "${dev_segment}" \
+  "${deploy_segment}" \
   "${account_segment}" \
   "${user_name}" \
   "${host_name}" \

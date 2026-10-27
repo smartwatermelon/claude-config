@@ -46,6 +46,7 @@ _run_dispatcher() {
   [ "${status}" -eq 2 ]
   [[ "${output}" == *"hook-block-api-merge.sh (missing)"* ]]
   [[ "${output}" == *"install.sh --sync"* ]]
+  [[ "${output}" == *"claude-config-deploy"* ]]
 }
 
 @test "#660: a required hook that is not executable blocks and is named" {

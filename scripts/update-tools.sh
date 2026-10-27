@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ~/Developer/claude-config/scripts/update-tools.sh
+# scripts/update-tools.sh
 # Called by _claude_update() in bash profile.
 # Maintains symlink health and audits ~/.claude/.
 # Exit 0 always — must not break the update flow.
@@ -23,9 +23,19 @@ for arg in "$@"; do
 done
 
 # ── Constants ───────────────────────────────────────────
-REPO_DIR="${HOME}/Developer/claude-config"
+# REPO_DIR is the deployed copy, which repair and the audit act on. EDIT_DIR is where --learn writes, for a commit (#453).
+EDIT_DIR="${HOME}/Developer/claude-config"
+DEPLOY_CLONE="${HOME}/.local/share/claude-config"
 DEPLOY_DIR="${HOME}/.claude"
+REPO_DIR="${EDIT_DIR}"
+DEV_MODE=false
+if [[ -e "${DEPLOY_CLONE}/.git" ]]; then
+  REPO_DIR="${DEPLOY_CLONE}"
+  _hook_link="$(readlink "${DEPLOY_DIR}/hooks/run-review.sh" 2>/dev/null || true)"
+  [[ "${_hook_link}" == "${DEPLOY_CLONE}/"* ]] || DEV_MODE=true
+fi
 KNOWN_RUNTIME_FILE="${REPO_DIR}/scripts/known-runtime.txt"
+KNOWN_RUNTIME_LEARN_FILE="${EDIT_DIR}/scripts/known-runtime.txt"
 
 # ── Formatting helpers ──────────────────────────────────
 _info() { printf '\033[1;34m[INFO]\033[0m  %s\n' "$*"; }
@@ -38,7 +48,10 @@ _warn() { printf '\033[1;33m[WARN]\033[0m  %s\n' "$*"; }
 
 _info "Repairing symlinks..."
 
-if [[ -x "${REPO_DIR}/install.sh" ]]; then
+if ${DEV_MODE}; then
+  # A clone --repair would report every dev link as wrong; the working checkout's refuses. Deploying ends dev mode.
+  _warn "dev mode: ${DEPLOY_DIR} is not linked to ${DEPLOY_CLONE}; repair skipped. Run claude-config-deploy to end it."
+elif [[ -x "${REPO_DIR}/install.sh" ]]; then
   "${REPO_DIR}/install.sh" --repair
 else
   _warn "install.sh not found or not executable at ${REPO_DIR}/install.sh"
@@ -123,7 +136,7 @@ _append_known_runtime_entry() {
   section="$(_entry_section "${name}")"
   local header="# ${section}"
 
-  if grep -qxF "${header}" "${KNOWN_RUNTIME_FILE}"; then
+  if grep -qxF "${header}" "${KNOWN_RUNTIME_LEARN_FILE}"; then
     # in_section tracks whether we're inside the target section. On the
     # first line that ends the section (blank line, another '#' header, or
     # EOF via END{}) while still in_section, emit the new entry BEFORE that
@@ -142,11 +155,11 @@ _append_known_runtime_entry() {
           print
         }
         END { flush_if_needed() }
-      ' "${KNOWN_RUNTIME_FILE}" >"${KNOWN_RUNTIME_FILE}.tmp" \
-      && mv "${KNOWN_RUNTIME_FILE}.tmp" "${KNOWN_RUNTIME_FILE}"; then
+      ' "${KNOWN_RUNTIME_LEARN_FILE}" >"${KNOWN_RUNTIME_LEARN_FILE}.tmp" \
+      && mv "${KNOWN_RUNTIME_LEARN_FILE}.tmp" "${KNOWN_RUNTIME_LEARN_FILE}"; then
       return 0
     else
-      rm -f "${KNOWN_RUNTIME_FILE}.tmp"
+      rm -f "${KNOWN_RUNTIME_LEARN_FILE}.tmp"
       return 1
     fi
   else
@@ -157,7 +170,7 @@ _append_known_runtime_entry() {
     {
       printf '\n%s\n' "${header}"
       printf '%s\n' "${name}"
-    } >>"${KNOWN_RUNTIME_FILE}" || return 1
+    } >>"${KNOWN_RUNTIME_LEARN_FILE}" || return 1
   fi
 }
 
@@ -267,11 +280,11 @@ if [[ "${unknown_count}" -gt 0 ]]; then
         fi
       done
       if [[ -n "${_learn_failed_entry}" ]]; then
-        _warn "Failed to write entry '${_learn_failed_entry}' to ${KNOWN_RUNTIME_FILE} — stopped (${_learn_added_count} entries were added before the failure)"
+        _warn "Failed to write entry '${_learn_failed_entry}' to ${KNOWN_RUNTIME_LEARN_FILE} — stopped (${_learn_added_count} entries were added before the failure)"
       fi
       if [[ "${_learn_added_count}" -gt 0 ]]; then
-        _ok "Added ${_learn_added_count} entries to $(basename "${KNOWN_RUNTIME_FILE}") (categorized by type)"
-        _info "Review and commit: git -C ${REPO_DIR} diff scripts/known-runtime.txt"
+        _ok "Added ${_learn_added_count} entries to ${KNOWN_RUNTIME_LEARN_FILE} (categorized by type)"
+        _info "Review and commit: git -C ${EDIT_DIR} diff scripts/known-runtime.txt"
       fi
     fi
   else

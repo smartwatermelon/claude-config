@@ -4,35 +4,68 @@ Personal Claude Code configuration for Andrew Rich.
 
 ## Setup
 
-**Do NOT clone this repo directly into `~/.claude`.** The repo lives in your
-development directory and symlinks its tracked files into `~/.claude`.
+**Do NOT clone this repo directly into `~/.claude`.** Two checkouts exist on
+each machine (#453):
+
+- `~/Developer/claude-config`: the working checkout. Edit, branch, pull.
+- `~/.local/share/claude-config`: the deploy clone, always on `origin/main`.
+  `~/.claude` links into it. It sits outside the Claude Code sandbox's
+  writable paths, so no session can change the hooks that run. A branch
+  switch in the working checkout cannot reach them either.
 
 ```bash
-# 1. Clone into your development directory
+# 1. Clone the working checkout
 git clone git@github.com:smartwatermelon/claude-config.git ~/Developer/claude-config
 
-# 2. Run the install script to create symlinks into ~/.claude
-~/Developer/claude-config/install.sh
+# 2. Bootstrap (run in a terminal, not in Claude Code): clones the deploy
+#    clone over anonymous HTTPS, runs its install.sh --sync, and loads the
+#    LaunchAgent. Idempotent; safe to re-run.
+~/Developer/claude-config/scripts/claude-config-deploy.sh bootstrap
 ```
 
-That's it. All tracked files are now symlinked from `~/Developer/claude-config`
-into `~/.claude`. Runtime state (sessions, projects, telemetry, etc.) stays in
-`~/.claude` untouched.
+Runtime state (sessions, projects, telemetry, etc.) stays in `~/.claude`
+untouched.
 
 ### How it works
 
 `install.sh` discovers tracked files via `git ls-files` and creates per-file
-symlinks from the repo into `~/.claude`. Submodule directories get
-directory-level symlinks. Repo-meta files (`.github/`, tests, README, etc.)
-are excluded.
+symlinks from the checkout it lives in into `~/.claude`. Repo-meta files
+(`.github/`, tests, README, etc.) are excluded.
 
 ```
-~/Developer/claude-config/settings.json  -->  ~/.claude/settings.json  (symlink)
-~/Developer/claude-config/hooks/run-review.sh  -->  ~/.claude/hooks/run-review.sh  (symlink)
+~/.local/share/claude-config/settings.json  -->  ~/.claude/settings.json  (symlink)
+~/.local/share/claude-config/hooks/run-review.sh  -->  ~/.claude/hooks/run-review.sh  (symlink)
 ```
 
-Edits to symlinked files (by you or Claude Code) write through to the repo,
-so changes show up as unstaged diffs in `~/Developer/claude-config`.
+### Deploying
+
+The LaunchAgent `com.smartwatermelon.claude-config-deploy` runs
+`claude-config-deploy.sh deploy --scheduled` every 10 minutes. It fetches
+origin; when `main` moved it fast-forwards the clone and runs the clone's
+`install.sh --sync`. It refuses, logs and notifies (and changes nothing) when
+the clone has local changes, is off `main`, or cannot fast-forward.
+
+| Command | Effect |
+|---------|--------|
+| `claude-config-deploy` | Deploy `origin/main` now; also ends dev mode |
+| `claude-config-deploy status` | Clone commit, link mode, agent state, last log lines |
+| `claude-config-deploy uninstall` | Remove the LaunchAgent and the command link; keeps the clone |
+| `~/Developer/claude-config/install.sh --dev` | Dev mode: link `~/.claude` to the working checkout |
+
+Log: `~/.local/state/claude-config/deploy.log`. Exit codes: 0 ok, 1 failed,
+2 refused, 3 another run holds the lock, 64 usage.
+
+**Dev mode** is for testing a hook change before it merges. The status line
+shows `[DEV hooks]`, SessionStart prints a notice, and each scheduled run logs
+it. The LaunchAgent leaves dev mode alone for 12 hours
+(`CLAUDE_CONFIG_DEV_TTL_HOURS`), then redeploys `main`, so a machine is not
+left in it by accident. `claude-config-deploy` ends it at once.
+
+Once the deploy clone exists, the working checkout's script hands every run
+except `--dev` to the clone. A `--sync` or full install runs
+`claude-config-deploy`. A `--repair` or `--dry-run` runs the clone's copy of
+the script. So old instructions, and the dotfiles `allup` and `dotclaude`
+functions, deploy `main` instead of relinking the working tree.
 
 ### install.sh flags
 
@@ -41,22 +74,28 @@ so changes show up as unstaged diffs in `~/Developer/claude-config`.
 | `--dry-run` | Show what would be done without making changes |
 | `--repair` | Fix broken symlinks (atomic write recovery) |
 | `--sync` | Repair, then link newly added files |
+| `--dev` | Working checkout only: link `~/.claude` to it until the next deploy |
 | `--help` | Show usage |
 
 The script is idempotent — safe to run repeatedly.
 
-Every mode also prunes stale links: a link in `~/.claude` that points into
-this repo at a file that no longer exists is removed, along with any
-directory that leaves empty. Links pointing anywhere else are never touched.
+Every mode also prunes stale links. A link in `~/.claude` that points into
+this repo at a missing file is removed, and so is any directory that leaves
+empty. `--sync` from one checkout also removes links
+into the other checkout for files it does not track (dev-mode leftovers).
+Links pointing anywhere else are never touched.
 
 ### Ongoing maintenance: update-tools.sh
 
 `scripts/update-tools.sh` is called automatically by the `updates` shell
 command (via `_claude_update()`). It:
 
-1. **Repairs** broken symlinks via `install.sh --repair`
-2. **Audits** `~/.claude` — categorizes entries as symlinked (repo-managed),
-   known-runtime (Claude Code managed), or unknown (needs human triage)
+1. **Repairs** broken symlinks via the deploy clone's `install.sh --repair`
+   (skipped in dev mode)
+2. **Audits** `~/.claude`: categorizes entries as symlinked (repo-managed),
+   known-runtime (Claude Code managed), or unknown (needs human triage).
+   `--learn` writes new entries to the working checkout's
+   `scripts/known-runtime.txt`, for a commit.
 
 ### Submodules
 
@@ -215,6 +254,7 @@ See `CLAUDE.md` for protocol documentation.
 `install.sh` links these into `~/.local/bin` or `~/Applications`, pointing at the deployed copy in `~/.claude`:
 
 - **merge-lock.command** (`hooks/merge-lock.command`, in `~/Applications`) — double-click launcher that opens `merge-lock tui` in a new Terminal window
+- **claude-config-deploy** (`scripts/claude-config-deploy.sh`): linked by `claude-config-deploy.sh bootstrap`, not `install.sh`. The link goes straight to the deploy clone's copy, not through `~/.claude`, so dev mode cannot redirect the deploy command.
 - **claude-incognito** (`scripts/claude-incognito.sh`) — one-shot `claude -p` run that leaves no transcript, `/resume` entry, or `history.jsonl` line (print mode only). Defaults to `--permission-mode bypassPermissions` and denies only the claude.ai Slack connector so the Slack plugin and Claude Docs both load; see the script header
 
 ## Reference

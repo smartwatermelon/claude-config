@@ -121,6 +121,25 @@ scope() {
 }
 
 # The skip is safe only while no suite reads known-runtime.txt. A suite that starts to must update the script first.
+# Exempt, line by line: test-update-tools-deploy-clone.sh runs update-tools.sh with HOME in a mktemp dir and its own
+# fixture known-runtime.txt (#453). Any other line in that file that matches still fails.
+_reviewed_hits() {
+  cat <<'EOF'
+SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/update-tools.sh"
+  printf '# Directories\nprojects\n\n# Files\n.claude.json\n' >"${dir}/scripts/known-runtime.txt"
+echo "=== update-tools.sh and the deploy clone ==="
+check "--learn: writes the working checkout's known-runtime.txt" grep -qx newthing "${DEV}/scripts/known-runtime.txt"
+EOF
+}
+
+# Drops a hit only when its file is the exempt suite and its text is exactly one of the reviewed lines.
+_drop_reviewed() {
+  local list="${BATS_TEST_TMPDIR:?}/reviewed-hits"
+  _reviewed_hits >"${list}"
+  awk -v exempt='/scripts/tests/test-update-tools-deploy-clone.sh' 'NR == FNR { ok[$0] = 1; next }
+    { i = index($0, ":"); f = substr($0, 1, i - 1); rest = substr($0, i + 1); j = index(rest, ":"); t = substr(rest, j + 1) }
+    !(substr(f, length(f) - length(exempt) + 1) == exempt && (t in ok))' "${list}" -
+}
 
 @test "no test suite reads known-runtime.txt or runs update-tools.sh" {
   local hits dir
@@ -130,10 +149,24 @@ scope() {
   done
   hits="$(grep -rnE 'known-runtime|update-tools\.sh' "${REPO_ROOT}/tests" "${REPO_ROOT}/scripts/tests" \
     "${REPO_ROOT}/hooks/tests" "${REPO_ROOT}/test-pre-merge-review.sh" \
-    | grep -v '/tests/test_ci_tests_scope\.bats:' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+    | grep -v '/tests/test_ci_tests_scope\.bats:' | _drop_reviewed \
+    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
   if [[ -n "${hits}" ]]; then
     echo "these suite lines touch known-runtime.txt; make ci-tests-scope.sh stop skipping for it:"
     echo "${hits}"
     return 1
   fi
+}
+
+@test "the line exemption still catches a new hit in the exempt suite" {
+  local out
+  local line="x/scripts/tests/test-update-tools-deploy-clone.sh:99:cat \"\${REPO_ROOT}/scripts/known-runtime.txt\""
+  out="$(_drop_reviewed <<<"${line}")"
+  [ "${out}" = "${line}" ]
+  local ok='x/scripts/tests/test-update-tools-deploy-clone.sh:59:echo "=== update-tools.sh and the deploy clone ==="'
+  out="$(_drop_reviewed <<<"${ok}")"
+  [ -z "${out}" ]
+  local other='x/scripts/tests/test-other.sh:59:echo "=== update-tools.sh and the deploy clone ==="'
+  out="$(_drop_reviewed <<<"${other}")"
+  [ "${out}" = "${other}" ]
 }

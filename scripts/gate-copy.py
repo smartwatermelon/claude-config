@@ -72,7 +72,7 @@ def load_conf(path):
     except (OSError, UnicodeDecodeError) as e:
         raise ConfError(
             f"copy paths file not found or unreadable: {path} ({e}); "
-            "to deploy it, run install.sh --sync in the claude-config repo"
+            "to deploy it, run claude-config-deploy in a terminal"
         ) from e
     rules = {}
     public = ([], [])

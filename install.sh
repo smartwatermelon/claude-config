@@ -15,6 +15,8 @@ unset CDPATH
 # Idempotent symlink installer for Claude Code configuration.
 # Creates per-file symlinks from this repo into ~/.claude/.
 # Safe to re-run at any time — checks before acting.
+#
+# ~/.claude deploys from ~/.local/share/claude-config; the working checkout hands off to it (#453).
 
 # ── Formatting helpers ───────────────────────────────────
 _info() { printf '\033[1;34m[INFO]\033[0m  %s\n' "$*"; }
@@ -42,27 +44,41 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="${HOME}/.claude"
 BACKUP_DIR="${DEPLOY_DIR}/backups/symlink-migration"
 
+# Fixed, not XDG: launchd lacks the shell's exports. The deploy script,
+# status line and SessionStart hook share them (#453).
+DEPLOY_CLONE="${HOME}/.local/share/claude-config"
+DEV_CHECKOUT="${HOME}/Developer/claude-config"
+DEV_MARKER="${HOME}/.local/state/claude-config/dev-mode"
+
 # ── Parse arguments ─────────────────────────────────────
 DRY_RUN=false
 REPAIR_ONLY=false
 SYNC_ONLY=false
+DEV_MODE=false
+_usage="Usage: install.sh [--dry-run] [--repair] [--sync] [--dev] [--help]"
 for arg in "$@"; do
   case "${arg}" in
     --dry-run) DRY_RUN=true ;;
     --repair) REPAIR_ONLY=true ;;
     --sync) SYNC_ONLY=true ;;
+    --dev) DEV_MODE=true ;;
     --help)
-      echo "Usage: install.sh [--dry-run] [--repair] [--sync] [--help]"
+      echo "${_usage}"
       echo ""
       echo "  --dry-run  Show what would be done without making changes"
       echo "  --repair   Repair broken symlinks only (no new installs)"
       echo "  --sync     Repair broken symlinks AND install newly-added files"
+      echo "  --dev      From the working checkout: link ~/.claude to it until"
+      echo "             the next deploy (claude-config-deploy ends it)"
       echo "  --help     Show this help message"
+      echo ""
+      echo "Once ${DEPLOY_CLONE} exists, only its install.sh links"
+      echo "${DEPLOY_DIR} without --dev. Deploy with: claude-config-deploy"
       exit 0
       ;;
     *)
       _err "Unknown argument: ${arg}"
-      echo "Usage: install.sh [--dry-run] [--repair] [--sync] [--help]"
+      echo "${_usage}"
       exit 1
       ;;
   esac
@@ -71,6 +87,53 @@ done
 if [[ "${REPAIR_ONLY}" == true && "${SYNC_ONLY}" == true ]]; then
   _err "--repair and --sync are mutually exclusive (--sync already repairs)"
   exit 1
+fi
+
+if [[ "${REPAIR_ONLY}" == true && "${DEV_MODE}" == true ]]; then
+  _err "--dev and --repair are mutually exclusive (--dev relinks everything, as --sync does)"
+  exit 1
+fi
+
+# ── Deploy clone guard (#453) ────────────────────────────
+# Physical paths, so a symlinked HOME or TMPDIR cannot hide the clone.
+IS_DEPLOY_CLONE=false
+CLONE_EXISTS=false
+if [[ -e "${DEPLOY_CLONE}/.git" ]]; then
+  CLONE_EXISTS=true
+  _phys_clone="$(cd "${DEPLOY_CLONE}" && pwd -P)" || _phys_clone=""
+  _phys_repo="$(cd "${REPO_DIR}" && pwd -P)" || _phys_repo=""
+  if [[ -n "${_phys_clone}" && "${_phys_clone}" == "${_phys_repo}" ]]; then
+    IS_DEPLOY_CLONE=true
+  fi
+fi
+
+if [[ "${DEV_MODE}" == true && "${IS_DEPLOY_CLONE}" == true ]]; then
+  _err "--dev is for the working checkout, not the deploy clone (${DEPLOY_CLONE})."
+  _err "Run it as: ${DEV_CHECKOUT}/install.sh --dev"
+  exit 1
+fi
+
+# Hand every run but --dev to the clone, so old docs and allup deploy main.
+if [[ "${CLONE_EXISTS}" == true && "${IS_DEPLOY_CLONE}" == false && "${DEV_MODE}" == false ]]; then
+  _info "${REPO_DIR} is the working checkout; ~/.claude deploys from ${DEPLOY_CLONE} (#453)."
+  _info "To test this checkout's hooks instead: ${REPO_DIR}/install.sh --dev"
+  if [[ "${DRY_RUN}" == true || "${REPAIR_ONLY}" == true ]]; then
+    _info "Running the clone's install.sh $*"
+    exec bash "${DEPLOY_CLONE}/install.sh" "$@"
+  fi
+  _deploy_script="${DEPLOY_CLONE}/scripts/claude-config-deploy.sh"
+  if [[ ! -x "${_deploy_script}" ]]; then
+    _err "Refusing: no executable ${_deploy_script}, so this cannot deploy, and linking from here would undo the clone."
+    _err "Re-run the bootstrap, or use ${REPO_DIR}/install.sh --dev"
+    exit 1
+  fi
+  _info "Running claude-config-deploy (${_deploy_script} deploy)"
+  exec "${_deploy_script}" deploy
+fi
+
+# --dev relinks every tracked file, exactly as --sync does.
+if [[ "${DEV_MODE}" == true ]]; then
+  SYNC_ONLY=true
 fi
 
 if [[ "${DRY_RUN}" == true ]]; then
@@ -358,11 +421,32 @@ repair_symlinks() {
         ((repair_count += 1))
         continue
       fi
-      # Compare content — if deploy copy has edits, preserve them and stage
+      # Compare content — if deploy copy has edits, preserve them and stage.
+      # Never into the clone (#453): a dirty clone stops every deploy.
       if ! diff -q "${link}" "${target}" &>/dev/null; then
-        _warn "Content differs — copying ${link} back to repo and staging"
-        cp "${link}" "${target}"
-        git -C "${REPO_DIR}" add "${file}" || _warn "git add failed for ${file} — stage manually"
+        if ${IS_DEPLOY_CLONE}; then
+          mkdir -p "${BACKUP_DIR}"
+          local backup_name
+          backup_name="${file//\//_}.$(date +%Y%m%d%H%M%S)"
+          cp "${link}" "${BACKUP_DIR}/${backup_name}"
+          _warn "Content differs — Backed up ${link} to ${BACKUP_DIR}/${backup_name}"
+          # Unstaged in the working checkout, so it shows as a diff to commit. Never over uncommitted work there.
+          local dev_copy="${DEV_CHECKOUT}/${file}"
+          if [[ ! -e "${DEV_CHECKOUT}/.git" ]]; then
+            _warn "Port the edit to ${DEV_CHECKOUT} to keep it"
+          elif ! git -C "${DEV_CHECKOUT}" diff --quiet HEAD -- "${file}" 2>/dev/null ||
+            { [[ -e "${dev_copy}" ]] && ! git -C "${DEV_CHECKOUT}" ls-files --error-unmatch -- "${file}" &>/dev/null; }; then
+            _warn "${dev_copy} has uncommitted changes, so it was left alone; port the edit from the backup"
+          elif mkdir -p "$(dirname "${dev_copy}")" && cp "${link}" "${dev_copy}"; then
+            _warn "Copied the edit to ${dev_copy} (unstaged); commit it there to keep it"
+          else
+            _warn "Could not copy the edit to ${dev_copy}; port it from the backup"
+          fi
+        else
+          _warn "Content differs — copying ${link} back to repo and staging"
+          cp "${link}" "${target}"
+          git -C "${REPO_DIR}" add "${file}" || _warn "git add failed for ${file} — stage manually"
+        fi
       fi
       rm "${link}"
       ln -s "${target}" "${link}"
@@ -392,14 +476,39 @@ repair_symlinks() {
 # The -prune list only skips large runtime trees for speed; correctness does
 # not depend on it.
 
+# Links into the other checkout (#453) are dev-mode leftovers for untracked files.
+# --sync removes them; --repair only when dangling.
+OTHER_CHECKOUTS=("${DEPLOY_CLONE}")
+if ${IS_DEPLOY_CLONE}; then
+  OTHER_CHECKOUTS=("${DEV_CHECKOUT}")
+  # A --dev run from a checkout elsewhere names itself in the marker.
+  _marker_path="$(sed -n 's/^path=//p' "${DEV_MARKER}" 2>/dev/null || true)"
+  if [[ "${_marker_path}" == /* && "${_marker_path}" != "${DEV_CHECKOUT}" ]]; then
+    OTHER_CHECKOUTS+=("${_marker_path}")
+  fi
+fi
+
+_in_other_checkout() {
+  local root
+  for root in "${OTHER_CHECKOUTS[@]}"; do
+    [[ "$1" == "${root}/"* ]] && return 0
+  done
+  return 1
+}
+
 prune_stale_symlinks() {
   local link target dir
   local prune_dirs=()
 
   while IFS= read -r -d '' link; do
     target="$(readlink "${link}")" || continue
-    [[ "${target}" == "${REPO_DIR}/"* ]] || continue
-    [[ -e "${link}" ]] && continue
+    if [[ "${target}" == "${REPO_DIR}/"* ]]; then
+      [[ -e "${link}" ]] && continue
+    elif _in_other_checkout "${target}"; then
+      ${REPAIR_ONLY} && [[ -e "${link}" ]] && continue
+    else
+      continue
+    fi
 
     if [[ "${DRY_RUN}" == true ]]; then
       _dry "Would remove stale symlink: ${link} -> ${target}"
@@ -488,6 +597,28 @@ done
 
 # Runs after the main loop so a file re-added to the repo is relinked first.
 prune_stale_symlinks
+
+# ── Dev-mode marker (#453) ───────────────────────────────
+# Says when and from where. --dev writes it; a clone run removes it.
+if [[ "${DRY_RUN}" == true ]]; then
+  :
+elif ${DEV_MODE}; then
+  _dev_since="$(date +%s)"
+  if mkdir -p "${DEV_MARKER%/*}" &&
+    printf 'path=%s\nsince=%s\n' "${REPO_DIR}" "${_dev_since}" >"${DEV_MARKER}"; then
+    _warn "DEV MODE: ~/.claude now runs ${REPO_DIR}. claude-config-deploy ends it."
+  else
+    _err "Linked ~/.claude to ${REPO_DIR} but could not write ${DEV_MARKER}"
+    failures+=("dev-marker:${DEV_MARKER}")
+  fi
+elif ${IS_DEPLOY_CLONE} && [[ -e "${DEV_MARKER}" ]]; then
+  if "${CLAUDE_CONFIG_RM_BIN:-rm}" -f "${DEV_MARKER}"; then
+    _ok "Dev mode ended: ~/.claude runs the deploy clone again"
+  else
+    _err "Could not remove ${DEV_MARKER}"
+    failures+=("dev-marker:${DEV_MARKER}")
+  fi
+fi
 
 # ============================================================================
 # 6. SUBMODULE SYMLINKS (directory-level)
