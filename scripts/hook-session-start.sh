@@ -80,7 +80,7 @@ if [[ -e "${deploy_clone}/.git" ]]; then
     { read -r problem_key <"${deploy_state}/deploy.problem"; } 2>/dev/null || true
     problem_key="${problem_key//[^A-Za-z0-9._-]/}"
     problem_key="${problem_key:0:24}"
-    deploy_notice="claude-config DEPLOY PROBLEM (${problem_key:-unknown}): the last scheduled deploy refused or failed,"
+    deploy_notice="claude-config DEPLOY PROBLEM (${problem_key:-unknown}): the last deploy run refused or failed,"
     deploy_notice+=" so ~/.claude may not be on origin/main. Details: ${deploy_log}."
     deploy_notice+=" Next: run claude-config-deploy status in a terminal."
   else
