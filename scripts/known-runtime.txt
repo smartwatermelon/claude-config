@@ -41,6 +41,11 @@ usage-data
 gate-review
 state
 handoffs
+account-labels
+bridge-spawn
+dev-mods
+seed-admin
+ssh
 
 # Files
 .claude.json
@@ -66,3 +71,4 @@ remote-settings.json.synced-at
 daemon.lock
 daemon.status.json
 policy-limits.json.signature.json
+.cc-writes
