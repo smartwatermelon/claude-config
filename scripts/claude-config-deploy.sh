@@ -395,12 +395,19 @@ remove_cron() {
   _log "removed the cron entry"
 }
 
+# Never fails: a leftover agent only runs alongside cron, and the deploy lock stops overlapping runs.
 remove_agent() {
   if "${LAUNCHCTL_BIN}" bootout "${DOMAIN}/${LABEL}" >/dev/null 2>&1; then
     _log "booted out ${DOMAIN}/${LABEL}"
+  elif "${LAUNCHCTL_BIN}" print "${DOMAIN}/${LABEL}" >/dev/null 2>&1; then
+    _log "warning: ${DOMAIN}/${LABEL} is still loaded; run: launchctl bootout ${DOMAIN}/${LABEL}"
   fi
   if [[ -f "${PLIST}" ]]; then
-    "${RM_BIN}" -f "${PLIST}" && _log "removed ${PLIST}"
+    if "${RM_BIN}" -f "${PLIST}"; then
+      _log "removed ${PLIST}"
+    else
+      _log "warning: could not remove ${PLIST}; remove it by hand"
+    fi
   fi
   return 0
 }

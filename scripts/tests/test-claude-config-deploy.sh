@@ -79,6 +79,7 @@ printf '%s\n' "$*" >>"${STUB_LAUNCHCTL_LOG}"
 # `print gui/N` (no label) asks whether the GUI domain exists: STUB_GUI_RC=125 is a host with no login.
 [[ "$1" == print && "$2" != */*/* ]] && exit "${STUB_GUI_RC:-0}"
 [[ "$1" == print ]] && exit "${STUB_LOADED_RC:-113}"
+[[ "$1" == bootout ]] && exit "${STUB_BOOTOUT_RC:-0}"
 exit 0
 EOF
   # crontab stub: the table lives in ${STUB_CRONTAB}; -l on a missing file says "no crontab" like macOS.
@@ -116,7 +117,7 @@ EOF
   export CLAUDE_CONFIG_LAUNCHCTL_BIN="${T}/bin/launchctl"
   export CLAUDE_CONFIG_OSASCRIPT_BIN="${T}/bin/osascript"
   export CLAUDE_CONFIG_CRONTAB_BIN="${T}/bin/crontab"
-  unset STUB_INSTALL_RC STUB_LOADED_RC STUB_GUI_RC STUB_CRONTAB_L_FAIL CLAUDE_CONFIG_SCHEDULER
+  unset STUB_INSTALL_RC STUB_LOADED_RC STUB_GUI_RC STUB_BOOTOUT_RC STUB_CRONTAB_L_FAIL CLAUDE_CONFIG_SCHEDULER
   unset CLAUDE_CONFIG_DEV_TTL_HOURS CLAUDE_CONFIG_MV_BIN
   touch "${STUB_INSTALL_LOG}" "${STUB_LAUNCHCTL_LOG}" "${STUB_NOTIFY_LOG}" "${STUB_CRONTAB_LOG}"
 }
@@ -494,6 +495,13 @@ check "headless after gui: plist removed" test ! -e "${PLIST}"
 check "headless after gui: agent booted out" \
   grep -qx "bootout gui/${UID_N}/com.smartwatermelon.claude-config-deploy" "${STUB_LAUNCHCTL_LOG}"
 check_eq "headless after gui: one cron entry" 1 cron_lines
+
+# A bootout that fails while the agent stays loaded is reported, not hidden; cron is still installed.
+fresh
+STUB_GUI_RC=125 STUB_BOOTOUT_RC=5 STUB_LOADED_RC=0 run_deploy bootstrap
+check "bootout fails, agent loaded: exit 0" test "${rc}" -eq 0
+check "bootout fails, agent loaded: warns with the command" grep -q "still loaded; run: launchctl bootout" <<<"${out}"
+check_eq "bootout fails, agent loaded: cron entry installed" 1 cron_lines
 
 # CLAUDE_CONFIG_SCHEDULER overrides detection; any other value is refused before anything changes.
 fresh
