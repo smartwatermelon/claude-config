@@ -103,6 +103,18 @@ _case "cd, then a subshell" 2 "cd combined with parentheses" "${BEACON}" \
   "cd ${PERSONAL} && (git commit -F ${TXT})"
 _case "cd, then \$( )" 2 "cd combined with parentheses" "${BEACON}" \
   "cd ${PERSONAL} && echo \$(true) && gh pr create --title \"fix(x): y\" --body-file ${TXT}"
+_case "cd, then \"\$( )\" inside double quotes" 2 "cd combined with parentheses" "${BEACON}" \
+  "cd ${PERSONAL} && echo \"\$(true)\" && git commit -F ${TXT}"
+_case "cd, then \$( ) in an unquoted-delimiter heredoc" 2 "cd combined with parentheses" "${BEACON}" \
+  "cd ${PERSONAL} && cat > ${TMP}/scratchpad/n.txt <<EOF
+\$(true)
+EOF
+git commit -F ${TXT}"
+_case "\$( ) text in a quoted-delimiter heredoc is not live" 0 "" "${BEACON}" \
+  "cd ${PERSONAL} && cat > ${TMP}/scratchpad/n.txt <<'EOF'
+\$(true)
+EOF
+git commit -F ${TXT}"
 _case "a quoted ( cannot hide a real )" 2 "cd combined with parentheses" "${BEACON}" \
   "(cd ${PERSONAL} && echo \"(x\" && true); git commit -F ${TXT}"
 _case "cd inside \$( ) is still untracked" 2 "cannot resolve" "${BEACON}" \

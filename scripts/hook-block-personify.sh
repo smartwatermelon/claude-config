@@ -281,6 +281,8 @@ _bare_parens() {
       line = $0
       if (hd) {
         chk = line
+        # An unquoted delimiter leaves $( ) in the body live.
+        if (!hquote[hd] && index(line, "$(")) found = 1
         if (hstrip[hd]) sub(/^\t+/, "", chk)
         if (chk == hdelim[hd]) { hd++; if (hd > np) { hd = 0; np = 0 } }
         next
@@ -295,7 +297,12 @@ _bare_parens() {
           if (c == "\047") q = 0; i++; continue
         }
         if (c == "\\") { i += 2; continue }
-        if (q == 2) { if (c == "\"") q = 0; i++; continue }
+        if (q == 2) {
+          # "$( )" still runs a command inside double quotes.
+          if (c == "$" && nx == "(") found = 1
+          if (c == "\"") q = 0
+          i++; continue
+        }
         if (c == "#" && (prev == "" || prev ~ /[[:space:];&|()<>]/)) break
         if (c == "\047") { q = 1; i++; continue }
         if (c == "\"") { q = 2; i++; continue }
@@ -307,8 +314,9 @@ _bare_parens() {
           sub(/^[ \t]+/, "", rest)
           if (match(rest, /^[^ \t;&|()<>]+/)) {
             w = substr(rest, 1, RLENGTH)
+            quoted = (w ~ /[\047"\\]/)
             gsub(/[\047"\\]/, "", w)
-            if (w != "") { np++; hdelim[np] = w; hstrip[np] = strip }
+            if (w != "") { np++; hdelim[np] = w; hstrip[np] = strip; hquote[np] = quoted }
           }
           i += 2; continue
         }
