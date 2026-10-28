@@ -95,6 +95,7 @@ check "name over 100-char limit" 2 "${inp}"
 # Fixtures live under a private temp dir; nothing here deletes or writes
 # outside it.
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/enter-wt-test.XXXXXX")"
+trap 'rm -rf "${fixture:?}"' EXIT
 repo="${fixture}/repo"
 mkdir -p "${repo}/.claude/worktrees/good-wt" "${repo}/.claude/worktrees/no-git" \
   "${repo}/elsewhere"
@@ -125,6 +126,10 @@ inp="$(make_path_input ".claude/worktrees/good-wt")"
 check "path: relative" 2 "${inp}"
 inp="$(jq -n --arg path "${repo}/.claude/worktrees/good-wt" '{"tool_input":{"name":"x","path":$path}}')"
 check "path and name together" 2 "${inp}"
+
+# Malformed input must fail closed (exit 2), not exit 1, which Claude Code
+# treats as a non-blocking hook error.
+check "malformed JSON input" 2 'not json {'
 
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"

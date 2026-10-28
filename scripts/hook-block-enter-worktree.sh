@@ -36,7 +36,8 @@ input=$(cat)
 # `good\nEVIL`, survives and is correctly denied by the anchored regex below.
 # A future refactor to `jq -j` or a `read -r`-based read would remove that
 # stripping and change this behavior -- re-test the newline cases if you touch it.
-name=$(printf '%s\n' "${input}" | jq -r '.tool_input.name // empty')
+parse_failed=""
+name=$(printf '%s\n' "${input}" | jq -r '.tool_input.name // empty') || parse_failed=1
 
 deny() {
   local reason="${1}"
@@ -65,7 +66,10 @@ deny_path() {
   exit 2
 }
 
-path=$(printf '%s\n' "${input}" | jq -r '.tool_input.path // empty')
+# Unparseable input denies (exit 2): exit 1 is a non-blocking hook error.
+[[ -z "${parse_failed}" ]] || deny "EnterWorktree hook input could not be parsed"
+path=$(printf '%s\n' "${input}" | jq -r '.tool_input.path // empty') ||
+  deny_path "EnterWorktree hook input could not be parsed"
 if [[ -n "${path}" ]]; then
   [[ -z "${name}" ]] || deny_path "EnterWorktree takes name or path, not both"
   [[ "${path}" == /* ]] || deny_path "EnterWorktree path must be absolute (got: ${path})"
