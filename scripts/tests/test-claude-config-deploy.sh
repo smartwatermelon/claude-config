@@ -76,22 +76,49 @@ EOF
   cat >"${T}/bin/launchctl" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${STUB_LAUNCHCTL_LOG}"
+# `print gui/N` (no label) asks whether the GUI domain exists: STUB_GUI_RC=125 is a host with no login.
+[[ "$1" == print && "$2" != */*/* ]] && exit "${STUB_GUI_RC:-0}"
 [[ "$1" == print ]] && exit "${STUB_LOADED_RC:-113}"
 exit 0
+EOF
+  # crontab stub: the table lives in ${STUB_CRONTAB}; -l on a missing file says "no crontab" like macOS.
+  cat >"${T}/bin/crontab" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${STUB_CRONTAB_LOG}"
+if [[ "$1" == -l ]]; then
+  if [[ -n "${STUB_CRONTAB_L_FAIL:-}" ]]; then
+    echo "crontab: ${STUB_CRONTAB_L_FAIL}" >&2
+    exit 1
+  fi
+  if [[ ! -f "${STUB_CRONTAB}" ]]; then
+    echo "crontab: no crontab for tester" >&2
+    exit 1
+  fi
+  cat "${STUB_CRONTAB}"
+  exit 0
+fi
+if [[ "$1" == - ]]; then
+  cat >"${STUB_CRONTAB}"
+  exit 0
+fi
+exit 2
 EOF
   cat >"${T}/bin/osascript" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${STUB_NOTIFY_LOG}"
 EOF
-  chmod +x "${T}/bin/launchctl" "${T}/bin/osascript"
+  chmod +x "${T}/bin/launchctl" "${T}/bin/osascript" "${T}/bin/crontab"
 
   export STUB_INSTALL_LOG="${T}/install.log" STUB_LAUNCHCTL_LOG="${T}/launchctl.log"
   export STUB_NOTIFY_LOG="${T}/notify.log"
+  export STUB_CRONTAB="${T}/crontab.txt" STUB_CRONTAB_LOG="${T}/crontab.log"
   export CLAUDE_CONFIG_DEPLOY_URL="${ORIGIN}"
   export CLAUDE_CONFIG_LAUNCHCTL_BIN="${T}/bin/launchctl"
   export CLAUDE_CONFIG_OSASCRIPT_BIN="${T}/bin/osascript"
-  unset STUB_INSTALL_RC STUB_LOADED_RC CLAUDE_CONFIG_DEV_TTL_HOURS CLAUDE_CONFIG_MV_BIN
-  touch "${STUB_INSTALL_LOG}" "${STUB_LAUNCHCTL_LOG}" "${STUB_NOTIFY_LOG}"
+  export CLAUDE_CONFIG_CRONTAB_BIN="${T}/bin/crontab"
+  unset STUB_INSTALL_RC STUB_LOADED_RC STUB_GUI_RC STUB_CRONTAB_L_FAIL CLAUDE_CONFIG_SCHEDULER
+  unset CLAUDE_CONFIG_DEV_TTL_HOURS CLAUDE_CONFIG_MV_BIN
+  touch "${STUB_INSTALL_LOG}" "${STUB_LAUNCHCTL_LOG}" "${STUB_NOTIFY_LOG}" "${STUB_CRONTAB_LOG}"
 }
 
 make_clone() { gitq clone -q --branch main "${ORIGIN}" "${CLONE}"; }
@@ -398,7 +425,115 @@ check "uninstall: plist removed" test ! -e "${PLIST}"
 check "uninstall: command link removed" test ! -L "${HOME}/.local/bin/claude-config-deploy"
 check "uninstall: clone kept" test -d "${CLONE}/.git"
 
+# --- headless host: cron instead of the LaunchAgent (#802) ----------------------
+
+# 125: what `launchctl print gui/501` returned on TILSIT with no login.
+CRON_TAG="# com.smartwatermelon.claude-config-deploy"
+USER_CRON='*/5 * * * * /Users/x/.local/bin/handoff-sync.sh >/dev/null 2>&1'
+cron_lines() {
+  if [[ -f "${STUB_CRONTAB}" ]]; then grep -cF -- "${CRON_TAG}" "${STUB_CRONTAB}" || true; else echo 0; fi
+}
+cron_writes() { grep -cx -- '-' "${STUB_CRONTAB_LOG}" || true; }
+no_match() { ! grep -q -- "$1" "$2"; }
+
+fresh
+printf '%s\n' "${USER_CRON}" >"${STUB_CRONTAB}"
+STUB_GUI_RC=125 run_deploy bootstrap
+check "headless bootstrap: exit 0" test "${rc}" -eq 0
+check "headless bootstrap: no LaunchAgent bootstrapped" no_match "^bootstrap " "${STUB_LAUNCHCTL_LOG}"
+check "headless bootstrap: no plist written" test ! -e "${PLIST}"
+check_eq "headless bootstrap: one cron entry" 1 cron_lines
+check "headless bootstrap: entry runs every 10 minutes with a PATH" grep -qF "*/10 * * * * PATH=/opt/homebrew/bin:" "${STUB_CRONTAB}"
+check "headless bootstrap: entry runs the clone's scheduled deploy" \
+  grep -qF "'${CLONE}/scripts/claude-config-deploy.sh' deploy --scheduled" "${STUB_CRONTAB}"
+check "headless bootstrap: the user's other cron entry is kept" grep -qxF "${USER_CRON}" "${STUB_CRONTAB}"
+check "headless bootstrap: says it used cron" grep -qi "cron" <<<"${out}"
+
+before="$(cron_writes)"
+STUB_GUI_RC=125 run_clone_script bootstrap
+check "headless re-run: exit 0" test "${rc}" -eq 0
+check_eq "headless re-run: still one cron entry" 1 cron_lines
+check_eq "headless re-run: crontab not rewritten" "${before}" cron_writes
+check "headless re-run: the user's entry is kept" grep -qxF "${USER_CRON}" "${STUB_CRONTAB}"
+
+# A crontab -l failure other than "no crontab" must never lead to a write: it could wipe the user's table.
+fresh
+printf '%s\n' "${USER_CRON}" >"${STUB_CRONTAB}"
+STUB_GUI_RC=125 STUB_CRONTAB_L_FAIL="tmp/x: Operation not permitted" run_deploy bootstrap
+check "crontab -l fails: bootstrap fails" test "${rc}" -ne 0
+check_eq "crontab -l fails: crontab never written" 0 cron_writes
+check "crontab -l fails: table unchanged" grep -qxF "${USER_CRON}" "${STUB_CRONTAB}"
+
+# No crontab yet: the "no crontab" message is an empty table, not an error.
+fresh
+STUB_GUI_RC=125 run_deploy bootstrap
+check "no crontab yet: exit 0" test "${rc}" -eq 0
+check_eq "no crontab yet: one cron entry" 1 cron_lines
+
+# GUI host with a cron entry left from a headless bootstrap: LaunchAgent loaded, entry removed.
+fresh
+printf '%s\n*/10 * * * * old-entry %s\n' "${USER_CRON}" "${CRON_TAG}" >"${STUB_CRONTAB}"
+run_deploy bootstrap
+check "gui after cron: exit 0" test "${rc}" -eq 0
+check "gui after cron: agent bootstrapped" grep -qx "bootstrap gui/${UID_N} ${PLIST}" "${STUB_LAUNCHCTL_LOG}"
+check_eq "gui after cron: cron entry removed" 0 cron_lines
+check "gui after cron: the user's entry is kept" grep -qxF "${USER_CRON}" "${STUB_CRONTAB}"
+
+# GUI host with no crontab: nothing is written to cron.
+fresh
+run_deploy bootstrap
+check_eq "gui, no crontab: crontab never written" 0 cron_writes
+
+# Headless after a LaunchAgent install: the plist goes, cron takes over.
+fresh
+"${SCRIPT}" bootstrap >/dev/null 2>&1
+check "headless after gui setup: plist exists" test -f "${PLIST}"
+STUB_GUI_RC=125 run_clone_script bootstrap
+check "headless after gui: exit 0" test "${rc}" -eq 0
+check "headless after gui: plist removed" test ! -e "${PLIST}"
+check "headless after gui: agent booted out" \
+  grep -qx "bootout gui/${UID_N}/com.smartwatermelon.claude-config-deploy" "${STUB_LAUNCHCTL_LOG}"
+check_eq "headless after gui: one cron entry" 1 cron_lines
+
+# CLAUDE_CONFIG_SCHEDULER overrides detection; any other value is refused before anything changes.
+fresh
+CLAUDE_CONFIG_SCHEDULER=cron run_deploy bootstrap
+check "override cron on a gui host: exit 0" test "${rc}" -eq 0
+check_eq "override cron on a gui host: one cron entry" 1 cron_lines
+check "override cron on a gui host: no plist" test ! -e "${PLIST}"
+
+fresh
+STUB_GUI_RC=125 CLAUDE_CONFIG_SCHEDULER=launchd run_deploy bootstrap
+check "override launchd on a headless host: agent bootstrapped" \
+  grep -qx "bootstrap gui/${UID_N} ${PLIST}" "${STUB_LAUNCHCTL_LOG}"
+
+fresh
+CLAUDE_CONFIG_SCHEDULER=systemd run_deploy bootstrap
+check "override bogus: exit 64" test "${rc}" -eq 64
+check "override bogus: no clone made" test ! -e "${CLONE}"
+
+# Uninstall removes the cron entry and keeps the rest of the table.
+fresh
+printf '%s\n' "${USER_CRON}" >"${STUB_CRONTAB}"
+STUB_GUI_RC=125 "${SCRIPT}" bootstrap >/dev/null 2>&1
+STUB_GUI_RC=125 run_clone_script uninstall
+check "headless uninstall: exit 0" test "${rc}" -eq 0
+check_eq "headless uninstall: cron entry removed" 0 cron_lines
+check "headless uninstall: the user's entry is kept" grep -qxF "${USER_CRON}" "${STUB_CRONTAB}"
+check "headless uninstall: command link removed" test ! -L "${HOME}/.local/bin/claude-config-deploy"
+
+fresh
+"${SCRIPT}" bootstrap >/dev/null 2>&1
+before="$(cron_writes)"
+run_clone_script uninstall
+check_eq "gui uninstall, no cron entry: crontab not written" "${before}" cron_writes
+
 # --- status --------------------------------------------------------------------
+fresh
+STUB_GUI_RC=125 "${SCRIPT}" bootstrap >/dev/null 2>&1
+STUB_GUI_RC=125 run_clone_script status
+check "status, headless: reports the cron entry" grep -qE "^cron: +installed" <<<"${out}"
+
 fresh
 run_deploy status
 check "status, nothing deployed: last ok never" grep -q "^last ok: never" <<<"${out}"

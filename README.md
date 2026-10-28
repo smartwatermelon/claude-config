@@ -40,7 +40,8 @@ symlinks from the checkout it lives in into `~/.claude`. Repo-meta files
 ### Deploying
 
 The LaunchAgent `com.smartwatermelon.claude-config-deploy` runs
-`claude-config-deploy.sh deploy --scheduled` every 10 minutes. It fetches
+`claude-config-deploy.sh deploy --scheduled` every 10 minutes. On a host
+where the user has no GUI login, a crontab entry runs it instead. It fetches
 origin; when `main` moved it fast-forwards the clone and runs the clone's
 `install.sh --sync`. It refuses, logs and notifies (and changes nothing) when
 the clone has local changes, is off `main`, or cannot fast-forward.
@@ -49,7 +50,7 @@ the clone has local changes, is off `main`, or cannot fast-forward.
 |---------|--------|
 | `claude-config-deploy` | Deploy `origin/main` now; also ends dev mode |
 | `claude-config-deploy status` | Clone commit, link mode, agent state, last log lines |
-| `claude-config-deploy uninstall` | Remove the LaunchAgent and the command link; keeps the clone |
+| `claude-config-deploy uninstall` | Remove the LaunchAgent, the cron entry and the command link; keeps the clone |
 | `~/Developer/claude-config/install.sh --dev` | Dev mode: link `~/.claude` to the working checkout |
 
 Log: `~/.local/state/claude-config/deploy.log`. Exit codes: 0 ok, 1 failed,

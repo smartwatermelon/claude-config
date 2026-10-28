@@ -399,7 +399,7 @@ A denial from the auto-mode classifier ("Permission for this action was denied b
 ### Repository Layout
 
 - **Repo** lives at `~/Developer/claude-config` — NOT at `~/.claude`. That is the working checkout: edit, branch and pull it freely.
-- **Deploy clone** at `~/.local/share/claude-config`, kept on `origin/main` by a LaunchAgent (`com.smartwatermelon.claude-config-deploy`, every 10 minutes). It is outside the sandbox's writable paths, so no session can edit the hooks that run. Never edit it.
+- **Deploy clone** at `~/.local/share/claude-config`, kept on `origin/main` by a LaunchAgent (`com.smartwatermelon.claude-config-deploy`, every 10 minutes; a crontab entry on a host with no GUI login). It is outside the sandbox's writable paths, so no session can edit the hooks that run. Never edit it.
 - **`~/.claude`** is the deployed runtime directory: symlinks into the deploy clone, created by the clone's `install.sh`. It must NOT be a git repo (`install.sh` removes `~/.claude/.git` if present).
 - **Deploy now:** `claude-config-deploy`, in a terminal (outside Claude Code). The old `~/Developer/claude-config/install.sh --sync` now just runs that deploy (only `--dev` links the working checkout).
 - **Dev mode:** `~/Developer/claude-config/install.sh --dev` links `~/.claude` to the working checkout. The status line shows `[DEV hooks]` and SessionStart says so. The LaunchAgent leaves it for 12 hours, then redeploys main. `claude-config-deploy` ends it at once.
