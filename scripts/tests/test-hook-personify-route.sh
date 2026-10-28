@@ -473,7 +473,7 @@ _dest_msg "git -C \$R: name-it message, no staging steps" "${TMP}" \
 _dest_msg "unfollowable cd: name-it message, no staging steps" "${PERSONAL}" \
   "cd \$D && git commit -F ${TXT}"
 _dest_msg "cd with parentheses: name-it message, no staging steps" "${PERSONAL}" \
-  "cd ${BEACON} && gh pr create --title 'docs(x): t' --body-file ${TXT}"
+  "cd ${BEACON} && (gh pr create --title 'docs(x): t' --body-file ${TXT})"
 _dest_msg "gh -R \$X: name-it message, no staging steps" "${PERSONAL}" \
   "gh pr create --title t --body-file ${TXT} -R \$X"
 _dest_msg "xargs wrapper: name-it message, no staging steps" "${PERSONAL}" \

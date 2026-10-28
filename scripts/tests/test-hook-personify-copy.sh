@@ -282,6 +282,23 @@ _case "-F value and 2>&1 are not paths" 0 "" "${SITE}" "git commit -F /dev/null 
 _case "heredoc -F - is not a path" 0 "" "${SITE}" "git commit -F - <<'EOF'
 fix: a message
 EOF"
+# A spaced redirect's target is not a pathspec (inventory: 20 rows, 2026-10).
+_case "> file after commit is not a path" 0 "" "${SITE}" "git commit -F /dev/null > ${TMP}/commit.log"
+_case ">> file 2>&1 is not a path" 0 "" "${SITE}" "git -C ${SITE} commit -F /dev/null >> ${TMP}/commit.log 2>&1"
+_case "2> file is not a path" 0 "" "${SITE}" "git commit -F /dev/null 2> ${TMP}/err.log"
+_case "&> file is not a path" 0 "" "${SITE}" "git commit -F /dev/null &> ${TMP}/commit.log"
+_case "&>file (attached) is not a path" 0 "" "${SITE}" "git commit -F /dev/null &>${TMP}/commit.log"
+_case "> \"\$TMPDIR/x.log\" is not a path" 0 "" "${SITE}" \
+  "git commit -F /dev/null > \"\$TMPDIR/commit1.log\" 2>&1; echo \"exit=\$?\""
+_case "a path before the redirect: blocked" 2 "path 'index.html'" "${SITE}" \
+  "git commit -F /dev/null index.html > ${TMP}/commit.log"
+_case "a path after the redirect target: blocked" 2 "path 'index.html'" "${SITE}" \
+  "git commit -F /dev/null > ${TMP}/commit.log index.html"
+_case "a quoted \">\" is an argument, and the next word a path: blocked" 2 "path 'index.html'" "${SITE}" \
+  "git commit -F /dev/null '>' index.html"
+_case "W=<site>; git -C \$W add && git -C \$W commit: still blocked" 2 "another git command" "${TMP}" \
+  "W=${SITE}; git -C \$W add index.html && git -C \$W commit -F /dev/null > ${TMP}/commit.log"
+_case "-a with a redirect: still blocked" 2 "(-a)" "${SITE}" "git commit -a -F /dev/null > ${TMP}/commit.log"
 git -C "${SITE}" reset -q --hard
 
 echo "--- fail closed ---"

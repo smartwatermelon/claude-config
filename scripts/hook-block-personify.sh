@@ -175,6 +175,160 @@ _join_continuations() {
 
 _joined=$(printf '%s\n' "${cmd}" | _join_continuations)
 
+# BEGIN repo-resolution: same text in hook-block-main-commit.sh and hook-block-personify.sh (a test checks).
+declare -A RR_VARS=()
+# Set by _rr_scan: the last cd target, NAME -> path, and the command after the scanned run.
+RR_CD=""
+RR_REST=""
+RR_CMD=""
+RR_PATH=""
+RR_WHY=""
+# A literal absolute path, bare or in one pair of quotes, with no $, backtick, glob, ; or paren.
+_rr_lit="(/[^[:space:]\$${bt}*?;&|()<>{\"'\\\\[]*|\"/[^\"\$${bt}*?\\\\]*\"|'/[^'\$${bt}*?\\\\]*')"
+_rr_end="[[:blank:]]*(;|&&|"$'\n'"|\$)"
+_rr_cd_re="^cd[[:blank:]]+${_rr_lit}${_rr_end}"
+_rr_set_re="^([A-Za-z_][A-Za-z0-9_]*)=(${_rr_lit}|\\\$PWD|\\\$\\{PWD\\}|\"\\\$PWD\"|\"\\\$\\{PWD\\}\")${_rr_end}"
+readonly _rr_lit _rr_end _rr_cd_re _rr_set_re
+
+# Strip one pair of surrounding quotes. Prints nothing for a path with a `..` part.
+_rr_unq() {
+  local v="$1"
+  if [[ "${v:0:1}" == '"' || "${v:0:1}" == "'" ]]; then v="${v:1:${#v}-2}"; fi
+  [[ "${v}/" != */../* ]] || return 0
+  printf '%s\n' "${v}"
+}
+
+# Leading `cd /abs`, `NAME=/abs`, `NAME=$PWD` statements run first in the top-level shell, so their values are known.
+_rr_scan() {
+  # Stop at any other statement, and at a cd to a missing dir (after `;` the shell stays put).
+  local rest="$1" v
+  RR_CMD="$1"
+  RR_VARS=()
+  RR_CD=""
+  while :; do
+    rest="${rest#"${rest%%[![:space:]]*}"}"
+    if [[ "${rest}" =~ ${_rr_cd_re} ]]; then
+      v="$(_rr_unq "${BASH_REMATCH[1]}")"
+      [[ -n "${v}" && -d "${v}" ]] || break
+      RR_CD="${v}"
+    elif [[ "${rest}" =~ ${_rr_set_re} ]]; then
+      if [[ -n "${BASH_REMATCH[3]}" ]]; then
+        v="$(_rr_unq "${BASH_REMATCH[3]}")"
+      else
+        v="${RR_CD}"
+      fi
+      [[ -n "${v}" ]] || break
+      RR_VARS["${BASH_REMATCH[1]}"]="${v}"
+    else
+      break
+    fi
+    rest="${rest:${#BASH_REMATCH[0]}}"
+  done
+  RR_REST="${rest}"
+}
+
+# 0 if RR_REST may change variable $1: it names it (not as $NAME/${NAME) or runs eval, source, read and the like.
+_rr_touched() {
+  local name="$1"
+  grep -qE "(^|[^A-Za-z0-9_\$\{])${name}([^A-Za-z0-9_]|\$)" <<<"${RR_REST}" && return 0
+  grep -qE "(^|[;&|({!]|[[:space:]](then|do|else))[[:space:]]*(eval|source|\\.|declare|typeset|local|export|readonly|read|mapfile|readarray|getopts|let|unset|printf[[:space:]]([^;&|]*[[:space:]])?-v)([[:space:]]|\$)" <<<"${RR_REST}"
+}
+
+# _rr_resolve <-C value $W, ${W} or $W/sub>: 0 and RR_PATH when resolved, else 1 and RR_WHY.
+_rr_resolve() {
+  local w="$1" name suffix
+  RR_PATH=""
+  RR_WHY=""
+  if [[ ! "${w}" =~ ^\$(\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(/.*)?$ ]]; then
+    RR_WHY="could not resolve ${w}: it is not a plain \$NAME, so only the shell knows it"
+    if [[ "${w}" == *"\$("* || "${w}" == *"${bt}"* ]]; then
+      RR_WHY="could not resolve ${w}: a command substitution"
+    fi
+    return 1
+  fi
+  name="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+  suffix="${BASH_REMATCH[4]}"
+  if [[ "${suffix}" =~ [\$\*\?\[\{] || "${suffix}" == *"${bt}"* || "${suffix}/" == */../* ]]; then
+    RR_WHY="could not resolve ${w}: the part after \$${name} is not a literal path"
+    return 1
+  fi
+  if [[ -z "${RR_VARS[${name}]+set}" ]]; then
+    if [[ "${RR_CMD}" =~ (^|[^A-Za-z0-9_])${name}=(\$\(|${bt}) ]]; then
+      RR_WHY="could not resolve \$${name}: assigned from a command substitution"
+    elif [[ "${RR_CMD}" =~ (^|[^A-Za-z0-9_])${name}= ]]; then
+      RR_WHY="could not resolve \$${name}: assigned, but not as a literal absolute path in the cd and NAME=/path statements that start the command"
+    else
+      RR_WHY="could not resolve \$${name}: not assigned in this command"
+    fi
+    return 1
+  fi
+  if _rr_touched "${name}"; then
+    RR_WHY="could not resolve \$${name}: the command names ${name} again later, or runs a builtin (eval, source, read, export, ...) that could change it"
+    return 1
+  fi
+  RR_PATH="${RR_VARS[${name}]}${suffix}"
+  return 0
+}
+# END repo-resolution
+
+_rr_scan "${_joined}"
+
+# 0 if a ( or ) sits outside quotes, comments and heredocs: a subshell, $( ) or (( )). A quoted paren is text.
+_bare_parens() {
+  printf '%s\n' "${_joined}" | LC_ALL=C awk '
+    BEGIN { q = 0; hd = 0; np = 0; found = 0 }
+    {
+      line = $0
+      if (hd) {
+        chk = line
+        # An unquoted delimiter leaves $( ) in the body live.
+        if (!hquote[hd] && index(line, "$(")) found = 1
+        if (hstrip[hd]) sub(/^\t+/, "", chk)
+        if (chk == hdelim[hd]) { hd++; if (hd > np) { hd = 0; np = 0 } }
+        next
+      }
+      n = length(line); i = 1
+      while (i <= n) {
+        c = substr(line, i, 1); nx = substr(line, i + 1, 1)
+        prev = (i == 1) ? "" : substr(line, i - 1, 1)
+        if (q == 1) { if (c == "\047") q = 0; i++; continue }
+        if (q == 3) {
+          if (c == "\\") { i += 2; continue }
+          if (c == "\047") q = 0; i++; continue
+        }
+        if (c == "\\") { i += 2; continue }
+        if (q == 2) {
+          # "$( )" still runs a command inside double quotes.
+          if (c == "$" && nx == "(") found = 1
+          if (c == "\"") q = 0
+          i++; continue
+        }
+        if (c == "#" && (prev == "" || prev ~ /[[:space:];&|()<>]/)) break
+        if (c == "\047") { q = 1; i++; continue }
+        if (c == "\"") { q = 2; i++; continue }
+        if (c == "$" && nx == "\047") { q = 3; i += 2; continue }
+        if (c == "(" || c == ")") found = 1
+        if (c == "<" && nx == "<" && prev != "<" && substr(line, i + 2, 1) != "<") {
+          rest = substr(line, i + 2); strip = 0
+          if (substr(rest, 1, 1) == "-") { strip = 1; rest = substr(rest, 2) }
+          sub(/^[ \t]+/, "", rest)
+          if (match(rest, /^[^ \t;&|()<>]+/)) {
+            w = substr(rest, 1, RLENGTH)
+            quoted = (w ~ /[\047"\\]/)
+            gsub(/[\047"\\]/, "", w)
+            if (w != "") { np++; hdelim[np] = w; hstrip[np] = strip; hquote[np] = quoted }
+          }
+          i += 2; continue
+        }
+        i++
+      }
+      if (q == 0 && np > 0) hd = 1
+    }
+    END { exit (found ? 0 : 1) }'
+}
+BARE_PARENS=0
+if _bare_parens; then BARE_PARENS=1; fi
+
 # `env FOO=1 git commit` puts an assignment between the wrapper and the binary,
 # which the wrapper arm does not consume. Normalize it to the bare keyword.
 _scan=$(printf '%s\n' "${_joined}" | sed -E 's/(^|[[:space:]])env[[:space:]]+([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*/\1env /g')
@@ -530,6 +684,11 @@ _commit_args_ok() {
       continue
     fi
     [[ "${tag}" == "OK" ]] || dec="${raw}"
+    # A bare redirect operator (`>`, `2>>`, `<<`): skip its target word. Raw word, so a quoted '>' is no redirect.
+    if [[ "${raw}" =~ ^([0-9]*(\>|\>\>|\>\||\<|\<\<|\<\<-|\<\<\<|\<\>)|\&\>|\&\>\>)$ ]]; then
+      want=1
+      continue
+    fi
     # git takes any unambiguous prefix of a long option, so --al is --all.
     opt="${dec%%=*}"
     if [[ "${opt}" == --?* ]]; then
@@ -563,7 +722,7 @@ _commit_args_ok() {
         done
         ;;
       # Redirections, heredocs and closing brackets are not git arguments.
-      [0-9]*'>'* | [0-9]*'<'* | '>'* | '<'* | ')'* | '}'*) ;;
+      [0-9]*'>'* | [0-9]*'<'* | '>'* | '<'* | '&>'* | ')'* | '}'*) ;;
       *) _deny_copy "${bad} (path '${dec}'); ${fix}" "public-facing copy" ;;
     esac
   done <<<"${words}"
@@ -999,7 +1158,8 @@ _destination_for_segment() {
   if [[ "${CD_UNRESOLVED}" -eq 1 ]]; then
     _deny_dest "this command has a cd the hook cannot resolve (bare cd, cd -, a variable or substitution, a popd, or a cd/pushd inside a command substitution, backticks, bash -c, or after !, if, builtin or command, or a cd inside quotes, after a backslash, in a comment or in a heredoc); use git -C <dir> or gh -R <owner/name> so the destination is explicit" "${surface}"
   fi
-  if [[ "${CD_SEEN}" -eq 1 && "${_joined}" == *[\(\)]* ]]; then
+  # Only parens outside quotes and heredocs count (_bare_parens): a "fix(y): z" title is text.
+  if [[ "${CD_SEEN}" -eq 1 && "${BARE_PARENS}" -eq 1 ]]; then
     _deny_dest "a cd combined with parentheses leaves the destination unclear; use git -C <dir> or gh -R <owner/name> so it is explicit" "${surface}"
   fi
   # A whole segment from _quoted_segments is checked after every piece, so it
@@ -1031,8 +1191,12 @@ _destination_for_segment() {
       fi
       dir="$(_extract_path "${pre}" '-C')"
       if [[ -n "${dir}" ]]; then
+        # A variable the command set to a literal path first resolves (_rr_resolve).
         case "${dir}" in
-          *'$'* | *"${bt}"*) _deny_dest "cannot resolve the repository from git -C '${dir}'" "${surface}" ;;
+          *'$'* | *"${bt}"*)
+            _rr_resolve "${dir}" || _deny_dest "cannot resolve the repository from git -C '${dir}': ${RR_WHY}" "${surface}"
+            dir="${RR_PATH}"
+            ;;
           *) ;;
         esac
         # A bare or leading `~` is the user's home, as the shell would expand it.
