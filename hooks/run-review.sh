@@ -238,7 +238,7 @@ run_claude_cli() {
   cat >"${in}"
 
   if [[ -z "${REVIEW_API_KEY}" ]]; then
-    # No key: exactly the command this replaced, inherited env included.
+    # No key: the command this replaced, inherited env included, plus REVIEW_CLI_ENV and REVIEW_CLI_ARGS.
     timeout "${secs}" env -u CLAUDECODE "${REVIEW_CLI_ENV[@]}" "${CLAUDE_CLI}" "${REVIEW_CLI_ARGS[@]}" "$@" \
       <"${in}" >"${out}" 2>"${err}" || rc=$?
     _review_emit_stderr "${err}"
