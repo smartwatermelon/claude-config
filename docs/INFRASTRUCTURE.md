@@ -171,7 +171,7 @@ entries are omitted here.
 2. `hook-block-gate-dir-write.sh` (Bash-path writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf`, `copy-paths.conf` and personify's `route-command`)
 3. `hook-block-no-verify.sh`
 4. `hook-block-short-no-verify.sh`
-5. `hook-block-main-commit.sh`. Denies a commit on main/master. Since #792 it also denies a command that moves a repo's primary checkout off its default branch: `git checkout <branch|commit>` (with `-b`, `-B`, `--orphan`, `--detach`, `-`), `git switch` (with `-c`, `-C`, `--orphan`, `--detach`, `-`), `git stash branch` and `gh pr checkout`. The deny names the replacement, `git -C <repo> worktree add .claude/worktrees/<name> -b <branch> origin/<default>`.
+5. `hook-block-main-commit.sh`. Denies a commit on main/master. Since #792 it also denies a command that moves a repo's primary checkout off its default branch: `git checkout <branch|commit>` (with `-b`, `-B`, `--orphan`, `--detach`, `-`), `git switch` (with `-c`, `-C`, `--orphan`, `--detach`, `-`), `git stash branch` and `gh pr checkout`. The deny names the replacement, `git -C <repo> worktree add --no-track -b <branch> .claude/worktrees/<name> origin/<default>`.
    - Primary checkout: `rev-parse --git-common-dir` equals `--absolute-git-dir`. A linked worktree is never guarded.
    - Repo: the hook input's `cwd`, then any `env -C` and `git -C` values in order. A `-C` from a variable or substitution, an earlier `cd`, or `--git-dir` denies (fail closed). A path that is not a repo passes, since git fails there anyway.
    - Default branch: `refs/remotes/origin/HEAD`, else `main` if it exists, else `master`.
