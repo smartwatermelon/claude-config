@@ -2536,6 +2536,7 @@ assert_eq "#358: two short real lines totalling 25 characters clear (exit 0)" "0
 t799_refuted plusshort "foo.sh:1-2" "+#!/usr/bin/env bash
 +e"
 assert_eq "#358: +/- markers do not count toward the minimum (exit 1)" "1" "${t799_exit}"
+assert_contains "#358: +/- markers are left out of the count" "(19 characters, minimum 20)" "${t799_stderr}"
 
 # =========================================================
 # TEST 34: --no-file dry-run prints non-blocking findings instead of filing

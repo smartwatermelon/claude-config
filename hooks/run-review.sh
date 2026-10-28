@@ -647,9 +647,10 @@ arbiter_verdict() {
   fi
 }
 
-# A REFUTED clears only if its quote is in the staged file it cites (claude-config#358). $1 = PASS prose; prints why on failure.
 # Substring matching accepts any fragment, so a quote needs this many non-whitespace characters: `fi` or `}` proves nothing.
 ARBITER_QUOTE_MIN_CHARS=20
+
+# A REFUTED clears only if its quote is in the staged file it cites (claude-config#358). $1 = PASS prose; prints why on failure.
 verify_arbiter_quote() {
   local _line _loc="" _path _quote="" _inq=0
   while IFS= read -r _line; do
