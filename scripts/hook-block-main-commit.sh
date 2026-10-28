@@ -330,7 +330,7 @@ if printf '%s\n' "${_scan}" | grep -qE "${commit_re}"; then
     echo "Branch resolved from ${basis}" >&2
     echo '' >&2
     echo 'Commit from a worktree on a feature branch (#792):' >&2
-    echo '  git -C /absolute/path/to/repo worktree add .claude/worktrees/<name> -b claude/<branch> origin/main' >&2
+    echo '  git -C /absolute/path/to/repo worktree add --no-track -b claude/<branch> .claude/worktrees/<name> origin/main' >&2
     exit 2
   fi
 fi
@@ -467,7 +467,7 @@ _deny_branch_move() {
     echo 'theirs too, and in claude-config it changes the deployed hooks (#792, #453).'
     echo "Keep it on ${def}. Make a worktree for the branch instead:"
     echo ''
-    echo "  git -C '${top}' worktree add .claude/worktrees/<name> -b <branch> ${base}"
+    echo "  git -C '${top}' worktree add --no-track -b <branch> .claude/worktrees/<name> ${base}"
     echo ''
     echo 'then run git and edits inside .claude/worktrees/<name>. For a PR branch,'
     echo 'add the worktree from origin/<pr-branch> after git fetch.'

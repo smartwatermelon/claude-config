@@ -153,7 +153,7 @@ check "git checkout <file> (not a ref)" 0 "${PRIMARY}" 'git checkout a.txt'
 check "git checkout -p" 0 "${PRIMARY}" 'git checkout -p'
 check "bare git checkout (no-op)" 0 "${PRIMARY}" 'git checkout'
 check "git pull" 0 "${PRIMARY}" 'git pull'
-check "git worktree add (the replacement)" 0 "${PRIMARY}" 'git worktree add .claude/worktrees/x -b claude/new origin/main'
+check "git worktree add (the replacement)" 0 "${PRIMARY}" 'git worktree add --no-track -b claude/new .claude/worktrees/x origin/main'
 check "git restore" 0 "${PRIMARY}" 'git restore a.txt'
 check "git branch (creates, does not move HEAD)" 0 "${PRIMARY}" 'git branch claude/new'
 check "git checkout-index is not checkout" 0 "${PRIMARY}" 'git checkout-index -a'
@@ -199,11 +199,11 @@ echo "--- the deny message's replacement passes the worktree hook ---"
 suggested=''
 suggested="$(make_input 'git switch -c claude/new' "${PRIMARY}" | (cd "${NONREPO}" && "${HOOK}") 2>&1 >/dev/null |
   grep -E 'worktree add' | head -1 | sed -E 's/^[[:space:]]+//')" || true
-if [[ "${suggested}" == *'git -C '*' worktree add .claude/worktrees/'* ]]; then
-  echo "  PASS: deny message names a worktree add under .claude/worktrees/"
+if [[ "${suggested}" == *'git -C '*' worktree add --no-track '*' .claude/worktrees/'* ]]; then
+  echo "  PASS: deny message names a --no-track worktree add under .claude/worktrees/"
   ((pass += 1))
 else
-  echo "  FAIL: deny message has no worktree add line (got: ${suggested})"
+  echo "  FAIL: deny message has no --no-track worktree add line (got: ${suggested})"
   ((fail += 1))
 fi
 # Fill the placeholder the way an agent would, then run it past the worktree hook.
