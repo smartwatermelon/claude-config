@@ -220,7 +220,7 @@ _review_emit_stderr() {
 }
 
 # run_claude_cli <secs> <args...>: `timeout N env -u CLAUDECODE claude <args>`, same stdin/stdout/stderr/exit.
-# Every attempt also gets REVIEW_CLI_ENV and REVIEW_CLI_ARGS (no MCP, no telemetry).
+# Every attempt also gets REVIEW_CLI_ENV and REVIEW_CLI_ARGS (no MCP, no telemetry), args last so --agent stays $1.
 run_claude_cli() {
   local secs="$1"
   shift
@@ -239,7 +239,7 @@ run_claude_cli() {
 
   if [[ -z "${REVIEW_API_KEY}" ]]; then
     # No key: the command this replaced, inherited env included, plus REVIEW_CLI_ENV and REVIEW_CLI_ARGS.
-    timeout "${secs}" env -u CLAUDECODE "${REVIEW_CLI_ENV[@]}" "${CLAUDE_CLI}" "${REVIEW_CLI_ARGS[@]}" "$@" \
+    timeout "${secs}" env -u CLAUDECODE "${REVIEW_CLI_ENV[@]}" "${CLAUDE_CLI}" "$@" "${REVIEW_CLI_ARGS[@]}" \
       <"${in}" >"${out}" 2>"${err}" || rc=$?
     _review_emit_stderr "${err}"
     cat "${out}"
@@ -251,7 +251,7 @@ run_claude_cli() {
   # `export` is a builtin: the key reaches the child by env, never argv (ps).
   (
     export ANTHROPIC_API_KEY="${REVIEW_API_KEY}"
-    exec timeout "${secs}" env -u CLAUDECODE "${REVIEW_CLI_ENV[@]}" "${CLAUDE_CLI}" "${REVIEW_CLI_ARGS[@]}" "$@"
+    exec timeout "${secs}" env -u CLAUDECODE "${REVIEW_CLI_ENV[@]}" "${CLAUDE_CLI}" "$@" "${REVIEW_CLI_ARGS[@]}"
   ) <"${in}" >"${out}" 2>"${err}" || rc=$?
   _review_usage_log api "${rc}" "${out}"
 
@@ -283,7 +283,7 @@ run_claude_cli() {
 
   # -u ANTHROPIC_API_KEY: the retry uses the subscription even if the caller exported a key.
   rc=0
-  timeout "${secs}" env -u CLAUDECODE -u ANTHROPIC_API_KEY "${REVIEW_CLI_ENV[@]}" "${CLAUDE_CLI}" "${REVIEW_CLI_ARGS[@]}" "$@" \
+  timeout "${secs}" env -u CLAUDECODE -u ANTHROPIC_API_KEY "${REVIEW_CLI_ENV[@]}" "${CLAUDE_CLI}" "$@" "${REVIEW_CLI_ARGS[@]}" \
     <"${in}" >"${out}" 2>"${err}" || rc=$?
   _review_emit_stderr "${err}"
   cat "${out}"
