@@ -12,6 +12,7 @@ In `~/.claude/docs/`:
 - `INFRASTRUCTURE.md` — hooks and enforcement
 - `PHILOSOPHY.md` — decision frameworks
 - `CUSTOM_AGENTS.md` — custom agent development
+- `INSTALLER-VETTING.md` — checking an untrusted app or installer before Andrew runs it
 
 ---
 

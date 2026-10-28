@@ -81,6 +81,21 @@ Location: `~/.claude/docs/CUSTOM_AGENTS.md`
 - Creating or modifying agents
 - Extending the agent system
 
+### INSTALLER-VETTING.md (Untrusted Installers)
+
+Location: `~/.claude/docs/INSTALLER-VETTING.md`
+
+**Contains:**
+
+- Static analysis steps for apps and packages, run inside the sandbox
+- Gatekeeper and notarization checks, run outside the sandbox with `!`
+- Least-privilege install (copy the payload instead of running a root script)
+- Vendor notes (GOG)
+
+**Read when:**
+
+- Andrew asks whether a download, app, or installer is safe to run
+
 ## Philosophy
 
 The main CLAUDE.md contains "hot path" protocols and standards used in 90%+ of sessions. Auxiliary files contain:
