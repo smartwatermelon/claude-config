@@ -647,6 +647,64 @@ arbiter_verdict() {
   fi
 }
 
+# A REFUTED clears only if its quote is in the staged file it cites (claude-config#358). $1 = PASS prose; prints why on failure.
+verify_arbiter_quote() {
+  local _line _loc="" _path _quote="" _inq=0
+  while IFS= read -r _line; do
+    if ((_inq)); then
+      [[ "${_line}" != "    | "* ]] || _quote+="${_line#    | }"$'\n'
+      continue
+    fi
+    case "${_line}" in
+      "REFUTATION LOCATION: "*) [[ -n "${_loc}" ]] || _loc="${_line#REFUTATION LOCATION: }" ;;
+      "REFUTATION QUOTED CODE:") _inq=1 ;;
+      *) ;;
+    esac
+  done <<<"$1"
+  _loc="${_loc//\`/}"
+  _loc="${_loc#"${_loc%%[![:space:]]*}"}"
+  _loc="${_loc%"${_loc##*[![:space:]]}"}"
+  # path, path:N or path:N-M.
+  if [[ "${_loc}" =~ ^(.+):[0-9]+(-[0-9]+)?$ ]]; then
+    _path="${BASH_REMATCH[1]}"
+  else
+    _path="${_loc}"
+  fi
+  _path="${_path#./}"
+  if [[ -z "${_path}" || "${_path}" == /* || "/${_path}/" == */../* ]]; then
+    printf 'Arbiter refutation cites "%s", which is not a repo-relative path, so the block stands (claude-config#358)\n' "${_loc}"
+    return 1
+  fi
+  # The index, not the working tree: the arbiter rules on what is staged. cat-file runs no textconv filter.
+  if ! git cat-file -e ":${_path}" 2>/dev/null; then
+    printf 'Arbiter refutation cites %s, which is not in the staged tree, so the block stands (claude-config#358)\n' "${_path}"
+    return 1
+  fi
+  # Each trimmed quoted line (or it minus a +/- marker) is in consecutive non-blank staged lines, in order. Fixed strings.
+  if awk '
+    function trim(s) { gsub(/^[ \t\r]+|[ \t\r]+$/, "", s); return s }
+    function hit(q, f,   alt) {
+      if (index(f, q)) return 1
+      if (q ~ /^[-+]/) { alt = trim(substr(q, 2)); if (alt != "" && index(f, alt)) return 1 }
+      return 0
+    }
+    FILENAME == ARGV[1] { t = trim($0); if (t != "") q[++nq] = t; next }
+    { t = trim($0); if (t != "") f[++nf] = t }
+    END {
+      if (nq == 0) exit 1
+      for (s = 1; s + nq - 1 <= nf; s++) {
+        ok = 1
+        for (k = 1; k <= nq; k++) if (!hit(q[k], f[s + k - 1])) { ok = 0; break }
+        if (ok) exit 0
+      }
+      exit 1
+    }' <(printf '%s' "${_quote}") <(git cat-file blob ":${_path}" 2>/dev/null || true); then
+    return 0
+  fi
+  printf 'Arbiter quote check: the quote did not match %s, so the block stands (claude-config#358)\n' "${_path}"
+  return 1
+}
+
 # One "  LOCATION - ISSUE" line per BLOCKING finding in reviewer prose $1. Prints nothing when none can be read.
 blocking_findings_summary() {
   printf '%s\n' "$1" | tr -d '*`' | awk '
@@ -2737,7 +2795,7 @@ $(strip_structured_blocking "${_rout}")"
   local original_blocking_count=${blocking_count} overruled_count=0 arbiter_log=""
   if [[ ${blocking_count} -gt 0 && "${adv_status}" == "pass" ]]; then
     log_warn "${blocking_count} per-file BLOCKING result(s) disagree with adversarial-reviewer PASS - arbitrating"
-    local _adv_evidence _ai _afile _afindings _adiff _aprompt _aout _averdict _atimeout
+    local _adv_evidence _ai _afile _afindings _adiff _aprompt _aout _averdict _atimeout _aquote
     if grep -q 'VERDICT: PASS (cached)' <<<"${adv_display}"; then
       _adv_evidence="VERDICT: PASS (cached result from an earlier run on this identical diff; no reasoning is available. Do not treat it as evidence beyond \"passed\". Rely on the file.)"
     else
@@ -2779,6 +2837,12 @@ ${ARBITER_RULING_RULES}"
       [[ -n "${_aout//[[:space:]]/}" ]] || _aout="VERDICT: FAIL (agent error: invoke_agent produced no output)"
       # Only a proven REFUTED clears (claude-config#799); see arbiter_verdict.
       _averdict=$(arbiter_verdict "${_aout}")
+      if [[ "${_averdict}" == "PASS" ]] && ! _aquote=$(verify_arbiter_quote "${_aout}"); then
+        _averdict="FAIL"
+        _aout="${_aout}
+QUOTE CHECK: ${_aquote}"
+        log_error "${_aquote}"
+      fi
       # A timeout is no ruling: it fails closed, but the log says so (#682).
       _atimeout=""
       if grep -qx 'VERDICT: FAIL (timeout)' <<<"${_aout}"; then
@@ -4137,13 +4201,19 @@ ${ARBITER_RULING_RULES}"
         invoke_agent_arbiter "adversarial-reviewer" "${ARBITER_PROMPT}" "${ARBITER_MODEL_ARGS[@]}") || true
       [[ -n "${ARBITER_OUTPUT}" ]] || ARBITER_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
 
+      # Only a proven REFUTED clears (#799), and only if its quote is in the staged file (#358).
+      ARBITER_VERDICT=$(arbiter_verdict "${ARBITER_OUTPUT}")
+      if [[ "${ARBITER_VERDICT}" == "PASS" ]] && ! ARBITER_QUOTE_WHY=$(verify_arbiter_quote "${ARBITER_OUTPUT}"); then
+        ARBITER_VERDICT="FAIL"
+        ARBITER_OUTPUT="${ARBITER_OUTPUT}
+QUOTE CHECK: ${ARBITER_QUOTE_WHY}"
+      fi
+
       echo "=== ARBITER (reconciling code-reviewer vs adversarial-reviewer) ===" >&2
       echo "${ARBITER_OUTPUT}" >&2
       echo "" >&2
       { printf '=== ARBITER ===\n%s\n' "${ARBITER_OUTPUT}"; } >>"${REVIEW_LOG}" || true
-
-      # Only a proven REFUTED clears (claude-config#799); see arbiter_verdict.
-      ARBITER_VERDICT=$(arbiter_verdict "${ARBITER_OUTPUT}")
+      [[ -z "${ARBITER_QUOTE_WHY:-}" ]] || log_error "${ARBITER_QUOTE_WHY}"
       printf 'arbiter: %s\n' "${ARBITER_VERDICT}" >>"${REVIEW_LOG}" || true
 
       file_reviewer_disagreement_issue "${CODE_REVIEWER_DISPLAY}" "${ADVERSARIAL_DISPLAY}" "${ARBITER_OUTPUT}" "${ARBITER_VERDICT}"

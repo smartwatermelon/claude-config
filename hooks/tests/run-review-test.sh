@@ -68,6 +68,7 @@
 #       the old key scheme are never read (71), and an empty path list gets
 #       no round memory (72)
 #   26, 73-78. The arbiter clears a block only with quoted proof, and runs Opus with tools (claude-config#799)
+#   79. The quote must match the staged file at the cited repo-relative path (claude-config#358)
 
 set -euo pipefail
 
@@ -2413,6 +2414,8 @@ run_t799() {
   make_mock_claude_three_way "${mock}" "${T799_CR}" "${T799_AR}" "${arbiter}"
   t799_exit=0
   cd "${REPO_DIR}"
+  # T799_UNSTAGED: a line appended to foo.sh after staging, so it is in the working tree only.
+  [[ -z "${T799_UNSTAGED:-}" ]] || printf '%s\n' "${T799_UNSTAGED}" >>foo.sh
   t799_stderr="$(REVIEW_LOG="${TMPDIR_TEST}/t799-${label}.log" DISAGREEMENT_LOG="${TMPDIR_TEST}/t799-${label}-dis.log" \
     CLAUDE_CLI="${mock}/claude" bash "${SUBJECT}" < <(git diff --cached || true) 2>&1 >/dev/null)" || t799_exit=$?
   cd - >/dev/null
@@ -2473,6 +2476,39 @@ run_t799 refuted "${t799_json}"
 assert_eq "#799 control: a REFUTED with location and quoted code clears (exit 0)" "0" "${t799_exit}"
 assert_contains "#799 control: the disputed finding is printed" \
   "foo.sh:2 - The deny pattern no longer matches" "${t799_stderr}"
+
+# TEST 79: the quote must be in the staged file at the cited path (#358). t799_refuted <label> <location> <quote>
+t799_refuted() {
+  local json
+  json="$(arbiter_ruling_json REFUTED "r" "$2" "$3" "rr")"
+  run_t799 "$1" "${json}"
+}
+t799_refuted indent "foo.sh:2" "      echo hello   "
+assert_eq "#358: a quote with different indentation clears (exit 0)" "0" "${t799_exit}"
+t799_refuted plus "foo.sh:1-2" "+#!/usr/bin/env bash
++echo hello"
+assert_eq "#358: a two-line quote with + diff markers clears (exit 0)" "0" "${t799_exit}"
+t799_refuted noline "foo.sh" "echo hello"
+assert_eq "#358: a location with no line number still verifies (exit 0)" "0" "${t799_exit}"
+t799_refuted fake "foo.sh:2" "deny_pattern='\$\(' # checked before quotes are stripped"
+assert_eq "#358: a fabricated quote keeps the block (exit 1)" "1" "${t799_exit}"
+assert_contains "#358: the mismatch is named" "the quote did not match foo.sh, so the block stands" "${t799_stderr}"
+assert_contains "#358: the mismatch is logged" "the quote did not match foo.sh" "${t799_log}"
+assert_not_contains "#358: no cleared-block report" "BLOCK CLEARED BY ARBITER" "${t799_stderr}"
+t799_refuted order "foo.sh:1-2" "echo hello
+#!/usr/bin/env bash"
+assert_eq "#358: real lines quoted out of order keep the block (exit 1)" "1" "${t799_exit}"
+t799_refuted wrongpath "bar.sh:2" "echo hello"
+assert_eq "#358: a correct quote at a path not in the index keeps the block (exit 1)" "1" "${t799_exit}"
+t799_refuted dotdot "../testrepo/foo.sh:2" "echo hello"
+assert_eq "#358: a ../ path keeps the block (exit 1)" "1" "${t799_exit}"
+assert_contains "#358: a ../ path is refused by name" "not a repo-relative path" "${t799_stderr}"
+t799_refuted absolute "${REPO_DIR}/foo.sh:2" "echo hello"
+assert_eq "#358: an absolute path keeps the block (exit 1)" "1" "${t799_exit}"
+T799_UNSTAGED="echo worktree-only"
+t799_refuted worktree "foo.sh:3" "echo worktree-only"
+unset T799_UNSTAGED
+assert_eq "#358: a quote found only in the working tree, not the staged file, keeps the block (exit 1)" "1" "${t799_exit}"
 
 # =========================================================
 # TEST 34: --no-file dry-run prints non-blocking findings instead of filing

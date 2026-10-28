@@ -100,6 +100,8 @@ if [[ "\${is_arbiter}" == true ]]; then
     so='{"ruling":"UNPROVEN","reason":"Could not tell from the file."}'
   elif [[ -f "${MOCK_DIR}/arbiter-noquote" ]]; then
     so='{"ruling":"REFUTED","reason":"Not severe enough to block.","refutation":{"location":"a.sh:1","quoted_code":"","reason":"minor"}}'
+  elif [[ -f "${MOCK_DIR}/arbiter-fakequote" ]]; then
+    so='{"ruling":"REFUTED","reason":"r","refutation":{"location":"a.sh:1","quoted_code":"swap_args \\"\$2\\" \\"\$1\\"","reason":"invented"}}'
   elif [[ -f "${MOCK_DIR}/arbiter-oldpass" ]]; then
     so='{"verdict":"PASS","blocking":false,"findings":[]}'
   else
@@ -442,6 +444,17 @@ _stage_one_blocking_file() {
   grep -qF '| echo "line 0"' "${EXPECTED_LOG}"
   grep -q 'MOCK_REFUTATION_REASON' "${TMPDIR_TEST}/.git/reviewer-disagreements.log"
   grep -q '^  a.sh:1 - arguments reversed' "${TMPDIR_TEST}/.git/reviewer-disagreements.log"
+}
+
+@test "#358: a REFUTED whose quote is not in the staged file keeps the per-file block" {
+  _stage_one_blocking_file
+  touch "${MOCK_DIR}/arbiter-fakequote"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  grep -q '^arbiter: FAIL (a.sh)' "${EXPECTED_LOG}"
+  [[ "$output" == *"the quote did not match a.sh, so the block stands"* ]]
+  [[ "$output" != *"BLOCK CLEARED BY ARBITER"* ]]
 }
 
 @test "#799: arbiter UNPROVEN keeps the per-file block" {
