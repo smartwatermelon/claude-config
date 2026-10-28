@@ -30,6 +30,7 @@
 # `git commit` genuinely does act on the cwd's repo, but the message says
 # which basis was used so a surprising block can be diagnosed rather than
 # puzzled over.
+# A literal `cd /dir` that starts the command, with no later cd, replaces that guess.
 #
 # Called by: hook-block-all.sh (PreToolUse Bash hook chain)
 
@@ -49,7 +50,7 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # and global options before the subcommand (`-C <path>`, `-c k=v`,
 # `--no-pager`, ...). Since #637 also env options (`env -i`, `env -C <dir>`),
 # and `xargs ... git commit`, which is denied on any branch.
-# #750: `"git" commit`, and `git -C "$X" commit` (denied). Backtick or nested -C values still escape.
+# #750: `"git" commit`, `git -C "$X" commit` (denied unless _rr_resolve knows $X). Backtick or nested -C values escape.
 #
 # NOT handled, and not closeable at this layer: aliases and shell functions
 # resolving to git, obfuscation through variables (`G=git; $G commit`), and any
@@ -85,6 +86,111 @@ _aval="([^[:space:]\"${sq}]|\"[^\"]*\"|${sq}[^${sq}]*${sq})*"
 readonly _aval
 _assign="[A-Za-z_][A-Za-z0-9_]*=${_aval}[[:space:]]+"
 readonly _assign
+
+# BEGIN repo-resolution: same text in hook-block-main-commit.sh and hook-block-personify.sh (a test checks).
+declare -A RR_VARS=()
+# Set by _rr_scan: the last cd target, NAME -> path, and the command after the scanned run.
+RR_CD=""
+RR_REST=""
+RR_CMD=""
+RR_PATH=""
+RR_WHY=""
+# A literal absolute path, bare or in one pair of quotes, with no $, backtick, glob, ; or paren.
+_rr_lit="(/[^[:space:]\$${bt}*?;&|()<>{\"'\\\\[]*|\"/[^\"\$${bt}*?\\\\]*\"|'/[^'\$${bt}*?\\\\]*')"
+_rr_end="[[:blank:]]*(;|&&|"$'\n'"|\$)"
+_rr_cd_re="^cd[[:blank:]]+${_rr_lit}${_rr_end}"
+_rr_set_re="^([A-Za-z_][A-Za-z0-9_]*)=(${_rr_lit}|\\\$PWD|\\\$\\{PWD\\}|\"\\\$PWD\"|\"\\\$\\{PWD\\}\")${_rr_end}"
+readonly _rr_lit _rr_end _rr_cd_re _rr_set_re
+
+# Strip one pair of surrounding quotes. Prints nothing for a path with a `..` part.
+_rr_unq() {
+  local v="$1"
+  if [[ "${v:0:1}" == '"' || "${v:0:1}" == "'" ]]; then v="${v:1:${#v}-2}"; fi
+  [[ "${v}/" != */../* ]] || return 0
+  printf '%s\n' "${v}"
+}
+
+# Leading `cd /abs`, `NAME=/abs`, `NAME=$PWD` statements run first in the top-level shell, so their values are known.
+_rr_scan() {
+  # Stop at any other statement, and at a cd to a missing dir (after `;` the shell stays put).
+  local rest="$1" v
+  RR_CMD="$1"
+  RR_VARS=()
+  RR_CD=""
+  while :; do
+    rest="${rest#"${rest%%[![:space:]]*}"}"
+    if [[ "${rest}" =~ ${_rr_cd_re} ]]; then
+      v="$(_rr_unq "${BASH_REMATCH[1]}")"
+      [[ -n "${v}" && -d "${v}" ]] || break
+      RR_CD="${v}"
+    elif [[ "${rest}" =~ ${_rr_set_re} ]]; then
+      if [[ -n "${BASH_REMATCH[3]}" ]]; then
+        v="$(_rr_unq "${BASH_REMATCH[3]}")"
+      else
+        v="${RR_CD}"
+      fi
+      [[ -n "${v}" ]] || break
+      RR_VARS["${BASH_REMATCH[1]}"]="${v}"
+    else
+      break
+    fi
+    rest="${rest:${#BASH_REMATCH[0]}}"
+  done
+  RR_REST="${rest}"
+}
+
+# 0 if RR_REST may change variable $1: it names it (not as $NAME/${NAME) or runs eval, source, read and the like.
+_rr_touched() {
+  local name="$1"
+  grep -qE "(^|[^A-Za-z0-9_\$\{])${name}([^A-Za-z0-9_]|\$)" <<<"${RR_REST}" && return 0
+  grep -qE "(^|[;&|({!]|[[:space:]](then|do|else))[[:space:]]*(eval|source|\\.|declare|typeset|local|export|readonly|read|mapfile|readarray|getopts|let|unset|printf[[:space:]]([^;&|]*[[:space:]])?-v)([[:space:]]|\$)" <<<"${RR_REST}"
+}
+
+# _rr_resolve <-C value $W, ${W} or $W/sub>: 0 and RR_PATH when resolved, else 1 and RR_WHY.
+_rr_resolve() {
+  local w="$1" name suffix
+  RR_PATH=""
+  RR_WHY=""
+  if [[ ! "${w}" =~ ^\$(\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(/.*)?$ ]]; then
+    RR_WHY="could not resolve ${w}: it is not a plain \$NAME, so only the shell knows it"
+    if [[ "${w}" == *"\$("* || "${w}" == *"${bt}"* ]]; then
+      RR_WHY="could not resolve ${w}: a command substitution"
+    fi
+    return 1
+  fi
+  name="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+  suffix="${BASH_REMATCH[4]}"
+  if [[ "${suffix}" =~ [\$\*\?\[\{] || "${suffix}" == *"${bt}"* || "${suffix}/" == */../* ]]; then
+    RR_WHY="could not resolve ${w}: the part after \$${name} is not a literal path"
+    return 1
+  fi
+  if [[ -z "${RR_VARS[${name}]+set}" ]]; then
+    if [[ "${RR_CMD}" =~ (^|[^A-Za-z0-9_])${name}=(\$\(|${bt}) ]]; then
+      RR_WHY="could not resolve \$${name}: assigned from a command substitution"
+    elif [[ "${RR_CMD}" =~ (^|[^A-Za-z0-9_])${name}= ]]; then
+      RR_WHY="could not resolve \$${name}: assigned, but not as a literal absolute path in the cd and NAME=/path statements that start the command"
+    else
+      RR_WHY="could not resolve \$${name}: not assigned in this command"
+    fi
+    return 1
+  fi
+  if _rr_touched "${name}"; then
+    RR_WHY="could not resolve \$${name}: the command names ${name} again later, or runs a builtin (eval, source, read, export, ...) that could change it"
+    return 1
+  fi
+  RR_PATH="${RR_VARS[${name}]}${suffix}"
+  return 0
+}
+# END repo-resolution
+
+_rr_scan "${cmd}"
+
+# 0 when RR_REST holds a cd, pushd or popd word, so RR_CD may not be where a later git call runs.
+_rr_rest_has_cd() {
+  local n
+  n="$(tr -c '[:alnum:]_./-' '\n' <<<"${RR_REST}" | grep -cxE 'cd|pushd|popd' || true)"
+  ((n > 0))
+}
 
 # env options before git (#637). Value-taking options are named, so no generic arm can swallow `git`.
 _word="(\"[^\"]*\"|${sq}[^${sq}]*${sq}|\\$\\([^)]*\\)|${bt}[^${bt}]*${bt}|[^[:space:]|;&${bt}\"${sq}]+)"
@@ -180,19 +286,29 @@ if printf '%s\n' "${_scan}" | grep -qE "${commit_re}"; then
   done <<<"${found}"
 
   # A -C dir the hook cannot read ($X, $(...), {}) denies, for env and git alike (#750).
+  # A git -C variable the command set to a literal path first resolves (_rr_resolve);
+  # env -C $X stays denied by the #637 backstop above.
   for d in ${env_dirs[@]+"${env_dirs[@]}"}; do
     if [[ "${d}" == *'$'* || "${d}" == *"${bt}"* || "${d}" == *'{}'* ]]; then
       _deny_unknown_repo "env -C ${d}"
     fi
   done
-  for d in ${git_dirs[@]+"${git_dirs[@]}"}; do
-    if [[ "${d}" == *'$'* || "${d}" == *"${bt}"* || "${d}" == *'{}'* ]]; then
-      _deny_unknown_repo "git -C ${d}"
+  for i in "${!git_dirs[@]}"; do
+    d="${git_dirs[i]}"
+    if [[ "${d}" == *'{}'* ]]; then _deny_unknown_repo "git -C ${d}"; fi
+    if [[ "${d}" == *'$'* || "${d}" == *"${bt}"* ]]; then
+      _rr_resolve "${d}" || _deny_unknown_repo "git -C ${d} (${RR_WHY})"
+      git_dirs[i]="${RR_PATH}"
     fi
   done
 
   cargs=()
   shown=''
+  # A leading literal cd moves where git runs, unless a later cd may move it again.
+  if [[ -n "${RR_CD}" ]] && ! _rr_rest_has_cd; then
+    cargs+=(-C "${RR_CD}")
+    shown="cd ${RR_CD}"
+  fi
   for d in ${env_dirs[@]+"${env_dirs[@]}"} ${git_dirs[@]+"${git_dirs[@]}"}; do
     # A leading ~ is expanded by the shell before git sees it.
     if [[ "${d}" == "${tilde}" || "${d}" == "${tilde}/"* ]]; then d="${HOME}${d:1}"; fi
@@ -202,7 +318,7 @@ if printf '%s\n' "${_scan}" | grep -qE "${commit_re}"; then
 
   if [[ "${#cargs[@]}" -gt 0 ]]; then
     branch=$(git "${cargs[@]}" symbolic-ref --short HEAD 2>/dev/null || echo 'unknown')
-    basis="directory named by -C/--chdir: ${shown}"
+    basis="directory named by cd or -C/--chdir: ${shown}"
   else
     branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo 'unknown')
     basis="current directory: $(pwd)"
@@ -401,8 +517,12 @@ _guard_piece() {
     found=$(_dirs_in "${part}")
     while IFS= read -r d; do
       [[ -n "${d}" ]] || continue
-      if [[ "${d}" == *'$'* || "${d}" == *"${bt}"* || "${d}" == *'{}'* ]]; then
+      if [[ "${d}" == *'{}'* ]]; then
         _deny_branch_unknown "-C ${d} is only known when the shell runs"
+      fi
+      if [[ "${d}" == *'$'* || "${d}" == *"${bt}"* ]]; then
+        _rr_resolve "${d}" || _deny_branch_unknown "-C ${d} is only known when the shell runs (${RR_WHY})"
+        d="${RR_PATH}"
       fi
       if [[ "${d}" == "${tilde}" || "${d}" == "${tilde}/"* ]]; then d="${HOME}${d:1}"; fi
       cargs+=(-C "${d}")
