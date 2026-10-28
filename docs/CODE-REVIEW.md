@@ -141,11 +141,18 @@ progress (dev-env#35):
    check never reads SEVERITY and never touches the current round's own
    findings, so a real security finding raised fresh still blocks.
 3. **Arbitration**: when code-reviewer's BLOCKING FAIL disagrees with a
-   clean adversarial-reviewer PASS, a third arbiter call (Sonnet) decides
-   which is correct instead of code-reviewer's verdict winning by default.
+   clean adversarial-reviewer PASS, a third arbiter call (Opus, with
+   Read/Grep/Glob) decides. The burden of proof is on clearing the block
+   (claude-config#799): the block clears only when the arbiter rules
+   REFUTED and quotes the code, with its `file:line`, that disproves the
+   finding. CONFIRMED, UNPROVEN, or a REFUTED with no quoted code keep the
+   block. Every cleared block is printed with the disputed finding and the
+   quoted proof, and is written to the review log.
    Every arbitration — whatever the verdict — appends a full verbatim
    record of all three reviewers to `.git/reviewer-disagreements.log` in
-   the repo being reviewed. **Nothing is filed as a GitHub issue.**
+   the repo being reviewed. Over 1 MiB (`review.disagreementLogMaxBytes`)
+   that log is renamed to `<log>.1` before the next append.
+   **Nothing is filed as a GitHub issue.**
 
    Arbitrations used to file into `smartwatermelon/claude-config` on an
    arbiter FAIL. That was removed in claude-config#418: across five real
