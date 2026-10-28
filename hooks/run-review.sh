@@ -193,6 +193,10 @@ fi
 # Printed on every keyed run; reviewers use no connectors. Dropped by exact match, other stderr kept.
 _REVIEW_KEY_STDERR_NOISE='claude.ai connectors are disabled because ANTHROPIC_API_KEY'
 
+# Reviewers use no MCP servers or telemetry. Without these, each sandboxed review hit ~30 network denials.
+REVIEW_CLI_ENV=(DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1)
+REVIEW_CLI_ARGS=(--strict-mcp-config)
+
 # Append one ledger line. Never fails: bookkeeping must not fail a review.
 _review_usage_log() {
   local auth="$1" rc="$2" out_file="$3" cost repo
@@ -216,6 +220,7 @@ _review_emit_stderr() {
 }
 
 # run_claude_cli <secs> <args...>: `timeout N env -u CLAUDECODE claude <args>`, same stdin/stdout/stderr/exit.
+# Every attempt also gets REVIEW_CLI_ENV and REVIEW_CLI_ARGS (no MCP, no telemetry).
 run_claude_cli() {
   local secs="$1"
   shift
@@ -234,7 +239,8 @@ run_claude_cli() {
 
   if [[ -z "${REVIEW_API_KEY}" ]]; then
     # No key: exactly the command this replaced, inherited env included.
-    timeout "${secs}" env -u CLAUDECODE "${CLAUDE_CLI}" "$@" <"${in}" >"${out}" 2>"${err}" || rc=$?
+    timeout "${secs}" env -u CLAUDECODE "${REVIEW_CLI_ENV[@]}" "${CLAUDE_CLI}" "${REVIEW_CLI_ARGS[@]}" "$@" \
+      <"${in}" >"${out}" 2>"${err}" || rc=$?
     _review_emit_stderr "${err}"
     cat "${out}"
     _review_usage_log subscription "${rc}" "${out}"
@@ -245,7 +251,7 @@ run_claude_cli() {
   # `export` is a builtin: the key reaches the child by env, never argv (ps).
   (
     export ANTHROPIC_API_KEY="${REVIEW_API_KEY}"
-    exec timeout "${secs}" env -u CLAUDECODE "${CLAUDE_CLI}" "$@"
+    exec timeout "${secs}" env -u CLAUDECODE "${REVIEW_CLI_ENV[@]}" "${CLAUDE_CLI}" "${REVIEW_CLI_ARGS[@]}" "$@"
   ) <"${in}" >"${out}" 2>"${err}" || rc=$?
   _review_usage_log api "${rc}" "${out}"
 
@@ -277,7 +283,7 @@ run_claude_cli() {
 
   # -u ANTHROPIC_API_KEY: the retry uses the subscription even if the caller exported a key.
   rc=0
-  timeout "${secs}" env -u CLAUDECODE -u ANTHROPIC_API_KEY "${CLAUDE_CLI}" "$@" \
+  timeout "${secs}" env -u CLAUDECODE -u ANTHROPIC_API_KEY "${REVIEW_CLI_ENV[@]}" "${CLAUDE_CLI}" "${REVIEW_CLI_ARGS[@]}" "$@" \
     <"${in}" >"${out}" 2>"${err}" || rc=$?
   _review_emit_stderr "${err}"
   cat "${out}"
@@ -372,8 +378,9 @@ ARBITER_MODEL=$(git config --get review.arbiterModel 2>/dev/null || echo "")
 [[ -n "${ARBITER_MODEL}" ]] || ARBITER_MODEL="claude-sonnet-5-5"
 ARBITER_MODEL_ARGS=(--model "${ARBITER_MODEL}")
 
-# Read-only tools, no MCP. Shared by the arbiter and codebase mode (#681).
-READONLY_TOOL_ARGS=(--tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob" --strict-mcp-config)
+# Read-only tools. Shared by the arbiter and codebase mode (#681).
+# No MCP: run_claude_cli adds --strict-mcp-config.
+READONLY_TOOL_ARGS=(--tools "Read,Grep,Glob" --allowedTools "Read,Grep,Glob")
 
 # --- Reviewer agent selection ---
 # Pinned to a fully-qualified plugin:agent name (git config review.codeReviewerAgent
@@ -1970,6 +1977,7 @@ invoke_agent() {
 # drops MCP servers: a probe on 2026-10-05 with both flags still reported
 # Gmail, Drive, Notion and 1Password tools. Adding --strict-mcp-config left
 # only Glob, Grep and Read. Codebase mode uses the same READONLY_TOOL_ARGS.
+# run_claude_cli adds the third flag.
 invoke_agent_readonly() {
   INVOKE_AGENT_READONLY=1 invoke_agent "$@"
 }

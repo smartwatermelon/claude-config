@@ -12,7 +12,9 @@
 #     exactly once on the subscription, with identical stdin and no key;
 #   - a keyed run that times out (124) is not retried, and 124 surfaces;
 #   - REVIEW_API_KEY_DISABLE=1 never touches the Keychain;
-#   - every run appends one line to the usage ledger.
+#   - every run appends one line to the usage ledger;
+#   - every run, retries included, starts with no MCP servers and no
+#     telemetry or error reporting.
 #
 # `security` and `claude` are both mocks. No real keychain is read.
 #
@@ -82,6 +84,8 @@ done
 n=$(($(cat "${MOCK_DIR}/count-${agent}" 2>/dev/null || echo 0) + 1))
 echo "${n}" >"${MOCK_DIR}/count-${agent}"
 printf '%s\n' "${ANTHROPIC_API_KEY:-<unset>}" >"${MOCK_DIR}/env-${agent}-${n}"
+printf 'DISABLE_TELEMETRY=%s DISABLE_ERROR_REPORTING=%s\n' \
+  "${DISABLE_TELEMETRY:-<unset>}" "${DISABLE_ERROR_REPORTING:-<unset>}" >"${MOCK_DIR}/quiet-${agent}-${n}"
 printf '%s\n' "$*" >"${MOCK_DIR}/argv-${agent}-${n}"
 ps -o args= -p "${PPID}" >"${MOCK_DIR}/parent-${agent}-${n}" 2>/dev/null || true
 cat >"${MOCK_DIR}/stdin-${agent}-${n}"
@@ -240,6 +244,35 @@ EOF
   run _run_review
   [ "$status" -eq 0 ]
   _env_is code-reviewer-1 "<unset>"
+}
+
+# Every recorded call (agents, arbiter, haiku probe) had --strict-mcp-config
+# in argv and telemetry and error reporting off in its env.
+_all_calls_quiet() {
+  local f n=0
+  for f in "${MOCK_DIR}"/argv-*; do
+    [[ -e "${f}" ]] || return 1
+    n=$((n + 1))
+    grep -qF -- "--strict-mcp-config" "${f}" || return 1
+    grep -qx 'DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1' "${f/argv-/quiet-}" || return 1
+  done
+  ((n > 0))
+}
+
+@test "no key: every call runs without MCP servers or telemetry" {
+  run _run_review
+  [ "$status" -eq 0 ]
+  _all_calls_quiet
+}
+
+@test "key and failed-key retry: every call runs without MCP servers or telemetry" {
+  touch "${MOCK_DIR}/has-key" "${MOCK_DIR}/keyed-fail"
+  run _run_review
+  [ "$status" -eq 0 ]
+  # The probe and both reviewers ran keyed, then again on the subscription.
+  _count_is code-reviewer 2
+  [ -e "${MOCK_DIR}/argv-probe-1" ]
+  _all_calls_quiet
 }
 
 @test "ledger: one JSON line per run, with auth, exit and cost" {
