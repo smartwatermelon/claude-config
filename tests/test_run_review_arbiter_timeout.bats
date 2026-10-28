@@ -54,7 +54,7 @@ if [[ "\${is_arbiter}" == true ]]; then
   jq -n '{type:"result",subtype:"success",is_error:false,
     result:"{}",
     structured_output:{ruling:"REFUTED",reason:"Read a.sh; the claim does not match the code.",
-      refutation:{location:"a.sh:1",quoted_code:"echo \\"line 0\\"",reason:"mock"}}}'
+      refutation:{location:"a.sh:1-2",quoted_code:"echo \\"line 0\\"\necho \\"line 1\\"",reason:"mock"}}}'
   exit 0
 fi
 if [[ "\${agent}" == "${CODE_REVIEWER}" ]]; then

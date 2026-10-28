@@ -68,7 +68,7 @@
 #       the old key scheme are never read (71), and an empty path list gets
 #       no round memory (72)
 #   26, 73-78. The arbiter clears a block only with quoted proof, and runs Opus with tools (claude-config#799)
-#   79. The quote must match the staged file at the cited repo-relative path (claude-config#358)
+#   79-80. The quote must match the staged file at the cited repo-relative path, with 20+ characters (#358)
 
 set -euo pipefail
 
@@ -1796,8 +1796,9 @@ arbiter_ruling_json() {
 # A well-formed REFUTED, reused by the tests where the block should clear.
 ARBITER_REFUTED_JSON="$(arbiter_ruling_json REFUTED \
   "The header already limits the script to macOS." \
-  "foo.sh:1" \
-  "#!/usr/bin/env bash" \
+  "foo.sh:1-2" \
+  "#!/usr/bin/env bash
+echo hello" \
   "SENTINEL_REFUTATION_REASON the cited guard is not needed for a macOS-only script.")"
 
 # =========================================================
@@ -2471,7 +2472,8 @@ assert_eq "#799: a 'VERDICT: PASS' line inside the reason does not clear (exit 1
 # 78: the same finding with a real refutation does clear, so the cases above
 # are measuring the proof rule, not a mock that can never clear.
 t799_json="$(arbiter_ruling_json REFUTED "The matcher runs before quotes are stripped." \
-  "foo.sh:2" 'echo hello' "The cited line is a plain echo; there is no matcher in this file.")"
+  "foo.sh:1-2" "#!/usr/bin/env bash
+echo hello" "The cited line is a plain echo; there is no matcher in this file.")"
 run_t799 refuted "${t799_json}"
 assert_eq "#799 control: a REFUTED with location and quoted code clears (exit 0)" "0" "${t799_exit}"
 assert_contains "#799 control: the disputed finding is printed" \
@@ -2483,12 +2485,14 @@ t799_refuted() {
   json="$(arbiter_ruling_json REFUTED "r" "$2" "$3" "rr")"
   run_t799 "$1" "${json}"
 }
-t799_refuted indent "foo.sh:2" "      echo hello   "
+t799_refuted indent "foo.sh:1-2" "      #!/usr/bin/env bash   
+    echo hello  "
 assert_eq "#358: a quote with different indentation clears (exit 0)" "0" "${t799_exit}"
 t799_refuted plus "foo.sh:1-2" "+#!/usr/bin/env bash
 +echo hello"
 assert_eq "#358: a two-line quote with + diff markers clears (exit 0)" "0" "${t799_exit}"
-t799_refuted noline "foo.sh" "echo hello"
+t799_refuted noline "foo.sh" "#!/usr/bin/env bash
+echo hello"
 assert_eq "#358: a location with no line number still verifies (exit 0)" "0" "${t799_exit}"
 t799_refuted fake "foo.sh:2" "deny_pattern='\$\(' # checked before quotes are stripped"
 assert_eq "#358: a fabricated quote keeps the block (exit 1)" "1" "${t799_exit}"
@@ -2498,17 +2502,40 @@ assert_not_contains "#358: no cleared-block report" "BLOCK CLEARED BY ARBITER" "
 t799_refuted order "foo.sh:1-2" "echo hello
 #!/usr/bin/env bash"
 assert_eq "#358: real lines quoted out of order keep the block (exit 1)" "1" "${t799_exit}"
-t799_refuted wrongpath "bar.sh:2" "echo hello"
+t799_refuted wrongpath "bar.sh:1-2" "#!/usr/bin/env bash
+echo hello"
 assert_eq "#358: a correct quote at a path not in the index keeps the block (exit 1)" "1" "${t799_exit}"
-t799_refuted dotdot "../testrepo/foo.sh:2" "echo hello"
+t799_refuted dotdot "../testrepo/foo.sh:1-2" "#!/usr/bin/env bash
+echo hello"
 assert_eq "#358: a ../ path keeps the block (exit 1)" "1" "${t799_exit}"
 assert_contains "#358: a ../ path is refused by name" "not a repo-relative path" "${t799_stderr}"
-t799_refuted absolute "${REPO_DIR}/foo.sh:2" "echo hello"
+t799_refuted absolute "${REPO_DIR}/foo.sh:1-2" "#!/usr/bin/env bash
+echo hello"
 assert_eq "#358: an absolute path keeps the block (exit 1)" "1" "${t799_exit}"
-T799_UNSTAGED="echo worktree-only"
-t799_refuted worktree "foo.sh:3" "echo worktree-only"
+T799_UNSTAGED="echo worktree-only-line-added-after-staging"
+t799_refuted worktree "foo.sh:3" "echo worktree-only-line-added-after-staging"
 unset T799_UNSTAGED
 assert_eq "#358: a quote found only in the working tree, not the staged file, keeps the block (exit 1)" "1" "${t799_exit}"
+
+# TEST 80: a quote under ARBITER_QUOTE_MIN_CHARS (20) non-whitespace characters proves nothing.
+t799_refuted short "foo.sh:3" "fi"
+assert_eq "#358: a quote of 'fi' keeps the block (exit 1)" "1" "${t799_exit}"
+assert_contains "#358: the too-short quote is named" \
+  "Arbiter quote check: the quote is too short to prove anything (2 characters, minimum 20), so the block stands" "${t799_stderr}"
+# "#!/usr/bin/env bash" is 18 non-whitespace characters; "e" and "ec" are prefixes of the staged "echo hello".
+t799_refuted len19 "foo.sh:1-2" "#!/usr/bin/env bash
+e"
+assert_eq "#358: a real 19-character quote keeps the block (exit 1)" "1" "${t799_exit}"
+assert_contains "#358: 19 characters is reported" "(19 characters, minimum 20)" "${t799_stderr}"
+t799_refuted len20 "foo.sh:1-2" "#!/usr/bin/env bash
+ec"
+assert_eq "#358: a real 20-character quote clears (exit 0)" "0" "${t799_exit}"
+t799_refuted shortlines "foo.sh:1-2" "/usr/bin/env bash
+echo hello"
+assert_eq "#358: two short real lines totalling 25 characters clear (exit 0)" "0" "${t799_exit}"
+t799_refuted plusshort "foo.sh:1-2" "+#!/usr/bin/env bash
++e"
+assert_eq "#358: +/- markers do not count toward the minimum (exit 1)" "1" "${t799_exit}"
 
 # =========================================================
 # TEST 34: --no-file dry-run prints non-blocking findings instead of filing

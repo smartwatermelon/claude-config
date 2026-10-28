@@ -648,6 +648,8 @@ arbiter_verdict() {
 }
 
 # A REFUTED clears only if its quote is in the staged file it cites (claude-config#358). $1 = PASS prose; prints why on failure.
+# Substring matching accepts any fragment, so a quote needs this many non-whitespace characters: `fi` or `}` proves nothing.
+ARBITER_QUOTE_MIN_CHARS=20
 verify_arbiter_quote() {
   local _line _loc="" _path _quote="" _inq=0
   while IFS= read -r _line; do
@@ -678,6 +680,19 @@ verify_arbiter_quote() {
   # The index, not the working tree: the arbiter rules on what is staged. cat-file runs no textconv filter.
   if ! git cat-file -e ":${_path}" 2>/dev/null; then
     printf 'Arbiter refutation cites %s, which is not in the staged tree, so the block stands (claude-config#358)\n' "${_path}"
+    return 1
+  fi
+  # Count non-whitespace characters, less one leading +/- marker per line.
+  local _qline _total=0
+  while IFS= read -r _qline; do
+    _qline="${_qline#"${_qline%%[![:space:]]*}"}"
+    _qline="${_qline#[+-]}"
+    _qline="${_qline//[[:space:]]/}"
+    _total=$((_total + ${#_qline}))
+  done <<<"${_quote}"
+  if ((_total < ARBITER_QUOTE_MIN_CHARS)); then
+    printf 'Arbiter quote check: the quote is too short to prove anything (%d characters, minimum %d), so the block stands\n' \
+      "${_total}" "${ARBITER_QUOTE_MIN_CHARS}"
     return 1
   fi
   # Each trimmed quoted line (or it minus a +/- marker) is in consecutive non-blank staged lines, in order. Fixed strings.

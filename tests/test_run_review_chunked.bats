@@ -101,11 +101,11 @@ if [[ "\${is_arbiter}" == true ]]; then
   elif [[ -f "${MOCK_DIR}/arbiter-noquote" ]]; then
     so='{"ruling":"REFUTED","reason":"Not severe enough to block.","refutation":{"location":"a.sh:1","quoted_code":"","reason":"minor"}}'
   elif [[ -f "${MOCK_DIR}/arbiter-fakequote" ]]; then
-    so='{"ruling":"REFUTED","reason":"r","refutation":{"location":"a.sh:1","quoted_code":"swap_args \\"\$2\\" \\"\$1\\"","reason":"invented"}}'
+    so='{"ruling":"REFUTED","reason":"r","refutation":{"location":"a.sh:1","quoted_code":"swap_args \\"\$2\\" \\"\$1\\" # reversed on purpose","reason":"invented"}}'
   elif [[ -f "${MOCK_DIR}/arbiter-oldpass" ]]; then
     so='{"verdict":"PASS","blocking":false,"findings":[]}'
   else
-    so='{"ruling":"REFUTED","reason":"Read a.sh; the claim does not match the code.","refutation":{"location":"a.sh:1","quoted_code":"echo \"line 0\"","reason":"MOCK_REFUTATION_REASON the call takes no arguments."}}'
+    so='{"ruling":"REFUTED","reason":"Read a.sh; the claim does not match the code.","refutation":{"location":"a.sh:1-2","quoted_code":"echo \"line 0\"\necho \"line 1\"","reason":"MOCK_REFUTATION_REASON the call takes no arguments."}}'
   fi
   jq -nc --argjson so "\${so}" '{type:"result",subtype:"success",is_error:false,result:(\$so|tojson),structured_output:\$so}'
   exit 0
@@ -437,7 +437,7 @@ _stage_one_blocking_file() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"=== BLOCK CLEARED BY ARBITER: a.sh ==="* ]]
   [[ "$output" == *"a.sh:1 - arguments reversed"* ]]
-  [[ "$output" == *"REFUTATION LOCATION: a.sh:1"* ]]
+  [[ "$output" == *"REFUTATION LOCATION: a.sh:1-2"* ]]
   [[ "$output" == *'| echo "line 0"'* ]]
   [[ "$output" == *"MOCK_REFUTATION_REASON"* ]]
   grep -q '^=== BLOCK CLEARED BY ARBITER: a.sh ===' "${EXPECTED_LOG}"
