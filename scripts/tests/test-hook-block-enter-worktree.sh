@@ -91,6 +91,41 @@ too_long="$(printf 'a%.0s' {1..101})"
 inp="$(make_input "${too_long}")"
 check "name over 100-char limit" 2 "${inp}"
 
+# --- path: re-entering an existing worktree ---
+# Fixtures live under a private temp dir; nothing here deletes or writes
+# outside it.
+fixture="$(mktemp -d "${TMPDIR:-/tmp}/enter-wt-test.XXXXXX")"
+repo="${fixture}/repo"
+mkdir -p "${repo}/.claude/worktrees/good-wt" "${repo}/.claude/worktrees/no-git" \
+  "${repo}/elsewhere"
+printf 'gitdir: %s/.git/worktrees/good-wt\n' "${repo}" >"${repo}/.claude/worktrees/good-wt/.git"
+printf 'gitdir: x\n' >"${repo}/elsewhere/.git"
+# A worktree-shaped symlink whose target is outside any .claude/worktrees/.
+ln -s "${repo}/elsewhere" "${repo}/.claude/worktrees/link-out"
+
+make_path_input() {
+  jq -n --arg path "$1" '{"tool_input":{"path":$path}}'
+}
+
+inp="$(make_path_input "${repo}/.claude/worktrees/good-wt")"
+check "path: existing worktree under .claude/worktrees" 0 "${inp}"
+inp="$(make_path_input "${repo}/.claude/worktrees/good-wt/")"
+check "path: trailing slash" 0 "${inp}"
+inp="$(make_path_input "${repo}/.claude/worktrees/no-git")"
+check "path: directory with no .git file" 2 "${inp}"
+inp="$(make_path_input "${repo}/.claude/worktrees/missing")"
+check "path: does not exist" 2 "${inp}"
+inp="$(make_path_input "${repo}/elsewhere")"
+check "path: outside .claude/worktrees" 2 "${inp}"
+inp="$(make_path_input "${repo}/.claude/worktrees/link-out")"
+check "path: symlink resolving outside .claude/worktrees" 2 "${inp}"
+inp="$(make_path_input "${repo}/.claude/worktrees/good-wt/../good-wt")"
+check "path: .. component" 2 "${inp}"
+inp="$(make_path_input ".claude/worktrees/good-wt")"
+check "path: relative" 2 "${inp}"
+inp="$(jq -n --arg path "${repo}/.claude/worktrees/good-wt" '{"tool_input":{"name":"x","path":$path}}')"
+check "path and name together" 2 "${inp}"
+
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
 [[ "${fail}" -eq 0 ]]

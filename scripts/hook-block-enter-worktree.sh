@@ -22,6 +22,9 @@
 #   name itself, which becomes a path component: it must be a plain slug, so it
 #   cannot traverse out of that directory or inject shell/path metacharacters.
 #
+#   `path` re-enters an existing worktree; it must resolve under some
+#   .claude/worktrees/ and hold a .git file.
+#
 # Called by: settings.json PreToolUse matcher "EnterWorktree"
 
 set -euo pipefail
@@ -49,6 +52,34 @@ deny() {
   printf 'Example: fix-gh-wrapper-issue-parsing\n' >&2
   exit 2
 }
+
+deny_path() {
+  local reason="${1}"
+  printf '%s BLOCKED ENTER_WORKTREE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${input}" \
+    >>"${HOME}/.claude/blocked-commands.log" || true
+  printf '🛑 BLOCKED: %s\n' "${reason}" >&2
+  printf '\n' >&2
+  printf 'Re-entering a worktree by path needs an existing linked worktree:\n' >&2
+  printf '  an absolute path with no "..", resolving to <repo>/.claude/worktrees/<slug>,\n' >&2
+  printf '  containing a .git file. Pass either name (new) or path (existing), not both.\n' >&2
+  exit 2
+}
+
+path=$(printf '%s\n' "${input}" | jq -r '.tool_input.path // empty')
+if [[ -n "${path}" ]]; then
+  [[ -z "${name}" ]] || deny_path "EnterWorktree takes name or path, not both"
+  [[ "${path}" == /* ]] || deny_path "EnterWorktree path must be absolute (got: ${path})"
+  while [[ "${path}" == */ && "${path}" != "/" ]]; do path="${path%/}"; done
+  [[ "/${path}/" == */../* ]] && deny_path "EnterWorktree path must not contain '..' (got: ${path})"
+  resolved=$(cd -P -- "${path}" 2>/dev/null && pwd -P) ||
+    deny_path "EnterWorktree path does not exist (got: ${path})"
+  if [[ ! "${resolved}" =~ ^/.+/\.claude/worktrees/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]]; then
+    deny_path "EnterWorktree path is not under .claude/worktrees/ (resolves to: ${resolved})"
+  fi
+  [[ -f "${resolved}/.git" ]] ||
+    deny_path "EnterWorktree path is not a linked worktree (no .git file in ${resolved})"
+  exit 0
+fi
 
 # A missing/empty name would let the harness fall back to a default we cannot
 # inspect. Require it explicitly.
