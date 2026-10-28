@@ -42,11 +42,13 @@ unset CDPATH
 #   review.model           - Claude model ID for code-reviewer (default: Haiku 5.5+ if the CLI has it, else Sonnet 5.5, for commits; Sonnet 5.5 for full-diff/codebase)
 #   review.adversarialModel - Claude model ID for adversarial-reviewer (default: claude-sonnet-5-5, always, regardless of mode)
 #   review.arbiterModel    - Claude model ID for the reconciliation arbiter
-#                             (default: claude-sonnet-5-5, only invoked when
+#                             (default: claude-opus-5-5, only invoked when
 #                             code-reviewer BLOCKING FAIL disagrees with an
 #                             adversarial-reviewer PASS)
-#   review.arbiterTimeout  - Chunked arbiter timeout (default: 300, or
+#   review.arbiterTimeout  - Arbiter timeout, both paths (default: 600, or
 #                             review.timeout if larger)
+#   review.disagreementLogMaxBytes - Rotate .git/reviewer-disagreements.log
+#                             to <log>.1 past this size (default: 1048576)
 #   review.maxAttempts     - Consecutive blocked commit reviews allowed per
 #                             branch before the hook refuses to review again
 #                             (default: 3). See check_attempt_limit (#646).
@@ -159,14 +161,15 @@ if [[ "${REVIEW_MODE}" == "codebase" ]]; then
   TIMEOUT_SECONDS=$(git config --get --type=int review.codebaseTimeout 2>/dev/null || echo "300")
 fi
 
-# Chunked arbiter (#682): it reads files like codebase mode, so the same 300s default, never below review.timeout.
+# Arbiter timeout, both paths (#682), never below review.timeout. 600s since #799: Opus with tools; a timeout blocks.
+ARBITER_TIMEOUT_DEFAULT=600
 ARBITER_TIMEOUT_SECONDS=$(git config --get --type=int review.arbiterTimeout 2>/dev/null || echo "")
 if [[ -z "${ARBITER_TIMEOUT_SECONDS}" ]]; then
-  ARBITER_TIMEOUT_SECONDS=300
+  ARBITER_TIMEOUT_SECONDS=${ARBITER_TIMEOUT_DEFAULT}
   ((TIMEOUT_SECONDS <= ARBITER_TIMEOUT_SECONDS)) || ARBITER_TIMEOUT_SECONDS=${TIMEOUT_SECONDS}
 fi
 # `timeout 0` never fires; fall back to the default.
-[[ "${ARBITER_TIMEOUT_SECONDS}" -ge 1 ]] || ARBITER_TIMEOUT_SECONDS=300
+[[ "${ARBITER_TIMEOUT_SECONDS}" -ge 1 ]] || ARBITER_TIMEOUT_SECONDS=${ARBITER_TIMEOUT_DEFAULT}
 
 # --- Reviewer authentication ---
 # Max API credit needs ANTHROPIC_API_KEY. Child env only: exported, it bills interactive use too.
@@ -370,12 +373,9 @@ ADVERSARIAL_MODEL=$(git config --get review.adversarialModel 2>/dev/null || echo
 [[ -n "${ADVERSARIAL_MODEL}" ]] || ADVERSARIAL_MODEL="claude-sonnet-5-5"
 ADVERSARIAL_MODEL_ARGS=(--model "${ADVERSARIAL_MODEL}")
 
-# Arbiter model: used only when code-reviewer and adversarial-reviewer
-# disagree (BLOCKING FAIL vs PASS) in commit mode. Defaults to the same
-# model as adversarial-reviewer since both need the bigger-model reasoning
-# the disagreement itself signals is warranted.
+# Arbiter model, used only on a BLOCKING FAIL vs PASS disagreement. Opus since claude-config#799: a Sonnet arbiter cleared a real block.
 ARBITER_MODEL=$(git config --get review.arbiterModel 2>/dev/null || echo "")
-[[ -n "${ARBITER_MODEL}" ]] || ARBITER_MODEL="claude-sonnet-5-5"
+[[ -n "${ARBITER_MODEL}" ]] || ARBITER_MODEL="claude-opus-5-5"
 ARBITER_MODEL_ARGS=(--model "${ARBITER_MODEL}")
 
 # Read-only tools. Shared by the arbiter and codebase mode (#681).
@@ -579,6 +579,198 @@ has_blocking_severity() {
 # Kept on ONE line: --json-schema takes the schema INLINE as a JSON string,
 # not a file path.
 REVIEW_JSON_SCHEMA='{"type":"object","required":["verdict","blocking","findings"],"properties":{"verdict":{"type":"string","enum":["PASS","FAIL"]},"blocking":{"type":"boolean"},"findings":{"type":"array","items":{"type":"object","required":["severity","location","issue"],"properties":{"severity":{"type":"string","enum":["BLOCKING","FIX_NOW","WARNING"]},"location":{"type":"string"},"issue":{"type":"string"},"details":{"type":"string"}}}}}}'
+
+# Arbiter ruling (claude-config#799). Only REFUTED with refutation.location and quoted_code clears; CONFIRMED and UNPROVEN block.
+ARBITER_JSON_SCHEMA='{"type":"object","required":["ruling","reason"],"properties":{"ruling":{"type":"string","enum":["REFUTED","CONFIRMED","UNPROVEN"]},"reason":{"type":"string"},"refutation":{"type":"object","required":["location","quoted_code","reason"],"properties":{"location":{"type":"string"},"quoted_code":{"type":"string"},"reason":{"type":"string"}}}}}'
+
+# Render an arbiter envelope ($1). Line 1 is always our own VERDICT: PASS|FAIL; model text is indented. Not proven REFUTED = FAIL.
+normalize_arbiter_response() {
+  local _raw _rendered _prose
+  _raw=$(extract_json_envelope "$1")
+  if _rendered=$(printf '%s' "${_raw}" | jq -er '
+    def str: if type == "string" then . else "" end;
+    def blank: (str | gsub("\\s"; "")) == "";
+    def indent: str | gsub("\n"; "\n    ");
+    def code: str | sub("\n+$"; "") | split("\n") | map("    | " + .) | join("\n");
+    .structured_output as $o
+    | if ($o | type) != "object" or ($o.ruling | type) != "string" then halt_error(3) else . end
+    | ($o.ruling | ascii_upcase) as $r
+    | (if ($o.refutation | type) == "object" then $o.refutation else {} end) as $f
+    | ($r == "REFUTED" and ($f.location | blank | not) and ($f.quoted_code | blank | not)) as $proved
+    | if $proved then
+        [ "VERDICT: PASS",
+          "RULING: REFUTED - the arbiter quoted code that disproves the finding; the block clears",
+          "REASON: " + ($o.reason | indent),
+          "REFUTATION LOCATION: " + ($f.location | indent),
+          "REFUTATION REASON: " + ($f.reason | indent),
+          "REFUTATION QUOTED CODE:",
+          ($f.quoted_code | code) ]
+      elif $r == "REFUTED" then
+        [ "VERDICT: FAIL",
+          "RULING: UNPROVEN - the arbiter answered REFUTED with no file:line or no quoted code; the block stands (fail closed)",
+          "REASON: " + ($o.reason | indent),
+          "REFUTATION LOCATION: " + ($f.location | indent),
+          "REFUTATION REASON: " + ($f.reason | indent) ]
+      elif $r == "CONFIRMED" then
+        [ "VERDICT: FAIL",
+          "RULING: CONFIRMED - the finding is real; the block stands",
+          "REASON: " + ($o.reason | indent) ]
+      elif $r == "UNPROVEN" then
+        [ "VERDICT: FAIL",
+          "RULING: UNPROVEN - the arbiter could not prove the finding false; the block stands (fail closed)",
+          "REASON: " + ($o.reason | indent) ]
+      else
+        [ "VERDICT: FAIL",
+          "RULING: UNPROVEN - unrecognized ruling; the block stands (fail closed)",
+          "REASON: " + ($o.reason | indent) ]
+      end
+    | join("\n")' 2>/dev/null) && [[ -n "${_rendered}" ]]; then
+    printf '%s\n' "${_rendered}"
+    return 0
+  fi
+  # No structured ruling. Show what the arbiter said, indented, for the human.
+  _prose=$(printf '%s' "${_raw}" | jq -er '.result | strings' 2>/dev/null) || _prose="${_raw}"
+  printf 'VERDICT: FAIL\nRULING: UNPROVEN - the arbiter returned no structured ruling; the block stands (fail closed)\n'
+  if [[ -n "${_prose//[[:space:]]/}" ]]; then
+    printf -- '--- arbiter output ---\n'
+    printf '%s\n' "${_prose}" | sed 's/^/    /'
+  fi
+}
+
+# PASS only when line 1 is exactly "VERDICT: PASS". Not parse_verdict: model text quoting "VERDICT: PASS" must not win.
+arbiter_verdict() {
+  local _first="${1%%$'\n'*}"
+  if [[ "${_first}" == "VERDICT: PASS" ]]; then
+    printf 'PASS\n'
+  else
+    printf 'FAIL\n'
+  fi
+}
+
+# Substring matching accepts any fragment, so a quote needs this many non-whitespace characters: `fi` or `}` proves nothing.
+ARBITER_QUOTE_MIN_CHARS=20
+
+# A REFUTED clears only if its quote is in the staged file it cites (claude-config#358). $1 = PASS prose; prints why on failure.
+verify_arbiter_quote() {
+  local _line _loc="" _path _quote="" _inq=0
+  while IFS= read -r _line; do
+    if ((_inq)); then
+      [[ "${_line}" != "    | "* ]] || _quote+="${_line#    | }"$'\n'
+      continue
+    fi
+    case "${_line}" in
+      "REFUTATION LOCATION: "*) [[ -n "${_loc}" ]] || _loc="${_line#REFUTATION LOCATION: }" ;;
+      "REFUTATION QUOTED CODE:") _inq=1 ;;
+      *) ;;
+    esac
+  done <<<"$1"
+  _loc="${_loc//\`/}"
+  _loc="${_loc#"${_loc%%[![:space:]]*}"}"
+  _loc="${_loc%"${_loc##*[![:space:]]}"}"
+  # path, path:N or path:N-M.
+  if [[ "${_loc}" =~ ^(.+):[0-9]+(-[0-9]+)?$ ]]; then
+    _path="${BASH_REMATCH[1]}"
+  else
+    _path="${_loc}"
+  fi
+  _path="${_path#./}"
+  if [[ -z "${_path}" || "${_path}" == /* || "/${_path}/" == */../* ]]; then
+    printf 'Arbiter refutation cites "%s", which is not a repo-relative path, so the block stands (claude-config#358)\n' "${_loc}"
+    return 1
+  fi
+  # The index, not the working tree: the arbiter rules on what is staged. cat-file runs no textconv filter.
+  if ! git cat-file -e ":${_path}" 2>/dev/null; then
+    printf 'Arbiter refutation cites %s, which is not in the staged tree, so the block stands (claude-config#358)\n' "${_path}"
+    return 1
+  fi
+  # Count non-whitespace characters, less one leading +/- marker per line.
+  local _qline _total=0
+  while IFS= read -r _qline; do
+    _qline="${_qline#"${_qline%%[![:space:]]*}"}"
+    _qline="${_qline#[+-]}"
+    _qline="${_qline//[[:space:]]/}"
+    _total=$((_total + ${#_qline}))
+  done <<<"${_quote}"
+  if ((_total < ARBITER_QUOTE_MIN_CHARS)); then
+    printf 'Arbiter quote check: the quote is too short to prove anything (%d characters, minimum %d), so the block stands\n' \
+      "${_total}" "${ARBITER_QUOTE_MIN_CHARS}"
+    return 1
+  fi
+  # Each trimmed quoted line (or it minus a +/- marker) is in consecutive non-blank staged lines, in order. Fixed strings.
+  if awk '
+    function trim(s) { gsub(/^[ \t\r]+|[ \t\r]+$/, "", s); return s }
+    function hit(q, f,   alt) {
+      if (index(f, q)) return 1
+      if (q ~ /^[-+]/) { alt = trim(substr(q, 2)); if (alt != "" && index(f, alt)) return 1 }
+      return 0
+    }
+    FILENAME == ARGV[1] { t = trim($0); if (t != "") q[++nq] = t; next }
+    { t = trim($0); if (t != "") f[++nf] = t }
+    END {
+      if (nq == 0) exit 1
+      for (s = 1; s + nq - 1 <= nf; s++) {
+        ok = 1
+        for (k = 1; k <= nq; k++) if (!hit(q[k], f[s + k - 1])) { ok = 0; break }
+        if (ok) exit 0
+      }
+      exit 1
+    }' <(printf '%s' "${_quote}") <(git cat-file blob ":${_path}" 2>/dev/null || true); then
+    return 0
+  fi
+  printf 'Arbiter quote check: the quote did not match %s, so the block stands (claude-config#358)\n' "${_path}"
+  return 1
+}
+
+# One "  LOCATION - ISSUE" line per BLOCKING finding in reviewer prose $1. Prints nothing when none can be read.
+blocking_findings_summary() {
+  printf '%s\n' "$1" | tr -d '*`' | awk '
+    function flush() {
+      if (sev ~ /^BLOCKING/ && (issue != "" || loc != "")) {
+        printf "  %s - %s\n", (loc == "" ? "unspecified" : loc), (issue == "" ? "unspecified" : issue)
+      }
+      issue = ""; sev = ""; loc = ""
+    }
+    /^[[:space:]]*ISSUE:/ { flush(); sub(/^[[:space:]]*ISSUE:[[:space:]]*/, ""); issue = $0; next }
+    /^[[:space:]]*SEVERITY:/ { sub(/^[[:space:]]*SEVERITY:[[:space:]]*/, ""); sev = toupper($0); next }
+    /^[[:space:]]*LOCATION:/ { sub(/^[[:space:]]*LOCATION:[[:space:]]*/, ""); loc = $0; next }
+    END { flush() }' || true
+}
+
+# Print a cleared block's finding and proof (#799) to stderr and DISAGREEMENT_LOG; set CLEARED_BLOCK_TEXT. Call outside $(...).
+CLEARED_BLOCK_TEXT=""
+report_cleared_block() {
+  local _label="$1" _findings="$2" _ruling="$3" _disputed _proof _block
+  _disputed=$(blocking_findings_summary "${_findings}")
+  [[ -n "${_disputed}" ]] || _disputed="  (no ISSUE/LOCATION line could be read; the reviewer's full output is in the review log)"
+  # Drop line 1, the VERDICT line.
+  _proof=$(printf '%s\n' "${_ruling}" | tail -n +2 | sed 's/^/  /') || _proof=""
+  _block="=== BLOCK CLEARED BY ARBITER: ${_label} ===
+A BLOCKING finding was overruled. Check the quoted code against the file (claude-config#799).
+Disputed finding:
+${_disputed}
+Arbiter refutation:
+${_proof}
+=== END CLEARED BLOCK ==="
+  CLEARED_BLOCK_TEXT="${_block}"
+  printf '\n%s\n\n' "${_block}" >&2
+  if [[ -n "${DISAGREEMENT_LOG:-}" ]]; then
+    rotate_disagreement_log || true
+    { printf '%s\n' "${_block}" >>"${DISAGREEMENT_LOG}"; } 2>/dev/null || true
+  fi
+  return 0
+}
+
+# Over DISAGREEMENT_LOG_MAX_BYTES, rename the log to <log>.1 (one generation). Rename via REVIEW_MV_BIN; best-effort.
+rotate_disagreement_log() {
+  local _log="${DISAGREEMENT_LOG:-}" _size
+  [[ -n "${_log}" && -f "${_log}" && ! -L "${_log}" ]] || return 0
+  _size=$(wc -c <"${_log}" 2>/dev/null) || return 0
+  _size="${_size//[[:space:]]/}"
+  [[ "${_size}" =~ ^[0-9]+$ ]] || return 0
+  ((_size > DISAGREEMENT_LOG_MAX_BYTES)) || return 0
+  "${REVIEW_MV_BIN}" -f "${_log}" "${_log}.1" 2>/dev/null || true
+  return 0
+}
 
 # Sentinel line carrying the structured decision from an agent invocation to
 # the gates downstream. invoke_agent returns prose on stdout and every caller
@@ -1296,6 +1488,38 @@ If you have no tools, LOCATION must name a file that appears in the diff you
 were shown. A finding about a file you were not shown is a guess about its
 contents.'
 
+# The arbiter's burden of proof (claude-config#799), shared by both arbiter prompts. The shell enforces it too.
+ARBITER_RULING_RULES='YOUR ROLE: you are an independent judge. You are not either reviewer, and you
+are not on either side. Your only question is whether the disputed BLOCKING
+finding is FALSE.
+
+THE BURDEN OF PROOF IS ON CLEARING THE BLOCK. The block stands unless you prove
+the finding false from the code itself. Give exactly one ruling:
+
+- REFUTED: the finding is false, and the code proves it. You MUST fill
+  refutation.location with a file:line, refutation.quoted_code with the exact
+  lines from that place that disprove the claim (copy them, do not paraphrase),
+  and refutation.reason with how those lines disprove it. A REFUTED with no
+  file:line or no quoted code is treated as UNPROVEN, and the block stands.
+- CONFIRMED: the finding is real. The block stands.
+- UNPROVEN: you cannot show either. The block stands. This is the correct
+  ruling whenever you are unsure.
+
+None of these clear a block, so none of them is REFUTED:
+- "it is not severe enough", or "it is below the BLOCKING bar". A finding that
+  is real but arguably below the bar is UNPROVEN, not REFUTED.
+- "it is out of scope".
+- "it is already mitigated", unless you quote the code that mitigates it.
+- "the other reviewer passed it". A PASS from the other reviewer that never
+  mentions this finding is NOT evidence against it. That reviewer may simply
+  have missed it. Only the code is evidence.
+
+Do not introduce new findings of your own. You are judging one finding, not
+reviewing the diff.
+
+Put a short summary of your ruling in reason. Fill refutation only for
+REFUTED.'
+
 # --- Version-pin-unfamiliarity downgrade ---
 # Rationale and rules: docs/CODE-REVIEW.md
 # §Version-Pin Unfamiliarity Is Not a Blocking Finding
@@ -1905,7 +2129,10 @@ invoke_agent() {
   if [[ -n "${INVOKE_AGENT_READONLY:-}" ]]; then
     tool_args=("${READONLY_TOOL_ARGS[@]}")
   fi
-  agent_output=$(echo "${prompt}" | run_claude_cli "${TIMEOUT_SECONDS}" --agent "${agent_name}" -p "${model_args[@]}" --output-format json --json-schema "${REVIEW_JSON_SCHEMA}" "${tool_args[@]}" --no-session-persistence 2>"${_agent_err}") || exit_code=$?
+  # The arbiter answers its own schema (claude-config#799); see invoke_agent_arbiter.
+  local schema="${REVIEW_JSON_SCHEMA}"
+  [[ -z "${INVOKE_AGENT_ARBITER:-}" ]] || schema="${ARBITER_JSON_SCHEMA}"
+  agent_output=$(echo "${prompt}" | run_claude_cli "${TIMEOUT_SECONDS}" --agent "${agent_name}" -p "${model_args[@]}" --output-format json --json-schema "${schema}" "${tool_args[@]}" --no-session-persistence 2>"${_agent_err}") || exit_code=$?
   _slow_notice_stop
   if [[ -s "${_agent_err}" ]]; then
     cat "${_agent_err}" >&2
@@ -1946,6 +2173,13 @@ invoke_agent() {
   # as a leading sentinel when the reviewer actually supplied one. A response
   # that is not an envelope (older CLI, raw error text) passes through as prose,
   # unmarked, so the gate falls back to has_blocking_severity().
+  #
+  # An arbiter ruling has no verdict or blocking field, so it has its own
+  # normalizer. It is never cached: its callers pass an empty cache_file.
+  if [[ -n "${INVOKE_AGENT_ARBITER:-}" ]]; then
+    normalize_arbiter_response "${agent_output}"
+    return 0
+  fi
   agent_output=$(normalize_agent_response "${agent_output}")
 
   # Return the output for parsing
@@ -1963,7 +2197,7 @@ invoke_agent() {
 # invoke_agent, but the agent can read the repository: Read, Grep and Glob,
 # and nothing else. Same arguments, output, cache and error handling.
 #
-# Only the chunked-path arbiter uses this (claude-config#647). Reviewers stay
+# Only the arbiters use this, via invoke_agent_arbiter (#647, #799). Reviewers stay
 # on `--tools ""`, and the unverifiable-claim downgrade still assumes they
 # cannot read files. The arbiter is different on both cost and need:
 #   * It runs only when a per-file reviewer blocks and the whole-diff
@@ -1980,6 +2214,13 @@ invoke_agent() {
 # run_claude_cli adds the third flag.
 invoke_agent_readonly() {
   INVOKE_AGENT_READONLY=1 invoke_agent "$@"
+}
+
+# Arbiter call, both paths (#799). Read with arbiter_verdict(). Never cached: a cached PASS has no proof. $1 agent, $2 prompt, $3... model.
+invoke_agent_arbiter() {
+  local _agent="$1" _prompt="$2"
+  shift 2
+  INVOKE_AGENT_ARBITER=1 invoke_agent_readonly "${_agent}" "${_prompt}" "" "$@"
 }
 
 # Records a code-reviewer/adversarial-reviewer disagreement and how the
@@ -2036,6 +2277,7 @@ file_reviewer_disagreement_issue() {
   # disagreement is as diagnostically useful as a FAIL, and neither is
   # published anywhere.
   if [[ -n "${DISAGREEMENT_LOG}" ]]; then
+    rotate_disagreement_log || true
     {
       printf -- '=== REVIEWER DISAGREEMENT %s ===\n' "${ts}"
       printf -- 'repo: %s\n' "${repo_slug}"
@@ -2553,9 +2795,7 @@ $(strip_structured_blocking "${_rout}")"
   # one bad finding cannot drag a sound one down with it. Calls are serial;
   # this runs only on disagreement.
   #
-  # Fail closed: only a parsed VERDICT: PASS clears a block. FAIL, empty
-  # output, timeout or agent error leave it blocking. Unreviewed files are not
-  # arbitrated and still block below, whatever the arbiter rules here (#588).
+  # Fail closed: only a REFUTED with file:line and quoted code clears (#799). Unreviewed files still block below (#588).
   #
   # Cached adversarial PASS (dev-env#35 / claude-config#246): accepted as the
   # trigger. The chunked adversarial cache is keyed on DIFF_HASH (script SHA +
@@ -2567,14 +2807,11 @@ $(strip_structured_blocking "${_rout}")"
   # reasoning ("VERDICT: PASS (cached)"), so the prompt says so plainly rather
   # than presenting it as a reasoned verdict.
   #
-  # The arbiter cache key adds a hash of the disputed finding to DIFF_HASH and
-  # the file. A failed per-file review is never cached, so a retry can raise a
-  # different finding on the same file; a DIFF_HASH+file key would hand that
-  # new finding the old finding's PASS.
+  # The arbiter itself is not cached (claude-config#799): a cache hit carries no quoted proof.
   local original_blocking_count=${blocking_count} overruled_count=0 arbiter_log=""
   if [[ ${blocking_count} -gt 0 && "${adv_status}" == "pass" ]]; then
     log_warn "${blocking_count} per-file BLOCKING result(s) disagree with adversarial-reviewer PASS - arbitrating"
-    local _adv_evidence _ai _afile _afindings _adiff _akey _aprompt _aout _averdict _asafe _atimeout
+    local _adv_evidence _ai _afile _afindings _adiff _aprompt _aout _averdict _atimeout _aquote
     if grep -q 'VERDICT: PASS (cached)' <<<"${adv_display}"; then
       _adv_evidence="VERDICT: PASS (cached result from an earlier run on this identical diff; no reasoning is available. Do not treat it as evidence beyond \"passed\". Rely on the file.)"
     else
@@ -2584,11 +2821,10 @@ $(strip_structured_blocking "${_rout}")"
       _afile="${blocking_files[${_ai}]}"
       _afindings=$(strip_structured_blocking "${blocking_outputs[${_ai}]}")
       _adiff=$(git diff --cached -U10 -- "${_afile}" 2>/dev/null || true)
-      _aprompt="Two reviewers disagree on whether this commit is safe. A per-file reviewer read only the diff of ${_afile} and found a BLOCKING issue. A second reviewer read the whole diff and found no blocking issue. Decide whether the per-file finding holds.
+      _aprompt="A per-file reviewer read only the diff of ${_afile} and found a BLOCKING issue. A second reviewer read the whole diff and reported no blocking issue. You are an independent judge: decide whether the per-file finding is false.
 
 IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
 Do NOT output Protocol 0 environment check or any preamble.
-Begin your response directly with the verdict in the specified format below.
 
 You can use Read, Grep and Glob. Before ruling, open the cited file and check the claim against the current code. Paths are relative to the repository root, which is your working directory. The diff below is what is staged for this commit; the working-tree file can also hold unstaged edits, so where the two differ, the diff wins.
 
@@ -2603,42 +2839,26 @@ ${_adv_evidence}
 ${_adiff}
 \`\`\`
 
-Decide: is the per-file reviewer's BLOCKING finding a genuine, currently-present issue in this diff, or does it not hold (contradicted by the code, out of scope, already mitigated, a false positive)?
+The BLOCKING bar the reviewers were held to, for context. You do not set severity or blocking; those are the reviewers' fields.
 
 ${REVIEW_SEVERITY_RULES}
 
-You are ruling on ONE question: does the disputed finding meet the BLOCKING bar
-above? If it is real but does not meet that bar — including anything that is
-merely FIX_NOW-shaped or a style preference — the correct ruling is PASS. Do
-not introduce new findings of your own; you are arbitrating, not reviewing.
-
-CRITICAL: Respond with this exact format:
-
-VERDICT: [PASS or FAIL]
-
-[Explain which reviewer is correct and why, in 2-4 sentences. Name what you read in the file.]
-
-[If VERDICT: FAIL, restate the still-blocking issue:]
-ISSUE: [one-line description]
-SEVERITY: BLOCKING
-LOCATION: [file:line]
-DETAILS: [explanation and fix]"
-      _akey=$(printf '%s\n%s\n' "${_afile}" "${_afindings}" | shasum -a 256 2>/dev/null | awk '{print $1}' || true)
-      _asafe="${_afile//\//__}"
-      _asafe="${_asafe// /_}"
-      if [[ -n "${_akey}" ]]; then
-        _akey="${CACHE_DIR}/arbiter-chunked-${DIFF_HASH}-${_asafe}-${_akey}"
-      fi
+${ARBITER_RULING_RULES}"
       # Own timeout (#682); the prefix lasts for this call only, inside $(...).
+      # Not cached since claude-config#799: a cached PASS carries no quoted
+      # proof, so it could neither be checked nor shown (invoke_agent_arbiter).
       _aout=$(TIMEOUT_SECONDS="${ARBITER_TIMEOUT_SECONDS}" \
         REVIEW_TIMEOUT_HINT="review.arbiterTimeout $((ARBITER_TIMEOUT_SECONDS * 2))" \
-        invoke_agent_readonly "adversarial-reviewer" "${_aprompt}" "${_akey}" "${ARBITER_MODEL_ARGS[@]}") || true
+        invoke_agent_arbiter "adversarial-reviewer" "${_aprompt}" "${ARBITER_MODEL_ARGS[@]}") || true
       [[ -n "${_aout//[[:space:]]/}" ]] || _aout="VERDICT: FAIL (agent error: invoke_agent produced no output)"
-      # Read from the VERDICT line, as on the single-pass path; the structured
-      # sentinel has no consumer here.
-      _aout=$(strip_structured_blocking "${_aout}")
-      _averdict=$(parse_verdict "${_aout}")
-      [[ "${_averdict}" == "PASS" ]] || _averdict="FAIL"
+      # Only a proven REFUTED clears (claude-config#799); see arbiter_verdict.
+      _averdict=$(arbiter_verdict "${_aout}")
+      if [[ "${_averdict}" == "PASS" ]] && ! _aquote=$(verify_arbiter_quote "${_aout}"); then
+        _averdict="FAIL"
+        _aout="${_aout}
+QUOTE CHECK: ${_aquote}"
+        log_error "${_aquote}"
+      fi
       # A timeout is no ruling: it fails closed, but the log says so (#682).
       _atimeout=""
       if grep -qx 'VERDICT: FAIL (timeout)' <<<"${_aout}"; then
@@ -2655,7 +2875,10 @@ arbiter: ${_averdict} (${_afile})${_atimeout}
       file_reviewer_disagreement_issue "${_afindings}" "${adv_display}" "${_aout}" "${_averdict}"
 
       if [[ "${_averdict}" == "PASS" ]]; then
-        log_success "Arbiter cleared the per-file block on ${_afile} (now a warning)"
+        report_cleared_block "${_afile}" "${_afindings}" "${_aout}"
+        arbiter_log="${arbiter_log}${CLEARED_BLOCK_TEXT}
+"
+        log_warn "Arbiter cleared the per-file block on ${_afile} (now a warning) - read the refutation above"
         # Not ((blocking_count -= 1)): reaching 0 returns status 1 under set -e.
         blocking_count=$((blocking_count - 1))
         ((warning_count += 1))
@@ -2830,10 +3053,15 @@ fi
 REVIEW_LOG="${REVIEW_LOG:-${GIT_DIR_PATH}/last-review-result.log}"
 # Sibling of REVIEW_LOG: the append-only record of code-reviewer /
 # adversarial-reviewer disagreements and how the arbiter resolved each one.
-# Unlike REVIEW_LOG (truncated each run), this accumulates across runs — it
-# doubles as the dedup source of truth for issue filing (claude-config#332).
+# Unlike REVIEW_LOG (truncated each run), this accumulates across runs; no program reads it since #418.
 # Overridable by env var so tests can point it at a temp path.
 DISAGREEMENT_LOG="${DISAGREEMENT_LOG:-${GIT_DIR_PATH}/reviewer-disagreements.log}"
+# Rotation cap: review.disagreementLogMaxBytes, else REVIEW_DISAGREEMENT_LOG_MAX_BYTES, else 1 MiB.
+DISAGREEMENT_LOG_MAX_BYTES=$(git config --get --type=int review.disagreementLogMaxBytes 2>/dev/null || echo "")
+[[ -n "${DISAGREEMENT_LOG_MAX_BYTES}" ]] || DISAGREEMENT_LOG_MAX_BYTES="${REVIEW_DISAGREEMENT_LOG_MAX_BYTES:-1048576}"
+[[ "${DISAGREEMENT_LOG_MAX_BYTES}" =~ ^[0-9]+$ && "${DISAGREEMENT_LOG_MAX_BYTES}" -ge 1 ]] || DISAGREEMENT_LOG_MAX_BYTES=1048576
+# The rename rotate_disagreement_log runs. Injected so tests can stub it.
+REVIEW_MV_BIN="${REVIEW_MV_BIN:-mv}"
 # Copies of REVIEW_LOG from runs that blocked (claude-config#455). REVIEW_LOG is
 # truncated by the next run, so a retry used to erase the evidence for a block.
 REVIEW_BLOCKED_DIR="${REVIEW_BLOCKED_DIR:-${GIT_DIR_PATH}/review-blocked}"
@@ -3959,11 +4187,12 @@ if [[ "${CODE_REVIEWER_VERDICT}" == "FAIL" ]]; then
     if [[ "${ADVERSARIAL_AVAILABLE}" == true && "${ADVERSARIAL_VERDICT}" == "PASS" ]]; then
       log_warn "code-reviewer BLOCKING FAIL disagrees with adversarial-reviewer PASS — arbitrating"
 
-      ARBITER_PROMPT="Two reviewers disagree on whether this diff is safe to commit. Read both verdicts and the diff, then decide which reviewer is correct.
+      ARBITER_PROMPT="One reviewer found a BLOCKING issue in this diff. A second reviewer reported no blocking issue. You are an independent judge: decide whether the BLOCKING finding is false.
 
 IMPORTANT: You are being invoked as a focused analysis tool with --no-session-persistence.
 Do NOT output Protocol 0 environment check or any preamble.
-Begin your response directly with the verdict in the specified format below.
+
+You can use Read, Grep and Glob. Before ruling, open the cited file and check the claim against the current code. Paths are relative to the repository root, which is your working directory. The diff below is what is staged for this commit; the working-tree file can also hold unstaged edits, so where the two differ, the diff wins.
 
 === CODE-REVIEWER VERDICT (found a BLOCKING issue) ===
 ${CODE_REVIEWER_DISPLAY}
@@ -3976,49 +4205,39 @@ ${ADVERSARIAL_DISPLAY}
 ${DIFF}
 \`\`\`
 
-Decide: is code-reviewer's BLOCKING finding a genuine, currently-present issue in this diff, or is adversarial-reviewer correct that it doesn't apply (e.g. out of stated scope, already mitigated, a false positive)?
+The BLOCKING bar the reviewers were held to, for context. You do not set severity or blocking; those are the reviewers' fields.
 
 ${REVIEW_SEVERITY_RULES}
 
-You are ruling on ONE question: does the disputed finding meet the BLOCKING bar
-above? If it is real but does not meet that bar — including anything that is
-merely FIX_NOW-shaped or a style preference — the correct ruling is PASS. Do
-not introduce new findings of your own; you are arbitrating, not reviewing.
+${ARBITER_RULING_RULES}"
 
-CRITICAL: Respond with this exact format:
-
-VERDICT: [PASS or FAIL]
-
-[Explain which reviewer is correct and why, in 2-4 sentences.]
-
-[If VERDICT: FAIL, restate the still-blocking issue:]
-ISSUE: [one-line description]
-SEVERITY: BLOCKING
-LOCATION: [file:line]
-DETAILS: [explanation and fix]"
-
-      ARBITER_CACHE="${CACHE_DIR}/arbiter-${DIFF_HASH}"
-      ARBITER_OUTPUT=$(invoke_agent "adversarial-reviewer" "${ARBITER_PROMPT}" "${ARBITER_CACHE}" "${ARBITER_MODEL_ARGS[@]}") || true
+      # #799: read-only tools, review.arbiterTimeout (#682), the proof-carrying ruling, and no cache.
+      ARBITER_OUTPUT=$(TIMEOUT_SECONDS="${ARBITER_TIMEOUT_SECONDS}" \
+        REVIEW_TIMEOUT_HINT="review.arbiterTimeout $((ARBITER_TIMEOUT_SECONDS * 2))" \
+        invoke_agent_arbiter "adversarial-reviewer" "${ARBITER_PROMPT}" "${ARBITER_MODEL_ARGS[@]}") || true
       [[ -n "${ARBITER_OUTPUT}" ]] || ARBITER_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
 
-      # The arbiter's ruling is read from its VERDICT line, not from a
-      # severity gate, so its structured sentinel has no consumer — strip it
-      # everywhere. The disagreement issue is read by a human.
-      ARBITER_OUTPUT=$(strip_structured_blocking "${ARBITER_OUTPUT}")
+      # Only a proven REFUTED clears (#799), and only if its quote is in the staged file (#358).
+      ARBITER_VERDICT=$(arbiter_verdict "${ARBITER_OUTPUT}")
+      if [[ "${ARBITER_VERDICT}" == "PASS" ]] && ! ARBITER_QUOTE_WHY=$(verify_arbiter_quote "${ARBITER_OUTPUT}"); then
+        ARBITER_VERDICT="FAIL"
+        ARBITER_OUTPUT="${ARBITER_OUTPUT}
+QUOTE CHECK: ${ARBITER_QUOTE_WHY}"
+      fi
 
       echo "=== ARBITER (reconciling code-reviewer vs adversarial-reviewer) ===" >&2
       echo "${ARBITER_OUTPUT}" >&2
       echo "" >&2
       { printf '=== ARBITER ===\n%s\n' "${ARBITER_OUTPUT}"; } >>"${REVIEW_LOG}" || true
-
-      ARBITER_VERDICT=$(parse_verdict "${ARBITER_OUTPUT}")
-      [[ -n "${ARBITER_VERDICT}" ]] || ARBITER_VERDICT="FAIL"
+      [[ -z "${ARBITER_QUOTE_WHY:-}" ]] || log_error "${ARBITER_QUOTE_WHY}"
       printf 'arbiter: %s\n' "${ARBITER_VERDICT}" >>"${REVIEW_LOG}" || true
 
       file_reviewer_disagreement_issue "${CODE_REVIEWER_DISPLAY}" "${ADVERSARIAL_DISPLAY}" "${ARBITER_OUTPUT}" "${ARBITER_VERDICT}"
 
       if [[ "${ARBITER_VERDICT}" == "PASS" ]]; then
-        log_success "Arbiter sided with adversarial-reviewer — commit allowed"
+        report_cleared_block "whole diff" "${CODE_REVIEWER_DISPLAY}" "${ARBITER_OUTPUT}"
+        { printf '%s\n' "${CLEARED_BLOCK_TEXT}" >>"${REVIEW_LOG}"; } 2>/dev/null || true
+        log_warn "Arbiter refuted code-reviewer's BLOCKING finding - commit allowed; read the refutation above"
         # write_round_feedback already persisted code-reviewer's FAIL output
         # before this block ran (it only sees CODE_REVIEWER_VERDICT, not the
         # arbiter's later ruling). The arbiter just determined that FAIL was
@@ -4026,7 +4245,7 @@ DETAILS: [explanation and fix]"
         # next commit's PRIOR ROUND FEEDBACK as an already-resolved finding.
         [[ -n "${ROUND_HISTORY_FILE}" ]] && clear_round_feedback "${ROUND_HISTORY_FILE}"
       else
-        log_error "Arbiter sided with code-reviewer - commit rejected"
+        log_error "Arbiter did not refute code-reviewer's BLOCKING finding - commit rejected"
         exit 1
       fi
     else

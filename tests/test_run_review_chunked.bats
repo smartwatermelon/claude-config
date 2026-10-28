@@ -90,15 +90,24 @@ if [[ "\${is_arbiter}" == true ]]; then
   printf 'arbiter:%s\n' "\${agent}" >>"${AGENT_RECORD}"
   [[ -f "${MOCK_DIR}/arbiter-error" ]] && exit 1
   [[ -f "${MOCK_DIR}/arbiter-empty" ]] && exit 0
+  # The arbiter answers ARBITER_JSON_SCHEMA (claude-config#799). Default is a
+  # REFUTED with location and quoted code, which clears. arbiter-fail is
+  # CONFIRMED, arbiter-unproven UNPROVEN, arbiter-noquote a REFUTED with no
+  # quoted code, and arbiter-oldpass the pre-#799 {verdict:PASS} shape.
   if [[ -f "${MOCK_DIR}/arbiter-fail" ]]; then
-    jq -n '{type:"result",subtype:"success",is_error:false,
-      result:"VERDICT: FAIL\nThe finding holds.\nISSUE: upheld\nSEVERITY: BLOCKING\nLOCATION: a.sh:1\nDETAILS: mock",
-      structured_output:{verdict:"FAIL",blocking:true,findings:[{severity:"BLOCKING",location:"a.sh:1",issue:"upheld"}]}}'
+    so='{"ruling":"CONFIRMED","reason":"The finding holds."}'
+  elif [[ -f "${MOCK_DIR}/arbiter-unproven" ]]; then
+    so='{"ruling":"UNPROVEN","reason":"Could not tell from the file."}'
+  elif [[ -f "${MOCK_DIR}/arbiter-noquote" ]]; then
+    so='{"ruling":"REFUTED","reason":"Not severe enough to block.","refutation":{"location":"a.sh:1","quoted_code":"","reason":"minor"}}'
+  elif [[ -f "${MOCK_DIR}/arbiter-fakequote" ]]; then
+    so='{"ruling":"REFUTED","reason":"r","refutation":{"location":"a.sh:1","quoted_code":"swap_args \\"\$2\\" \\"\$1\\" # reversed on purpose","reason":"invented"}}'
+  elif [[ -f "${MOCK_DIR}/arbiter-oldpass" ]]; then
+    so='{"verdict":"PASS","blocking":false,"findings":[]}'
   else
-    jq -n '{type:"result",subtype:"success",is_error:false,
-      result:"VERDICT: PASS\nRead a.sh; the claim does not match the code.",
-      structured_output:{verdict:"PASS",blocking:false,findings:[]}}'
+    so='{"ruling":"REFUTED","reason":"Read a.sh; the claim does not match the code.","refutation":{"location":"a.sh:1-2","quoted_code":"echo \"line 0\"\necho \"line 1\"","reason":"MOCK_REFUTATION_REASON the call takes no arguments."}}'
   fi
+  jq -nc --argjson so "\${so}" '{type:"result",subtype:"success",is_error:false,result:(\$so|tojson),structured_output:\$so}'
   exit 0
 fi
 cat >/dev/null
@@ -415,6 +424,97 @@ _stage_one_blocking_file() {
   run _run_review
   [ "$status" -ne 0 ]
   grep -q '^arbiter: FAIL (a.sh)' "${EXPECTED_LOG}"
+}
+
+# --- claude-config#799: a block clears only with quoted proof ---------------
+# Same ruling semantics as the single-pass arbiter (hooks/tests/run-review-test.sh
+# tests 73-78): only a REFUTED with file:line and quoted code clears.
+
+@test "#799: a cleared per-file block prints and logs the finding and the quoted proof" {
+  _stage_one_blocking_file
+
+  run _run_review
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"=== BLOCK CLEARED BY ARBITER: a.sh ==="* ]]
+  [[ "$output" == *"a.sh:1 - arguments reversed"* ]]
+  [[ "$output" == *"REFUTATION LOCATION: a.sh:1-2"* ]]
+  [[ "$output" == *'| echo "line 0"'* ]]
+  [[ "$output" == *"MOCK_REFUTATION_REASON"* ]]
+  grep -q '^=== BLOCK CLEARED BY ARBITER: a.sh ===' "${EXPECTED_LOG}"
+  grep -qF '| echo "line 0"' "${EXPECTED_LOG}"
+  grep -q 'MOCK_REFUTATION_REASON' "${TMPDIR_TEST}/.git/reviewer-disagreements.log"
+  grep -q '^  a.sh:1 - arguments reversed' "${TMPDIR_TEST}/.git/reviewer-disagreements.log"
+}
+
+@test "#358: a REFUTED whose quote is not in the staged file keeps the per-file block" {
+  _stage_one_blocking_file
+  touch "${MOCK_DIR}/arbiter-fakequote"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  grep -q '^arbiter: FAIL (a.sh)' "${EXPECTED_LOG}"
+  [[ "$output" == *"the quote did not match a.sh, so the block stands"* ]]
+  [[ "$output" != *"BLOCK CLEARED BY ARBITER"* ]]
+}
+
+@test "#799: arbiter UNPROVEN keeps the per-file block" {
+  _stage_one_blocking_file
+  touch "${MOCK_DIR}/arbiter-unproven"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  grep -q '^arbiter: FAIL (a.sh)' "${EXPECTED_LOG}"
+  [[ "$output" == *"RULING: UNPROVEN"* ]]
+  [[ "$output" != *"BLOCK CLEARED BY ARBITER"* ]]
+}
+
+@test "#799: arbiter CONFIRMED keeps the per-file block" {
+  _stage_one_blocking_file
+  touch "${MOCK_DIR}/arbiter-fail"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"RULING: CONFIRMED"* ]]
+}
+
+@test "#799: a REFUTED with no quoted code keeps the per-file block" {
+  _stage_one_blocking_file
+  touch "${MOCK_DIR}/arbiter-noquote"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  grep -q '^arbiter: FAIL (a.sh)' "${EXPECTED_LOG}"
+  [[ "$output" == *"answered REFUTED with no file:line or no quoted code"* ]]
+}
+
+@test "#799: a pre-#799 {verdict:PASS} answer is not a ruling" {
+  _stage_one_blocking_file
+  touch "${MOCK_DIR}/arbiter-oldpass"
+
+  run _run_review
+  [ "$status" -ne 0 ]
+  grep -q '^arbiter: FAIL (a.sh)' "${EXPECTED_LOG}"
+}
+
+@test "#799: the chunked arbiter runs on Opus, answers the ruling schema, and is told the burden of proof" {
+  _stage_one_blocking_file
+
+  run _run_review
+  [ "$status" -eq 0 ]
+  local arbiter_argv
+  arbiter_argv=$(grep -F '[--allowedTools]' "${ARGV_RECORD}")
+  [[ "${arbiter_argv}" == *"[--model][claude-opus-5-5]"* ]]
+  [[ "${arbiter_argv}" == *'"ruling"'* ]]
+  grep -q 'is NOT evidence against it' "${ARBITER_PROMPT}"
+  ! grep -q 'the correct ruling is PASS' "${ARBITER_PROMPT}" || false
+}
+
+@test "#799: the arbiter's PASS is not cached (a cache hit carries no proof)" {
+  _stage_one_blocking_file
+  run _run_review
+  [ "$status" -eq 0 ]
+  # Before #799 a cleared block left arbiter-chunked-<hash> here.
+  ! compgen -G "${TMPDIR_TEST}/.git/claude-review-cache/arbiter-*" >/dev/null || false
 }
 
 @test "#647: a blocking adversarial FAIL means no arbiter call" {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# review.arbiterTimeout (#682): the chunked arbiter no longer shares review.timeout.
+# review.arbiterTimeout (#682): the arbiter no longer shares review.timeout (both paths since claude-config#799).
 # Setup mirrors test_run_review_chunked.bats.
 
 SCRIPT="${BATS_TEST_DIRNAME}/../hooks/run-review.sh"
@@ -50,9 +50,11 @@ if [[ "\${is_arbiter}" == true ]]; then
   if [[ -s "${MOCK_DIR}/arbiter-sleep" ]]; then
     sleep "\$(cat "${MOCK_DIR}/arbiter-sleep")"
   fi
+  # An ARBITER_JSON_SCHEMA REFUTED with proof, which clears (claude-config#799).
   jq -n '{type:"result",subtype:"success",is_error:false,
-    result:"VERDICT: PASS\nRead a.sh; the claim does not match the code.",
-    structured_output:{verdict:"PASS",blocking:false,findings:[]}}'
+    result:"{}",
+    structured_output:{ruling:"REFUTED",reason:"Read a.sh; the claim does not match the code.",
+      refutation:{location:"a.sh:1-2",quoted_code:"echo \\"line 0\\"\necho \\"line 1\\"",reason:"mock"}}}'
   exit 0
 fi
 if [[ "\${agent}" == "${CODE_REVIEWER}" ]]; then
@@ -126,22 +128,23 @@ _run_review() {
   ! grep -q 'timed out' "${EXPECTED_LOG}" || false
 }
 
-@test "#682: review.arbiterTimeout defaults to 300s" {
+# 600s since claude-config#799: both arbiters run Opus with tools and must quote proof.
+@test "#682/#799: review.arbiterTimeout defaults to 600s" {
   # The slow notice prints the timeout in force for the call.
   git -C "${TMPDIR_TEST}" config review.slowNotice 1
   echo 2 >"${MOCK_DIR}/arbiter-sleep"
 
   run _run_review
   [ "$status" -eq 0 ]
-  [[ "$output" == *"adversarial-reviewer has not responded after 1s — still waiting (timeout at 300s)"* ]]
+  [[ "$output" == *"adversarial-reviewer has not responded after 1s — still waiting (timeout at 600s)"* ]]
 }
 
 @test "#682: with review.arbiterTimeout unset, the arbiter never gets less than review.timeout" {
-  git -C "${TMPDIR_TEST}" config review.timeout 600
+  git -C "${TMPDIR_TEST}" config review.timeout 900
   git -C "${TMPDIR_TEST}" config review.slowNotice 1
   echo 2 >"${MOCK_DIR}/arbiter-sleep"
 
   run _run_review
   [ "$status" -eq 0 ]
-  [[ "$output" == *"adversarial-reviewer has not responded after 1s — still waiting (timeout at 600s)"* ]]
+  [[ "$output" == *"adversarial-reviewer has not responded after 1s — still waiting (timeout at 900s)"* ]]
 }
