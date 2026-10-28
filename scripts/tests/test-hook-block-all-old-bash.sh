@@ -67,7 +67,7 @@ check "plain git status is allowed" 0 "git status"
 echo "=== Under bash 3.2, the chain still blocks ==="
 check "REST merge is blocked" 2 \
   "gh api repos/smartwatermelon/claude-config/pulls/1/merge -X PUT"
-check "git worktree add is blocked" 2 "git worktree add /tmp/x"
+check "git worktree move is blocked" 2 "git worktree move /tmp/a /tmp/b"
 
 echo
 echo "======================================="

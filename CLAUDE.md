@@ -85,12 +85,16 @@ Run `date` before reporting it. Never state a date you did not check.
 ```
 ✗ FORBIDDEN: git commit/push/merge on main
 ✗ FORBIDDEN: git checkout/switch to another branch in a repo's primary checkout
-✓ REQUIRED: Branch in a worktree:
+✓ REQUIRED: Branch in a worktree (raw git, in every repo, launch repo included):
     git -C /abs/repo fetch origin
-    git -C /abs/repo worktree add .claude/worktrees/<name> -b claude/<type>-<description>-<session-id> origin/main
-✓ REQUIRED: Work, commit and push in /abs/repo/.claude/worktrees/<name>
-✓ REQUIRED: Verify: git -C <worktree> branch --show-current (must NOT be "main")
+    git -C /abs/repo worktree add --no-track -b claude/<type>-<description>-<session-id> .claude/worktrees/<name> origin/main
+✓ REQUIRED: Verify before any other git command there:
+    git -C /abs/repo/.claude/worktrees/<name> rev-parse --show-toplevel   (must print that path)
+✓ REQUIRED: Work and commit in /abs/repo/.claude/worktrees/<name>
+✓ REQUIRED: Push without -u: git -C <worktree> push origin <branch>; then gh pr create --head <branch>
 ```
+
+`--no-track` and no `-u` keep `.git/config` unwritten; the sandbox protects it in the launch repo, and a tracking write there fails the add part-way.
 
 On main? Stop. Make a worktree. Do not proceed.
 
@@ -256,20 +260,15 @@ If `gh pr merge` fails: report the failure, ask the human to merge manually. Nev
 
 **Off-org PRs are force-created as drafts — expected, not an error.** `gh pr create` against a repo whose owner is not `smartwatermelon`, `nightowlstudiollc`, or `twistedmelonman` is hard-forced to `--draft` by `gh-wrapper.sh`: no opt-out, no env var escape hatch. Do not treat it as a bug and do not work around it. Surface the PR as usual and note it is a draft — only the human promotes it, via the GitHub UI.
 
-**Post-merge cleanup:** After a successful merge, remove the worktree and leave the primary checkout clean on main:
+**Post-merge cleanup:** Remove the worktree only when both checks pass: `gh pr view <N> --json state,headRefName` shows `MERGED` for that branch, and `git -C <worktree> status --porcelain` prints nothing. Then:
 
 ```bash
-git -C /abs/repo switch main          # no-op if already on main; switching TO main is allowed
-git -C /abs/repo pull
-git -C /abs/repo worktree remove .claude/worktrees/<name>   # add --force if it holds untracked files
-git -C /abs/repo branch -D <merged-branch>   # -D required: squash merge means -d always fails
-git -C /abs/repo status               # examine any unstaged changes or untracked files
-# Review what's dirty — if safe to discard:
-git -C /abs/repo checkout -- .        # discard unstaged changes
-git -C /abs/repo clean -fd            # remove untracked files/dirs
+git -C /abs/repo worktree remove --force .claude/worktrees/<name>
+git -C /abs/repo update-ref -d refs/heads/<branch>   # deletes the branch with no .git/config write, unlike branch -D
+git -C /abs/repo pull                                # primary checkout stays on main
 ```
 
-Before discarding, examine unstaged changes — they may be intentional uncommitted work. Ask first if anything looks non-trivial.
+If either check fails, leave the worktree and say why. The primary checkout is never switched, reset or cleaned as part of this.
 
 ---
 
@@ -299,7 +298,8 @@ Banned until the PR is merged: "production ready", "ready for review", "all done
 
 - **Plan execution defaults to subagent-driven.** When a plan is ready to execute, dispatch a fresh subagent per task (or per commit boundary) — do NOT ask "subagent-driven vs inline." The decision is pre-made. Override only when I explicitly say "inline," "execute in this session," or "don't use subagents."
 - Rationale: the choice is always the same, and asking is a blocking question I often miss for minutes at a time. Defaulting eliminates wasted wall-clock time.
-- **Every branch gets its own worktree, and parallel subagents get one each.** When dispatching more than one agent at a time, pass `isolation: "worktree"` (or have them use `.claude/worktrees/`). A shared checkout is NOT isolation: `git checkout -b` swaps the branch out from under a concurrent agent mid-edit, and each agent sees its peers' uncommitted files. Worktree creation is allowed policy (dotfiles#200, 2026-08-19) — the hook validates the name and permits it. A branch switch in a primary checkout is denied by hook (#792); see Protocol 1.
+- **Every branch gets its own worktree, and parallel subagents get one each.** When dispatching more than one agent at a time, create one worktree per agent with the raw command in Protocol 1 and give each agent its literal path. A shared checkout is NOT isolation: `git checkout -b` swaps the branch out from under a concurrent agent mid-edit, and each agent sees its peers' uncommitted files. Worktree creation is allowed policy (dotfiles#200, 2026-08-19); an `add` outside `.claude/worktrees/` is logged for audit, not blocked. A branch switch in a primary checkout is denied by hook (#792); see Protocol 1.
+- **Do not use EnterWorktree or ExitWorktree.** They work only in the launch repo, name branches `worktree-<name>`, and leave metadata the sandbox will not let `git worktree prune` delete; raw git is the one method.
 - **Write file paths in chat as absolute paths** — `/Users/arich/...` or `~/...`, never a bare `scratchpad/notes.md`. **Why:** iTerm2 renders an unanchored `word/word.ext` as a URL, so a click opens a browser to nothing; a leading `/` or `~` makes it usable in `open`, `cat`, or Go to Folder. When the point is to open a long path, offer `open -R <abs-path>`. Exempt: `file:line` code references (`config.go:555`), which the harness already links, and paths inside fenced code blocks.
 - **Never reference a tracked work item by bare ID in chat.** Asana GIDs, PR/issue numbers, commit SHAs. **Why:** a raw identifier has to be pasted somewhere before it means anything. Use a markdown link labeled with the item's title, or at minimum the plaintext title. **How:** fetch the real URL rather than building one — Asana's `get_task` returns `permalink_url` (not reconstructable from the GID, since it embeds workspace and project GIDs); `gh` returns `url` on PRs and issues. Bare IDs are fine in a tool call, a commit trailer, or a code block where the ID *is* the payload.
 - **Communicate in ASD-STE100 (Simplified Technical English) where practical.** This is a preference, not a protocol — do not fail a session over it, and do not restate or re-edit prose that is already sent. Applies to chat replies only. Commit messages, PR titles and bodies, GitHub issues, code comments, and repo docs keep their existing conventions and voice.

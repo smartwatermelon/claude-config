@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 # Tests for hook-block-enter-worktree.sh
 #
-# Policy under test (smartwatermelon/dotfiles#200): EnterWorktree is permitted,
-# because worktree creation is permitted. The tool's tool_input carries only a
-# `name` and no path, so there is nothing to path-scope; what is validated is
-# that the name is a plain slug, since it becomes a directory component.
+# Policy (2026-10-27): every EnterWorktree call is denied with the raw
+# git command.
 
 set -euo pipefail
 unset CDPATH
@@ -13,123 +11,123 @@ HOOK="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/hook-block-enter-worktree
 pass=0
 fail=0
 
+# check <desc> <expected-exit> <input> [stderr-ERE]
+# Asserts the exit code and, when given, that stderr matches the ERE.
 check() {
-  local desc="${1}" expected="${2}" input="${3}" actual
-  actual=0
-  printf '%s\n' "${input}" | "${HOOK}" >/dev/null 2>&1 || actual=$?
-  if [[ "${actual}" -eq "${expected}" ]]; then
-    echo "  PASS: ${desc}"
-    ((pass += 1))
-  else
+  local desc="${1}" expected="${2}" input="${3}" want_re="${4:-}" actual=0 err
+  err="$(printf '%s\n' "${input}" | HOME="${fakehome}" "${HOOK}" 2>&1 >/dev/null)" || actual=$?
+  if [[ "${actual}" -ne "${expected}" ]]; then
     echo "  FAIL: ${desc} (expected exit ${expected}, got ${actual})"
     ((fail += 1))
+  elif [[ -n "${want_re}" ]] && ! grep -qE -- "${want_re}" <<<"${err}"; then
+    echo "  FAIL: ${desc} (stderr does not match: ${want_re})"
+    printf '        %s\n' "${err}" | head -6
+    ((fail += 1))
+  else
+    echo "  PASS: ${desc}"
+    ((pass += 1))
   fi
 }
 
-make_input() {
-  jq -n --arg name "$1" '{"tool_input":{"name":$name}}'
+# check_not <desc> <input> <stderr-ERE>: stderr must NOT match.
+check_not() {
+  local desc="${1}" input="${2}" bad_re="${3}" err
+  err="$(printf '%s\n' "${input}" | HOME="${fakehome}" "${HOOK}" 2>&1 >/dev/null)" || true
+  if grep -qE -- "${bad_re}" <<<"${err}"; then
+    echo "  FAIL: ${desc} (stderr matches: ${bad_re})"
+    ((fail += 1))
+  else
+    echo "  PASS: ${desc}"
+    ((pass += 1))
+  fi
 }
+
+# Fixtures live under a private temp dir and are left in place: the
+# destructive-code rule bars a raw delete, and $TMPDIR is OS-cleaned.
+fixture="$(mktemp -d "${TMPDIR:-/tmp}/enter-wt-test.XXXXXX")"
+fakehome="${fixture}/home"
+mkdir -p "${fakehome}/.claude"
+repo="${fixture}/repo"
+notrepo="${fixture}/notrepo"
+mkdir -p "${repo}" "${notrepo}"
+# core.hooksPath=/dev/null keeps global git hooks out of this fixture repo.
+git -C "${repo}" -c core.hooksPath=/dev/null init -q --template= -b fixture
+git -C "${repo}" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@example.invalid \
+  commit -q --allow-empty -m init
+git -C "${repo}" -c core.hooksPath=/dev/null worktree add -q --no-track -b claude/test-linked \
+  "${repo}/.claude/worktrees/linked" HEAD
+
+make_input() {
+  jq -n --arg cwd "$1" --argjson ti "$2" '{"cwd":$cwd,"tool_name":"EnterWorktree","tool_input":$ti}'
+}
+
+RAW_TAIL='worktree add --no-track -b claude/<type>-<desc>-<session-id> \.claude/worktrees/'
 
 echo "=== hook-block-enter-worktree tests ==="
 
-# Should PASS (exit 0) — valid slugs
-inp="$(make_input 'my-worktree')"
-check "simple hyphenated slug" 0 "${inp}"
-inp="$(make_input 'fix-gh-wrapper-issue-parsing')"
-check "realistic branch-style slug" 0 "${inp}"
-inp="$(make_input 'agent-a091b53da3a954c2e')"
-check "agent-id style slug" 0 "${inp}"
-inp="$(make_input 'wt_1.2')"
-check "underscore and dot" 0 "${inp}"
-inp="$(make_input 'a')"
-check "single character" 0 "${inp}"
+# --- name form: denied, with the filled-in raw command ---
+inp="$(make_input "${repo}" '{"name":"fix-thing"}')"
+check "name: denied" 2 "${inp}" 'EnterWorktree is not used here'
+check "name: raw add command names the repo and the name" 2 "${inp}" \
+  "git -C /[^ ]*/repo ${RAW_TAIL}fix-thing origin/main"
+check "name: verify command names the worktree path" 2 "${inp}" \
+  'git -C /[^ ]*/repo/\.claude/worktrees/fix-thing rev-parse --show-toplevel'
+check "name: says to work with absolute paths" 2 "${inp}" 'work with absolute paths'
 
-# Should BLOCK (exit 2) — names that would escape or confuse the worktree dir
-inp="$(make_input '..')"
-check "traversal: bare .." 2 "${inp}"
-inp="$(make_input '../escape')"
-check "traversal: ../escape" 2 "${inp}"
-inp="$(make_input 'foo/../../etc')"
-check "traversal: embedded .." 2 "${inp}"
-inp="$(make_input 'nested/path')"
-check "slash: nested path component" 2 "${inp}"
-inp="$(make_input '/absolute')"
-check "slash: absolute path" 2 "${inp}"
-inp="$(make_input '.hidden')"
-check "leading dot (hidden dir)" 2 "${inp}"
-inp="$(make_input '-flaglike')"
-check "leading hyphen (flag-like)" 2 "${inp}"
-inp="$(make_input 'name with spaces')"
-check "spaces" 2 "${inp}"
+# cwd inside a linked worktree still names the PRIMARY checkout.
+inp="$(make_input "${repo}/.claude/worktrees/linked" '{"name":"wt2"}')"
+check "name: cwd in a linked worktree resolves to the primary checkout" 2 "${inp}" \
+  "git -C /[^ ]*/repo ${RAW_TAIL}wt2 origin/main"
 
-# The literal dollar/backtick are assembled rather than written inline so the
-# hook receives genuinely unexpanded shell constructs.
-dollar='$'
-backtick='`'
-inp="$(make_input "${dollar}(whoami)")"
-check "command substitution" 2 "${inp}"
-inp="$(make_input "${dollar}HOME")"
-check "variable reference" 2 "${inp}"
-inp="$(make_input "${backtick}id${backtick}")"
-check "backtick substitution" 2 "${inp}"
-inp="$(make_input 'semi;colon')"
-check "shell operator" 2 "${inp}"
-inp="$(make_input 'glob*')"
-check "glob character" 2 "${inp}"
+# A name that is not a plain slug is never echoed into the command.
+inp="$(make_input "${repo}" '{"name":"../escape;evil"}')"
+check "name: non-slug name becomes the <name> placeholder" 2 "${inp}" \
+  "${RAW_TAIL}<name> origin/main"
+check_not "name: non-slug name is not echoed" "${inp}" 'escape'
 
-# Missing name: the harness would pick a default we cannot inspect.
-inp='{"tool_input":{}}'
-check "missing name" 2 "${inp}"
-inp="$(make_input '')"
-check "empty name" 2 "${inp}"
+# No name at all: placeholder.
+inp="$(make_input "${repo}" '{}')"
+check "missing name: denied with the <name> placeholder" 2 "${inp}" \
+  "git -C /[^ ]*/repo ${RAW_TAIL}<name> origin/main"
 
-# Length bound (1-100 chars).
-long_name="$(printf 'a%.0s' {1..100})"
-inp="$(make_input "${long_name}")"
-check "name at 100-char limit" 0 "${inp}"
-too_long="$(printf 'a%.0s' {1..101})"
-inp="$(make_input "${too_long}")"
-check "name over 100-char limit" 2 "${inp}"
+# --- cwd not a repo / missing: still denied, with the <repo> placeholder ---
+inp="$(make_input "${notrepo}" '{"name":"fix-thing"}')"
+check "cwd not a repo: denied with the <repo> placeholder" 2 "${inp}" \
+  "git -C <repo> ${RAW_TAIL}fix-thing origin/main"
+inp="$(jq -n '{"tool_input":{"name":"fix-thing"}}')"
+check "no cwd: denied with the <repo> placeholder" 2 "${inp}" \
+  "git -C <repo> ${RAW_TAIL}fix-thing origin/main"
+inp="$(make_input "${fixture}/does-not-exist" '{"name":"fix-thing"}')"
+check "cwd does not exist: denied with the <repo> placeholder" 2 "${inp}" \
+  "git -C <repo> ${RAW_TAIL}"
 
-# --- path: re-entering an existing worktree ---
-# Fixtures live under a private temp dir; nothing here deletes or writes
-# outside it.
-# No rm: the destructive-code rule bars a raw delete; $TMPDIR is OS-cleaned.
-fixture="$(mktemp -d "${TMPDIR:-/tmp}/enter-wt-test.XXXXXX")"
-repo="${fixture}/repo"
-mkdir -p "${repo}/.claude/worktrees/good-wt" "${repo}/.claude/worktrees/no-git" \
-  "${repo}/elsewhere"
-printf 'gitdir: %s/.git/worktrees/good-wt\n' "${repo}" >"${repo}/.claude/worktrees/good-wt/.git"
-printf 'gitdir: x\n' >"${repo}/elsewhere/.git"
-# A worktree-shaped symlink whose target is outside any .claude/worktrees/.
-ln -s "${repo}/elsewhere" "${repo}/.claude/worktrees/link-out"
+# --- path form: denied with the "already exists" message ---
+wt_path="${repo}/.claude/worktrees/linked"
+path_ti="$(jq -n --arg p "${wt_path}" '{"path":$p}')"
+inp="$(make_input "${repo}" "${path_ti}")"
+check "path: denied" 2 "${inp}" 'EnterWorktree is not used here'
+check "path: says the worktree already exists" 2 "${inp}" 'already exists'
+check "path: says no tool is needed" 2 "${inp}" 'no tool is needed'
+check_not "path: does not suggest a new worktree add" "${inp}" 'worktree add'
 
-make_path_input() {
-  jq -n --arg path "$1" '{"tool_input":{"path":$path}}'
-}
+# --- fail closed ---
+# Malformed input must exit 2, not 1, which Claude Code treats as a
+# non-blocking hook error (#796).
+check "malformed JSON input: denied (exit 2)" 2 'not json {' 'could not be parsed'
+check "empty input: denied (exit 2)" 2 ''
 
-inp="$(make_path_input "${repo}/.claude/worktrees/good-wt")"
-check "path: existing worktree under .claude/worktrees" 0 "${inp}"
-inp="$(make_path_input "${repo}/.claude/worktrees/good-wt/")"
-check "path: trailing slash" 0 "${inp}"
-inp="$(make_path_input "${repo}/.claude/worktrees/no-git")"
-check "path: directory with no .git file" 2 "${inp}"
-inp="$(make_path_input "${repo}/.claude/worktrees/missing")"
-check "path: does not exist" 2 "${inp}"
-inp="$(make_path_input "${repo}/elsewhere")"
-check "path: outside .claude/worktrees" 2 "${inp}"
-inp="$(make_path_input "${repo}/.claude/worktrees/link-out")"
-check "path: symlink resolving outside .claude/worktrees" 2 "${inp}"
-inp="$(make_path_input "${repo}/.claude/worktrees/good-wt/../good-wt")"
-check "path: .. component" 2 "${inp}"
-inp="$(make_path_input ".claude/worktrees/good-wt")"
-check "path: relative" 2 "${inp}"
-inp="$(jq -n --arg path "${repo}/.claude/worktrees/good-wt" '{"tool_input":{"name":"x","path":$path}}')"
-check "path and name together" 2 "${inp}"
-
-# Malformed input must fail closed (exit 2), not exit 1, which Claude Code
-# treats as a non-blocking hook error.
-check "malformed JSON input" 2 'not json {'
+# An unwritable log must not change the verdict.
+inp="$(make_input "${repo}" '{"name":"fix-thing"}')"
+nohome="$(mktemp -d "${TMPDIR:-/tmp}/enter-wt-nohome.XXXXXX")"
+actual=0
+printf '%s\n' "${inp}" | HOME="${nohome}" "${HOOK}" >/dev/null 2>&1 || actual=$?
+if [[ "${actual}" -eq 2 ]]; then
+  echo "  PASS: unwritable log: still denied (exit 2)"
+  ((pass += 1))
+else
+  echo "  FAIL: unwritable log: exit ${actual}, want 2"
+  ((fail += 1))
+fi
 
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"

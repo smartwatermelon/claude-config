@@ -1,103 +1,66 @@
 #!/usr/bin/env bash
-# Hook: Gate the EnterWorktree built-in tool
+# Hook: Deny the EnterWorktree built-in tool and steer to raw git
 #
 # Purpose:
-#   EnterWorktree is a Claude Code built-in tool that creates an isolated git
-#   worktree. It is the tool-level counterpart to the Bash-level `git worktree`
-#   creation gated by hook-block-git-worktree.sh.
-#
-#   Policy (see smartwatermelon/dotfiles#200, superseding the blanket ban):
-#   worktree creation is ALLOWED, because subagent-driven execution is the
-#   documented default in CLAUDE.md and a shared checkout is not isolation --
-#   `git checkout -b` swaps the branch out from under a concurrent agent
-#   mid-edit. Blocking this tool while permitting scoped Bash-level creation
-#   would be incoherent: they are the same mechanism through different doors.
-#
-#   PATH SCOPING DOES NOT APPLY HERE, and that is not an oversight. The Bash
-#   hook restricts creation to `.claude/worktrees/` because a raw git command
-#   can target anywhere. EnterWorktree's tool_input carries only a `name`
-#   (observed payload: {"tool_input":{"name":"my-worktree"}}) -- the caller
-#   cannot choose a location, so there is no path to validate and no way for
-#   this tool to escape the harness-chosen directory. What IS validated is the
-#   name itself, which becomes a path component: it must be a plain slug, so it
-#   cannot traverse out of that directory or inject shell/path metacharacters.
-#
-#   `path` re-enters an existing worktree; it must resolve under some
-#   .claude/worktrees/ and hold a .git file.
+#   Raw git is the one worktree method (2026-10-27). Deny every EnterWorktree
+#   call and print the raw command, filled in where known.
+
+#   Agent `isolation: "worktree"` never calls this tool, so is unaffected.
+
+#   Fail-closed: every path exits 2, unparseable input too (#796).
 #
 # Called by: settings.json PreToolUse matcher "EnterWorktree"
 
 set -euo pipefail
 
-input=$(cat)
-# NOTE: the `$( )` command substitution strips trailing newlines, so a name of
-# `good\n` reaches the regex as `good` and is accepted (harmlessly -- what gets
-# used is the sanitized value). An embedded newline mid-string, e.g.
-# `good\nEVIL`, survives and is correctly denied by the anchored regex below.
-# A future refactor to `jq -j` or a `read -r`-based read would remove that
-# stripping and change this behavior -- re-test the newline cases if you touch it.
+input=$(cat) || input=""
+
+name=""
+path=""
+cwd=""
 parse_failed=""
-name=$(printf '%s\n' "${input}" | jq -r '.tool_input.name // empty') || parse_failed=1
+name=$(printf '%s\n' "${input}" | jq -r '.tool_input.name // empty' 2>/dev/null) || parse_failed=1
+if [[ -z "${parse_failed}" ]]; then
+  path=$(printf '%s\n' "${input}" | jq -r '.tool_input.path // empty' 2>/dev/null) || parse_failed=1
+  cwd=$(printf '%s\n' "${input}" | jq -r '.cwd // empty' 2>/dev/null) || parse_failed=1
+fi
 
-deny() {
-  local reason="${1}"
-  printf '%s BLOCKED ENTER_WORKTREE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${input}" \
-    >>"${HOME}/.claude/blocked-commands.log" || true
-  printf '🛑 BLOCKED: %s\n' "${reason}" >&2
-  printf '\n' >&2
-  printf 'Worktree creation is permitted (dotfiles#200), but the worktree name\n' >&2
-  printf 'becomes a directory component, so it must be a plain slug:\n' >&2
-  printf '  letters, digits, dot, underscore, hyphen; 1-100 characters\n' >&2
-  printf '  no slashes, no "..", no leading dot or hyphen\n' >&2
-  printf '\n' >&2
-  printf 'Example: fix-gh-wrapper-issue-parsing\n' >&2
-  exit 2
-}
+printf '%s BLOCKED ENTER_WORKTREE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${input}" \
+  >>"${HOME}/.claude/blocked-commands.log" 2>/dev/null || true
 
-deny_path() {
-  local reason="${1}"
-  printf '%s BLOCKED ENTER_WORKTREE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${input}" \
-    >>"${HOME}/.claude/blocked-commands.log" || true
-  printf '🛑 BLOCKED: %s\n' "${reason}" >&2
-  printf '\n' >&2
-  printf 'Re-entering a worktree by path needs an existing linked worktree:\n' >&2
-  printf '  an absolute path with no "..", resolving to <repo>/.claude/worktrees/<slug>,\n' >&2
-  printf '  containing a .git file. Pass either name (new) or path (existing), not both.\n' >&2
-  exit 2
-}
-
-# Unparseable input denies (exit 2): exit 1 is a non-blocking hook error.
-[[ -z "${parse_failed}" ]] || deny "EnterWorktree hook input could not be parsed"
-path=$(printf '%s\n' "${input}" | jq -r '.tool_input.path // empty') ||
-  deny_path "EnterWorktree hook input could not be parsed"
-if [[ -n "${path}" ]]; then
-  [[ -z "${name}" ]] || deny_path "EnterWorktree takes name or path, not both"
-  [[ "${path}" == /* ]] || deny_path "EnterWorktree path must be absolute (got: ${path})"
-  while [[ "${path}" == */ && "${path}" != "/" ]]; do path="${path%/}"; done
-  [[ "/${path}/" == */../* ]] && deny_path "EnterWorktree path must not contain '..' (got: ${path})"
-  resolved=$(cd -P -- "${path}" 2>/dev/null && pwd -P) ||
-    deny_path "EnterWorktree path does not exist (got: ${path})"
-  if [[ ! "${resolved}" =~ ^/.+/\.claude/worktrees/[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]]; then
-    deny_path "EnterWorktree path is not under .claude/worktrees/ (resolves to: ${resolved})"
+# Resolve the primary checkout that owns cwd. --git-common-dir is the main
+# repo's .git even from inside a linked worktree.
+repo="<repo>"
+if [[ -n "${cwd}" && -d "${cwd}" ]]; then
+  common_dir=$(git -C "${cwd}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common_dir=""
+  if [[ "${common_dir}" == /*/.git ]]; then
+    repo="${common_dir%/.git}"
   fi
-  [[ -f "${resolved}/.git" ]] ||
-    deny_path "EnterWorktree path is not a linked worktree (no .git file in ${resolved})"
-  exit 0
 fi
 
-# A missing/empty name would let the harness fall back to a default we cannot
-# inspect. Require it explicitly.
-[[ -n "${name}" ]] || deny "EnterWorktree requires an explicit worktree name"
-
-# Reject the traversal component outright, ahead of the charset check, so the
-# failure message is specific rather than a generic charset complaint.
-[[ "${name}" == ".." ]] && deny "EnterWorktree name '..' is forbidden (path traversal)"
-
-# Allowlist the charset. Slashes are excluded, so the name cannot introduce a
-# nested path; a leading dot or hyphen is excluded so the name cannot create a
-# hidden directory or be mistaken for a flag by downstream tooling.
-if [[ ! "${name}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]]; then
-  deny "EnterWorktree name is not a valid slug (got: ${name})"
+# Only a plain slug is filled in; anything else stays a placeholder.
+wt_name="<name>"
+if [[ "${name}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$ ]]; then
+  wt_name="${name}"
 fi
 
-exit 0
+if [[ -n "${parse_failed}" ]]; then
+  printf '🛑 BLOCKED: EnterWorktree hook input could not be parsed\n\n' >&2
+fi
+
+if [[ -z "${parse_failed}" && -n "${path}" ]]; then
+  printf '🛑 BLOCKED: EnterWorktree is not used here.\n\n' >&2
+  printf 'That worktree already exists: %s\n' "${path}" >&2
+  printf 'Keep working in it by absolute path; no tool is needed:\n' >&2
+  printf '  git -C %s rev-parse --show-toplevel\n' "${path}" >&2
+  printf '  then git -C <worktree> ..., and Edit/Write with full paths.\n' >&2
+  exit 2
+fi
+
+printf '🛑 BLOCKED: EnterWorktree is not used here; make the worktree with raw git instead:\n' >&2
+printf '  git -C %s worktree add --no-track -b claude/<type>-<desc>-<session-id> .claude/worktrees/%s origin/main\n' \
+  "${repo}" "${wt_name}" >&2
+printf '  git -C %s/.claude/worktrees/%s rev-parse --show-toplevel\n' "${repo}" "${wt_name}" >&2
+printf 'then work with absolute paths (git -C <worktree>, Edit with full paths).\n' >&2
+printf 'Push with: git -C <worktree> push origin <branch> (no -u); gh pr create --head <branch>\n' >&2
+exit 2

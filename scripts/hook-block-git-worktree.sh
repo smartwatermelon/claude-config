@@ -20,14 +20,7 @@
 #                                 refused. Deliberately NOT path-scoped --
 #                                 see the ACCEPTED TRADE-OFF note below.
 #     ALLOWED  unlock             as remove; see the case below (2026-10-21).
-#     ALLOWED  add <path>        ONLY when <path> is under `.claude/worktrees/`.
-#                                 This matches the Agent tool's
-#                                 `isolation: "worktree"` convention
-#                                 (`.claude/worktrees/agent-<id>`), keeps every
-#                                 worktree in one auditable location, and
-#                                 leaves `git worktree list` able to find them.
-#     BLOCKED  add <other path>   unscoped creation, which is what caused the
-#                                 "which directory is *the* checkout" confusion.
+#     ALLOWED  add <path>         always; audited if not provably in scope.
 #     BLOCKED  move, lock, repair
 #                                 rewrite worktree administrative state.
 #     BLOCKED  bare `git worktree`, unknown/future subcommands (fail closed).
@@ -44,8 +37,8 @@
 #   the pre-ban ones, which by definition sit at arbitrary paths OUTSIDE
 #   `.claude/worktrees/`. A scoped `remove` would leave them permanently
 #   un-cleanable and still holding their branches checked out -- the original
-#   bug. Scoping creation but not cleanup is the asymmetry that makes both
-#   halves work.
+#   bug. (Creation was once blocked outside scope; since 2026-10-27 it is
+#   audited the same way, see below.)
 #
 #   What bounds the risk: `remove` only affects worktrees already registered in
 #   `.git/config`, so it cannot reach into arbitrary directories; and cleanup
@@ -62,6 +55,9 @@
 #   pre-ban worktrees described above. It does not tell whose worktree it was;
 #   that still needs ownership metadata.
 #
+#   `add` is audit-only (2026-10-27): all 10 blocked adds were a correct
+#   `$W/...` path. Strays are logged for a planned reaper.
+#
 #   Why the ban was relaxed at all: "work directly on a feature branch instead"
 #   assumed one worker per checkout. Subagent-driven execution is now the
 #   documented default in CLAUDE.md, and a branch is not isolation when two
@@ -69,13 +65,8 @@
 #   from under a concurrent agent mid-edit. See dotfiles#200 for the collision
 #   that motivated this.
 #
-#   Both the Bash-level command and the EnterWorktree built-in tool are gated.
-#   This script handles the Bash layer only; EnterWorktree is handled separately
-#   by hook-block-enter-worktree.sh. Note that path scoping does NOT apply
-#   there: EnterWorktree's tool_input carries only a `name` and no path, so the
-#   caller cannot choose a location and there is nothing to scope. That hook
-#   validates the name as a strict slug instead, since it becomes a directory
-#   component. See its header for the reasoning.
+#   This script handles the Bash layer only. hook-block-enter-worktree.sh
+#   denies every EnterWorktree call.
 #
 # Called by: hook-block-all.sh (PreToolUse Bash hook chain)
 
@@ -84,8 +75,7 @@ set -euo pipefail
 input=$(cat)
 cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 
-# Shared with hook-block-enter-worktree.sh: the only directory under which
-# worktree creation is permitted.
+# The only directory where worktree creation is not audited.
 readonly WORKTREE_SCOPE='.claude/worktrees'
 
 # Decide whether an `add` target path is inside the sanctioned scope.
@@ -205,7 +195,7 @@ extract_path_operand() {
   done
   # No operand found. Callers diverge on what that means, deliberately:
   # `add` treats an empty result as "creation with no explicit path" and
-  # BLOCKS it (a path that cannot be shown in scope is not allowed); `remove`
+  # AUDITS it (allowed, not provably in scope); `remove`
   # treats it as "nothing to inspect" and skips the audit, since a removal with
   # no operand is rejected by git itself. Returning empty rather than failing
   # keeps that policy choice at the call site.
@@ -217,6 +207,7 @@ extract_path_operand() {
 # on purpose (see the ACCEPTED TRADE-OFF note in the header) but leaves no
 # trace otherwise. A distinct prefix keeps it out of anything counting
 # "BLOCKED GIT WORKTREE" -- this is an audit record, not a refusal.
+# Also used for an `add` not provably in scope (2026-10-27).
 # Every failure path here is swallowed. Under `set -e` an unwritable log (no
 # ~/.claude on first run, full disk, bad permissions) would exit non-zero, and
 # a non-zero exit from a PreToolUse hook BLOCKS the command -- turning a missing
@@ -227,11 +218,17 @@ extract_path_operand() {
 # ${cmd}, so the function is callable from anywhere and shellcheck can see the
 # dependency. block() still reads ${cmd} directly; that predates this and its
 # four call sites are out of scope here (#397).
-warn_out_of_scope_remove() {
+warn_out_of_scope() {
   local target="${1}" offending_cmd="${2}" verb="${3:-remove}"
   printf '%s AUDIT GIT WORKTREE %s (out of scope: %s): %s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${verb^^}" "${target}" "${offending_cmd}" \
     >>"${HOME}/.claude/blocked-commands.log" || true
+  if [[ "${verb}" == "add" ]]; then
+    printf '⚠️  NOTE: worktree add to a path not provably under %s/ (%s)\n' "${WORKTREE_SCOPE}" "${target}" >&2
+    printf '   Allowed, and logged for audit. A worktree outside %s/ is a stray;\n' "${WORKTREE_SCOPE}" >&2
+    printf '   the nightly reaper will report it -- see %s/.claude/blocked-commands.log\n' "${HOME}" >&2
+    return 0
+  fi
   printf '⚠️  NOTE: %s of a worktree outside %s/ (%s)\n' "${verb}" "${WORKTREE_SCOPE}" "${target}" >&2
   printf '   Allowed, and logged for audit. If this was a peer agent'"'"'s worktree,\n' >&2
   if [[ "${verb}" == "unlock" ]]; then
@@ -248,16 +245,9 @@ block() {
   printf '🛑 BLOCKED: %s\n' "${reason}" >&2
   printf '\n' >&2
   printf 'Worktree policy (dotfiles#200):\n' >&2
-  printf '  allowed: list, --help, remove, prune, unlock\n' >&2
-  printf '  allowed: creation -- only under %s/\n' "${WORKTREE_SCOPE}" >&2
+  printf '  allowed: list, --help, add, remove, prune, unlock\n' >&2
+  printf '  audited: add outside %s/ (allowed, logged)\n' "${WORKTREE_SCOPE}" >&2
   printf '  blocked: move, lock, repair\n' >&2
-  printf '\n' >&2
-  printf 'To create an isolated worktree, scope it to the sanctioned directory:\n' >&2
-  printf '  %s/<name>\n' "${WORKTREE_SCOPE}" >&2
-  printf '\n' >&2
-  printf 'Keeping every worktree under one path keeps them discoverable via\n' >&2
-  printf '"git worktree list". Paths containing variables, ~, globs, or ".."\n' >&2
-  printf 'are rejected because a hook cannot resolve them before the shell runs.\n' >&2
   exit 2
 }
 
@@ -457,7 +447,7 @@ for match in "${matches[@]}"; do
     # Cleanup: only ever reduces worktree count, so it cannot recreate the
     # collision conditions the ban was written for.
     #
-    # Intentionally NOT path-scoped, unlike `add` above. The worktrees most in
+    # Intentionally NOT path-scoped. The worktrees most in
     # need of cleanup are pre-ban ones living outside `.claude/worktrees/`, so
     # scoping here would restore the un-cleanable-worktree bug dotfiles#200
     # fixed. The cost is that an agent can remove a peer agent's worktree; see
@@ -472,25 +462,21 @@ for match in "${matches[@]}"; do
     remove | unlock)
       target="$(extract_path_operand "${tokens[@]:1}")"
       if [[ -n "${target}" ]] && ! path_in_scope "${target}"; then
-        warn_out_of_scope_remove "${target}" "${cmd}" "${subcmd}"
+        warn_out_of_scope "${target}" "${cmd}" "${subcmd}"
       fi
       continue
       ;;
     prune)
       continue
       ;;
-    # Creation: permitted only when the target path is provably inside the
-    # sanctioned scope.
+    # Creation: always allowed (2026-10-27); a target not provably in scope is
+    # audited. `<no path>` keeps the log field non-empty.
     add)
       target="$(extract_path_operand "${tokens[@]:1}")"
-      if path_in_scope "${target}"; then
-        continue
+      if ! path_in_scope "${target}"; then
+        warn_out_of_scope "${target:-<no path>}" "${cmd}" add
       fi
-      if [[ -n "${target}" ]]; then
-        block "worktree creation outside ${WORKTREE_SCOPE}/ is forbidden (got: ${target})"
-      else
-        block "worktree creation without an explicit path is forbidden"
-      fi
+      continue
       ;;
     # Mutating administrative subcommands, bare `git worktree`, or any
     # unrecognized/future subcommand. `repair` can rewrite worktree
