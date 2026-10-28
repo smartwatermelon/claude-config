@@ -74,6 +74,13 @@ working checkout.
 The LaunchAgent `com.smartwatermelon.claude-config-deploy` runs
 `deploy --scheduled` every 600 s and at load. `bootstrap` generates its plist
 (no tracked plist copy) and `uninstall` removes it, the lock-sync pattern.
+A user with no GUI login has no `gui/<uid>` domain to load it into
+(`launchctl print gui/<uid>` exits non-zero; TILSIT returned 125), so there
+`bootstrap` adds a crontab entry instead: every 10 minutes, tagged
+`# com.smartwatermelon.claude-config-deploy`, other entries kept. Bootstrap
+keeps exactly one of the two and removes the other.
+`CLAUDE_CONFIG_SCHEDULER=cron|launchd` overrides the choice. A `crontab -l`
+failure other than "no crontab" stops the cron path before any write.
 Log: `~/.local/state/claude-config/deploy.log`; launchd's own stdout and
 stderr go to `~/.local/state/com.smartwatermelon.claude-config-deploy.log`.
 

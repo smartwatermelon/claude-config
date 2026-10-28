@@ -33,6 +33,13 @@ LN_BIN="${CLAUDE_CONFIG_LN_BIN:-ln}"
 MV_BIN="${CLAUDE_CONFIG_MV_BIN:-mv}"
 LAUNCHCTL_BIN="${CLAUDE_CONFIG_LAUNCHCTL_BIN:-launchctl}"
 OSASCRIPT_BIN="${CLAUDE_CONFIG_OSASCRIPT_BIN:-osascript}"
+CRONTAB_BIN="${CLAUDE_CONFIG_CRONTAB_BIN:-crontab}"
+
+# cron or launchd; empty = launchd when this user has a GUI domain, else cron (#802).
+SCHEDULER_OVERRIDE="${CLAUDE_CONFIG_SCHEDULER:-}"
+CRON_TAG="# ${LABEL}"
+# launchd and cron both start with a bare PATH; the plist and the cron entry set this one.
+JOB_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 QUIET=false
 LOCK_HELD=false
@@ -45,8 +52,10 @@ Usage: claude-config-deploy [command]
                        and run its install.sh --sync. Ends dev mode. (default)
   deploy --scheduled   The LaunchAgent's run: relinks only when main moved or
                        ~/.claude is off the clone; keeps dev mode for ${DEV_TTL_HOURS}h.
-  bootstrap            Clone (if needed), deploy, and install the LaunchAgent.
-  uninstall            Remove the LaunchAgent and the command link. Keeps the clone.
+  bootstrap            Clone (if needed), deploy, and schedule: a LaunchAgent, or a
+                       cron entry when this user has no GUI login.
+                       CLAUDE_CONFIG_SCHEDULER=cron|launchd overrides the choice.
+  uninstall            Remove the LaunchAgent, the cron entry and the command link. Keeps the clone.
   status               Show the clone, the link mode, the agent, and the last good run.
 
 Exit: 0 ok, 1 failed, 2 refused (clone changed or diverged), 3 another run holds the lock, 64 usage.
@@ -291,7 +300,7 @@ _plist_xml() {
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>${JOB_PATH}</string>
     </dict>
     <key>StandardOutPath</key>
     <string>${AGENT_LOG}</string>
@@ -304,17 +313,109 @@ EOF
 
 DOMAIN="gui/$(id -u)"
 
-# Idempotent: rewrites the plist only when it differs, and reloads only when it changed or is not loaded.
-install_agent() {
-  local tmp changed=true domain="${DOMAIN}"
-  mkdir -p "${COMMAND_LINK%/*}" "${PLIST%/*}"
-
+install_command_link() {
+  mkdir -p "${COMMAND_LINK%/*}"
   if [[ "$(readlink "${COMMAND_LINK}" 2>/dev/null || true)" == "${CLONE_SCRIPT}" ]]; then
     _log "command link already correct: ${COMMAND_LINK} -> ${CLONE_SCRIPT}"
   else
     "${LN_BIN}" -sfn "${CLONE_SCRIPT}" "${COMMAND_LINK}" || return 1
     _log "linked ${COMMAND_LINK} -> ${CLONE_SCRIPT}"
   fi
+}
+
+# launchd needs this user's GUI domain. With no login (TILSIT, 2026-10-28) `launchctl print gui/<uid>` exits 125.
+_scheduler() {
+  if [[ -n "${SCHEDULER_OVERRIDE}" ]]; then
+    printf '%s' "${SCHEDULER_OVERRIDE}"
+  elif "${LAUNCHCTL_BIN}" print "${DOMAIN}" >/dev/null 2>&1; then
+    printf 'launchd'
+  else
+    printf 'cron'
+  fi
+}
+
+# Prints the crontab; "no crontab" is empty. Other failures return 1, so an unread table is never rewritten.
+_crontab_read() {
+  local out err errf rc=0
+  errf="$(mktemp)" || return 1
+  out="$("${CRONTAB_BIN}" -l 2>"${errf}")" || rc=$?
+  err="$(cat "${errf}")"
+  "${RM_BIN}" -f "${errf}" || true
+  if ((rc == 0)); then
+    [[ -z "${out}" ]] || printf '%s\n' "${out}"
+    return 0
+  fi
+  if [[ "${err}" == *"no crontab for"* ]]; then
+    return 0
+  fi
+  _log "crontab -l failed (exit ${rc}): ${err}; the crontab was not changed"
+  return 1
+}
+
+# Replaces the whole table with stdin.
+_crontab_write() {
+  if ! "${CRONTAB_BIN}" -; then
+    _log "crontab - failed; the crontab may be unchanged"
+    return 1
+  fi
+}
+
+_cron_line() {
+  # cron reads % as a newline, and the paths are single-quoted.
+  if [[ "${CLONE_SCRIPT}${AGENT_LOG}" == *[%\']* ]]; then
+    _log "Refused: ${CLONE_SCRIPT} or ${AGENT_LOG} contains % or a quote, which a cron entry cannot hold"
+    return 1
+  fi
+  printf "*/%d * * * * PATH=%s '%s' deploy --scheduled >>'%s' 2>&1 %s" \
+    $((INTERVAL / 60)) "${JOB_PATH}" "${CLONE_SCRIPT}" "${AGENT_LOG}" "${CRON_TAG}"
+}
+
+# Idempotent: writes the table only when our entry is missing, duplicated or different. Other entries are kept.
+install_cron() {
+  local current want ours others
+  want="$(_cron_line)" || return 1
+  current="$(_crontab_read)" || return 1
+  ours="$(grep -F -- "${CRON_TAG}" <<<"${current}" || true)"
+  if [[ "${ours}" == "${want}" ]]; then
+    _log "cron entry already installed"
+    return 0
+  fi
+  others="$(grep -vF -- "${CRON_TAG}" <<<"${current}" || true)"
+  { [[ -z "${others}" ]] || printf '%s\n' "${others}"; printf '%s\n' "${want}"; } | _crontab_write || return 1
+  _log "installed cron entry (every $((INTERVAL / 60)) min): ${want}"
+}
+
+# Removes our entry only; writes nothing when there is none.
+remove_cron() {
+  local current others
+  current="$(_crontab_read)" || return 1
+  grep -qF -- "${CRON_TAG}" <<<"${current}" || return 0
+  others="$(grep -vF -- "${CRON_TAG}" <<<"${current}" || true)"
+  { [[ -z "${others}" ]] || printf '%s\n' "${others}"; } | _crontab_write || return 1
+  _log "removed the cron entry"
+}
+
+# Never fails: a leftover agent only runs alongside cron, and the deploy lock stops overlapping runs.
+remove_agent() {
+  if "${LAUNCHCTL_BIN}" bootout "${DOMAIN}/${LABEL}" >/dev/null 2>&1; then
+    _log "booted out ${DOMAIN}/${LABEL}"
+  elif "${LAUNCHCTL_BIN}" print "${DOMAIN}/${LABEL}" >/dev/null 2>&1; then
+    _log "warning: ${DOMAIN}/${LABEL} is still loaded; run: launchctl bootout ${DOMAIN}/${LABEL}"
+  fi
+  if [[ -f "${PLIST}" ]]; then
+    if "${RM_BIN}" -f "${PLIST}"; then
+      _log "removed ${PLIST}"
+    else
+      _log "warning: could not remove ${PLIST}; remove it by hand"
+    fi
+  fi
+  return 0
+}
+
+# Idempotent: rewrites the plist only when it differs, and reloads only when it changed or is not loaded.
+install_agent() {
+  local tmp changed=true domain="${DOMAIN}"
+  mkdir -p "${PLIST%/*}"
 
   tmp="$(mktemp "${PLIST}.XXXXXX")" || return 1
   _plist_xml >"${tmp}"
@@ -342,10 +443,17 @@ install_agent() {
 _physical() { (cd "$(dirname "$1")" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$(basename "$1")") || true; }
 
 bootstrap() {
-  local self clone_self url rc=0 target short
+  local self clone_self url rc=0 target short sched
   self="$(_physical "${BASH_SOURCE[0]}")"
 
   # Checked before anything changes, so a refusal leaves the machine as it was.
+  case "${SCHEDULER_OVERRIDE}" in
+    "" | cron | launchd) ;;
+    *)
+      _log "Refused: CLAUDE_CONFIG_SCHEDULER=${SCHEDULER_OVERRIDE}; use cron, launchd, or leave it unset"
+      return 64
+      ;;
+  esac
   if [[ -e "${COMMAND_LINK}" && ! -L "${COMMAND_LINK}" ]]; then
     _log "Refused: ${COMMAND_LINK} is a regular file, not a link. Move it aside and re-run."
     return 2
@@ -387,27 +495,37 @@ bootstrap() {
     _log "bootstrap stopped: deploy exited ${rc}. Fix the cause above, then re-run."
     return "${rc}"
   fi
-  install_agent || return 1
+  install_command_link || return 1
+
+  # One scheduler: the new one is in place before the other is removed, so there is never a gap.
+  sched="$(_scheduler)"
+  if [[ "${sched}" == launchd ]]; then
+    install_agent || return 1
+    # A crontab we cannot read must not fail a working LaunchAgent install; the lock stops double runs.
+    remove_cron || _log "warning: could not check the crontab for an old ${LABEL} entry"
+  else
+    _log "no GUI domain ${DOMAIN} for this user (or CLAUDE_CONFIG_SCHEDULER=cron): scheduling with cron"
+    install_cron || return 1
+    remove_agent
+  fi
 
   target="$(_link_target)"
   short="$(_git rev-parse --short HEAD)"
   _log ""
   _log "Done. ${DEPLOY_DIR}/${CANARY} -> ${target}"
   _log "  clone:  ${CLONE} at ${short}"
-  _log "  agent:  ${PLIST} (every ${INTERVAL}s; log ${LOG_FILE})"
+  if [[ "${sched}" == launchd ]]; then
+    _log "  agent:  ${PLIST} (every ${INTERVAL}s; log ${LOG_FILE})"
+  else
+    _log "  cron:   every $((INTERVAL / 60)) min, tagged '${CRON_TAG}' (log ${LOG_FILE})"
+  fi
   _log "  deploy now: claude-config-deploy    dev mode: ${DEV_CHECKOUT}/install.sh --dev"
 }
 
 uninstall() {
-  local domain="${DOMAIN}"
-  if "${LAUNCHCTL_BIN}" bootout "${domain}/${LABEL}" >/dev/null 2>&1; then
-    _log "booted out ${domain}/${LABEL}"
-  else
-    _log "${LABEL} was not loaded"
-  fi
-  if [[ -f "${PLIST}" ]]; then
-    "${RM_BIN}" -f "${PLIST}" && _log "removed ${PLIST}"
-  fi
+  local rc=0
+  remove_agent
+  remove_cron || rc=1
   if [[ "$(readlink "${COMMAND_LINK}" 2>/dev/null || true)" == "${CLONE_SCRIPT}" ]]; then
     "${RM_BIN}" -f "${COMMAND_LINK}" && _log "removed ${COMMAND_LINK}"
   elif [[ -e "${COMMAND_LINK}" || -L "${COMMAND_LINK}" ]]; then
@@ -415,10 +533,11 @@ uninstall() {
   fi
   _log "Kept ${CLONE} and the ~/.claude links. Nothing redeploys now; claude-config-deploy is gone."
   _log "Working-tree mode again: move ${CLONE} aside, then run ${DEV_CHECKOUT}/install.sh --sync"
+  return "${rc}"
 }
 
 status() {
-  local target head behind="" since ok_at=""
+  local target head behind="" since ok_at="" cron_table
   target="$(_link_target)"
   _read_marker
   if [[ -e "${CLONE}/.git" ]]; then
@@ -440,6 +559,13 @@ status() {
     printf 'agent:  %s loaded\n' "${LABEL}"
   else
     printf 'agent:  %s not loaded\n' "${LABEL}"
+  fi
+  if ! cron_table="$(_crontab_read 2>/dev/null)"; then
+    printf 'cron:   unknown (crontab -l failed)\n'
+  elif grep -qF -- "${CRON_TAG}" <<<"${cron_table}"; then
+    printf 'cron:   installed (every %d min)\n' $((INTERVAL / 60))
+  else
+    printf 'cron:   none\n'
   fi
   if [[ -f "${OK_FILE}" ]]; then
     read -r ok_at <"${OK_FILE}" || true
