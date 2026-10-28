@@ -94,8 +94,8 @@ check "name over 100-char limit" 2 "${inp}"
 # --- path: re-entering an existing worktree ---
 # Fixtures live under a private temp dir; nothing here deletes or writes
 # outside it.
+# No rm: the destructive-code rule bars a raw delete; $TMPDIR is OS-cleaned.
 fixture="$(mktemp -d "${TMPDIR:-/tmp}/enter-wt-test.XXXXXX")"
-trap 'rm -rf "${fixture:?}"' EXIT
 repo="${fixture}/repo"
 mkdir -p "${repo}/.claude/worktrees/good-wt" "${repo}/.claude/worktrees/no-git" \
   "${repo}/elsewhere"
