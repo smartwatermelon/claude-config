@@ -4,7 +4,7 @@
 # check records, and personify stamps:
 #
 #   ~/.claude/merge-locks/       merge authorization
-#   ~/.claude/gate-review/       commit/PR text approval
+#   ~/.claude/gate-review/       commit/PR text approval (and review-overrides/)
 #   ~/.config/personify/checks/  records from the retired Pangram check
 #   ~/.config/personify/stamps/  Human approval stamps
 #   ~/.claude/gate-rules.conf    destination routing rules (a file; an agent
@@ -39,7 +39,7 @@ file_path=$(printf '%s\n' "${input}" | jq -r '.tool_input.file_path // empty')
 # sit beside those two directories, not inside either, so they still match
 # nothing here.
 # personify/route-command (a file) names the router personify asks, so it is guarded too.
-if printf '%s\n' "${file_path}" | grep -qE '(^|[^a-zA-Z0-9_-])(merge-locks|gate-review|personify/(checks|stamps))/|\.claude/(gate-rules|merge-lock-policy|copy-paths)\.conf$|(^|/)personify/route-command$'; then
+if printf '%s\n' "${file_path}" | grep -qE '(^|[^a-zA-Z0-9_-])(merge-locks|gate-review|personify/(checks|stamps))(/|$)|\.claude/(gate-rules|merge-lock-policy|copy-paths)\.conf$|(^|/)personify/route-command$'; then
   printf '%s BLOCKED WRITE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${file_path}" >>"${HOME}/.claude/blocked-commands.log" || true
   printf '🛑 BLOCKED: Writing to an approval directory is forbidden.\n' >&2
   printf '\n' >&2

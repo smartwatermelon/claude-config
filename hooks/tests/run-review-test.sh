@@ -69,6 +69,7 @@
 #       no round memory (72)
 #   26, 73-78. The arbiter clears a block only with quoted proof, and runs Opus with tools (claude-config#799)
 #   79-80. The quote must match the staged file at the cited repo-relative path, with 20+ characters (#358)
+#   81-88. Andrew's one-shot override of a blocked review, by code (mode + DIFF_HASH)
 
 set -euo pipefail
 
@@ -4268,6 +4269,256 @@ same72="false"
 [[ "${key72_alpha}" == "${key72_beta}" ]] && same72="true"
 assert_eq "#622: diffs touching different files get different keys" "false" "${same72}"
 assert_eq "#622: the key ignores path order and blank lines" "${key72_ab}" "${key72_ba}"
+
+# --- TESTS 81-88: Andrew's one-shot override of a blocked review (hook-review-override.sh)
+echo ""
+echo "=== Tests 81-88: review override by code ==="
+
+OV_HOOK="${SCRIPT_DIR}/../../scripts/hook-review-override.sh"
+OV_LOG="${TMPDIR_TEST}/ov-review.log"
+OV_DIS="${TMPDIR_TEST}/ov-dis.log"
+OV_CALLS="${TMPDIR_TEST}/ov-calls"
+OV_MOCK="${TMPDIR_TEST}/ov-mock"
+make_mock_claude_by_agent "${OV_MOCK}" \
+  "VERDICT: FAIL
+
+ISSUE: Override test finding
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: blocks on purpose." \
+  "VERDICT: FAIL
+
+ISSUE: Override test finding
+SEVERITY: BLOCKING
+LOCATION: foo.sh:2
+DETAILS: blocks on purpose."
+# A counting wrapper: every reviewer call leaves a line in OV_CALLS.
+cat >"${OV_MOCK}/counting" <<EOF2
+#!/usr/bin/env bash
+[[ "\$1" == "--version" ]] || echo call >>"${OV_CALLS}"
+exec "${OV_MOCK}/claude" "\$@"
+EOF2
+chmod +x "${OV_MOCK}/counting"
+
+# ov_reset: fresh repo, small staged change, and new (never deleted) override dirs.
+OV_N=0
+ov_reset() {
+  setup_repo
+  stage_small_change
+  ((OV_N += 1))
+  OV_STATE="${TMPDIR_TEST}/ov-state-${OV_N}"
+  OV_DIR="${TMPDIR_TEST}/ov-approved-${OV_N}"
+  mkdir -p "${OV_STATE}"
+  cp "${HAIKU_CACHE}" "${OV_STATE}/review-haiku-alias"
+  # Seam: run-review.sh reads approvals only from the passwd home, so tests run a copy with that one line rewritten.
+  OV_HOOKS="${TMPDIR_TEST}/ov-hooks-${OV_N}"
+  mkdir -p "${OV_HOOKS}"
+  cp "${SCRIPT_DIR}"/../lib-review-*.sh "${OV_HOOKS}/"
+  sed "s|^OVERRIDE_APPROVED_DIR=.*|OVERRIDE_APPROVED_DIR=\"${OV_DIR}\"|" "${SUBJECT}" >"${OV_HOOKS}/run-review.sh"
+  OV_SUBJECT="${OV_HOOKS}/run-review.sh"
+}
+
+# ov_run [args...]: review the staged diff with the copy; sets OV_RC and OV_ERR, resets OV_CALLS.
+ov_run() {
+  rm -f "${OV_CALLS}"
+  OV_RC=0
+  cd "${REPO_DIR}"
+  OV_ERR="$(REVIEW_LOG="${OV_LOG}" DISAGREEMENT_LOG="${OV_DIS}" REVIEW_STATE_DIR="${OV_STATE}" \
+    CLAUDE_CLI="${OV_MOCK}/counting" \
+    bash "${OV_SUBJECT}" "$@" < <(git diff --cached || true) 2>&1 >/dev/null)" || OV_RC=$?
+  cd - >/dev/null
+}
+
+# ov_code: set CODE to the code last printed on stderr.
+ov_code() {
+  CODE=$(printf '%s\n' "${OV_ERR}" | sed -n 's/.*reply .override \([0-9a-f]\{6\}\). in chat.*/\1/p' | tail -1) || CODE=""
+}
+
+# ov_approve <code>: Andrew's chat reply, through the real hook; asserts the hook ran and wrote the approval.
+ov_approve() {
+  local rc=0
+  jq -n --arg p "override $1" '{hook_event_name: "UserPromptSubmit", prompt: $p}' |
+    REVIEW_STATE_DIR="${OV_STATE}" REVIEW_OVERRIDE_DIR="${OV_DIR}" "${OV_HOOK}" >/dev/null 2>&1 || rc=$?
+  assert_eq "override: the hook ran for ${1:-<no code>}" "0" "${rc}"
+  ov_file "${OV_DIR}/${1:-none}"
+  assert_eq "override: approval ${1:-<no code>} is recorded" "yes" "${HAS}"
+}
+
+# ov_expected <mode> [script]: set WANT to the code bound to this mode, the script copy and the staged diff.
+ov_expected() {
+  local sha diff diff_hash
+  sha=$(shasum -a 256 "${2:-${OV_SUBJECT}}" | awk '{print $1}' | cut -c1-12) || sha=""
+  diff=$(cd "${REPO_DIR}" && git diff --cached) || diff=""
+  diff_hash=$(printf '%s\n%s\n' "${sha}" "${diff}" | shasum -a 256 | awk '{print $1}') || diff_hash=""
+  WANT=$(printf '%s\n%s\n' "$1" "${diff_hash}" | shasum -a 256 | cut -c1-6) || WANT=""
+}
+
+# ov_file <path>: set HAS (yes/no) and BODY (contents) for one file.
+ov_file() {
+  HAS=no
+  BODY=""
+  [[ -f "$1" ]] || return 0
+  HAS=yes
+  BODY=$(cat "$1")
+}
+
+# --- 81: a block prints a code and writes a pending record.
+ov_reset
+ov_run
+ov_code
+code81="${CODE}"
+ov_expected commit
+assert_eq "override: a blocked commit exits 1" "1" "${OV_RC}"
+assert_eq "override: the printed code is bound to commit mode + DIFF_HASH" "${WANT}" "${code81}"
+assert_contains "override: says how Andrew lets it through" \
+  "review: Andrew can reply \`override ${code81}\` in chat to let this exact diff through once." "${OV_ERR}"
+ov_file "${OV_STATE}/review-overrides/pending/${code81}"
+assert_eq "override: a pending record is written" "yes" "${HAS}"
+assert_contains "override: the record names the mode" "mode=commit" "${BODY}"
+assert_contains "override: the record says why it blocked" "code-reviewer: FAIL" "${BODY}"
+ov_run
+ov_code
+assert_eq "override: a retry of the same diff prints the same code" "${code81}" "${CODE}"
+
+# --- 82: an approved code lets the same diff through once, with no reviewer.
+ov_approve "${code81}"
+ov_run
+assert_eq "override: approved diff exits 0" "0" "${OV_RC}"
+ov_file "${OV_CALLS}"
+assert_eq "override: no reviewer ran" "no" "${HAS}"
+assert_contains "override: stderr says Andrew's override let it through" "OVERRIDE: Andrew's override ${code81}" "${OV_ERR}"
+ov_file "${OV_LOG}"
+assert_contains "override: REVIEW_LOG records it" "override: ${code81}" "${BODY}"
+ov_file "${OV_DIS}"
+assert_contains "override: the disagreement log records it" "REVIEW OVERRIDE ${code81}" "${BODY}"
+assert_contains "override: the disagreement log keeps the blocked summary" "code-reviewer: FAIL" "${BODY}"
+
+# --- 83: one-shot; the next run blocks again.
+ov_run
+assert_eq "override: a consumed approval does not pass again (exit 1)" "1" "${OV_RC}"
+ov_file "${OV_CALLS}"
+assert_eq "override: the reviewers ran again" "yes" "${HAS}"
+
+# --- 84: a different diff gets no override.
+ov_reset
+ov_run
+ov_code
+ov_approve "${CODE}"
+(cd "${REPO_DIR}" && echo "echo changed" >>foo.sh && git add foo.sh)
+ov_run
+assert_eq "override: a changed diff is reviewed and blocks" "1" "${OV_RC}"
+assert_not_contains "override: a changed diff is not overridden" "OVERRIDE:" "${OV_ERR}"
+
+# --- 85: an expired approval blocks.
+ov_reset
+ov_run
+ov_code
+ov_approve "${CODE}"
+[[ ! -f "${OV_DIR}/${CODE}" ]] || sed -i.bak 's/^approved=.*/approved=1/' "${OV_DIR}/${CODE}"
+ov_file "${OV_DIR}/${CODE}"
+assert_contains "override: the approval now carries an expired time" "approved=1" "${BODY}"
+ov_run
+assert_eq "override: an expired approval blocks" "1" "${OV_RC}"
+assert_not_contains "override: an expired approval is not used" "OVERRIDE:" "${OV_ERR}"
+
+# --- 86: a full-diff code does not unlock commit mode, and the reverse.
+ov_reset
+ov_run --mode=full-diff
+ov_code
+code86f="${CODE}"
+ov_expected full-diff
+assert_eq "override: a blocked full-diff exits 1" "1" "${OV_RC}"
+assert_eq "override: the full-diff code is bound to full-diff mode" "${WANT}" "${code86f}"
+ov_approve "${code86f}"
+ov_run
+assert_eq "override: a full-diff approval does not pass the commit review" "1" "${OV_RC}"
+ov_code
+ov_approve "${CODE}"
+ov_run --mode=full-diff
+assert_eq "override: the full-diff approval still passes full-diff" "0" "${OV_RC}"
+ov_run --mode=full-diff
+assert_eq "override: a commit approval does not pass full-diff" "1" "${OV_RC}"
+ov_run
+assert_eq "override: the commit approval still passes the commit" "0" "${OV_RC}"
+
+# --- 87: the attempt-limit refusal is overridable.
+ov_reset
+(cd "${REPO_DIR}" && git config review.maxAttempts 1)
+ov_run
+ov_run
+assert_contains "override: the second run is the attempt-limit refusal" "attempt limit reached" "${OV_ERR}"
+ov_file "${OV_CALLS}"
+assert_eq "override: the refusal ran no reviewer" "no" "${HAS}"
+ov_code
+ov_expected commit
+assert_eq "override: the refusal prints the diff's code" "${WANT}" "${CODE}"
+ov_approve "${CODE}"
+ov_run
+assert_eq "override: an approved code passes the attempt limit" "0" "${OV_RC}"
+ov_gitdir=$(cd "${REPO_DIR}" && git rev-parse --absolute-git-dir)
+ov_file "${ov_gitdir}/review-attempts/main"
+assert_eq "override: the pass resets the attempt count" "no" "${HAS}"
+(cd "${REPO_DIR}" && git config --unset review.maxAttempts)
+
+# --- 88: if the use cannot be recorded, the approval is not honoured (fail closed).
+ov_reset
+ov_run
+ov_code
+ov_approve "${CODE}"
+mkdir -p "${OV_STATE}/review-overrides/used"
+chmod 500 "${OV_STATE}/review-overrides/used"
+ov_run
+chmod 700 "${OV_STATE}/review-overrides/used"
+assert_eq "override: an unrecordable use is reviewed and blocks" "1" "${OV_RC}"
+ov_file "${OV_CALLS}"
+assert_eq "override: an unrecordable use runs the reviewers" "yes" "${HAS}"
+
+# --- 89: the claim is atomic: a marker already claimed for this approval (a concurrent winner) means no override.
+ov_reset
+ov_run
+ov_code
+ov_approve "${CODE}"
+ov_at=$(sed -n 's/^approved=//p' "${OV_DIR}/${CODE}") || ov_at=""
+mkdir -p "${OV_STATE}/review-overrides/used"
+printf 'created=%s\napproved=%s\n' "${ov_at}" "${ov_at}" >"${OV_STATE}/review-overrides/used/${CODE}.${ov_at}"
+ov_run
+assert_eq "override: a run that loses the claim is reviewed and blocks" "1" "${OV_RC}"
+assert_not_contains "override: a run that loses the claim is not overridden" "OVERRIDE:" "${OV_ERR}"
+
+# --- 90: the agent's env cannot point the reader at a forged approval (REVIEW_OVERRIDE_DIR, HOME).
+ov_reset
+ov_forge="${TMPDIR_TEST}/ov-forge"
+ov_forge_home="${TMPDIR_TEST}/ov-forge-home"
+ov_expected commit "${SUBJECT}"
+ov_diff=$(cd "${REPO_DIR}" && git diff --cached) || ov_diff=""
+ov_sha=$(shasum -a 256 "${SUBJECT}" | awk '{print $1}' | cut -c1-12) || ov_sha=""
+ov_hash=$(printf '%s\n%s\n' "${ov_sha}" "${ov_diff}" | shasum -a 256 | awk '{print $1}') || ov_hash=""
+ov_now=$(date +%s)
+mkdir -p "${ov_forge}" "${ov_forge_home}/.claude/gate-review/review-overrides"
+for ov_f in "${ov_forge}/${WANT}" "${ov_forge_home}/.claude/gate-review/review-overrides/${WANT}"; do
+  printf 'code=%s\nmode=commit\ndiff_hash=%s\napproved=%s\n' "${WANT}" "${ov_hash}" "${ov_now}" >"${ov_f}"
+done
+rm -f "${OV_CALLS}"
+OV_RC=0
+cd "${REPO_DIR}"
+OV_ERR="$(HOME="${ov_forge_home}" REVIEW_OVERRIDE_DIR="${ov_forge}" REVIEW_LOG="${OV_LOG}" DISAGREEMENT_LOG="${OV_DIS}" \
+  REVIEW_STATE_DIR="${OV_STATE}" CLAUDE_CLI="${OV_MOCK}/counting" \
+  bash "${SUBJECT}" < <(git diff --cached || true) 2>&1 >/dev/null)" || OV_RC=$?
+cd - >/dev/null
+assert_eq "override: a forged approval under an env-chosen dir still blocks" "1" "${OV_RC}"
+assert_not_contains "override: a forged approval is not used" "OVERRIDE:" "${OV_ERR}"
+ov_file "${OV_CALLS}"
+assert_eq "override: with a forged approval the reviewers still run" "yes" "${HAS}"
+
+# --- 91: the approved store's home comes from the passwd database, not HOME.
+ov_fn="${TMPDIR_TEST}/ov-passwd-home.sh"
+sed -n '/^_passwd_home() {/,/^}/p' "${SUBJECT}" >"${ov_fn}"
+ov_home=$(HOME="${ov_forge_home}" bash -c 'source "$1"; _passwd_home' _ "${ov_fn}") || ov_home=""
+ov_abs=no
+[[ "${ov_home}" == /* && "${ov_home}" != "${ov_forge_home}" ]] && ov_abs=yes
+assert_eq "override: _passwd_home gives an absolute home that ignores HOME (got '${ov_home}')" "yes" "${ov_abs}"
+ov_seam=$(grep -c '^OVERRIDE_APPROVED_DIR=.*_passwd_home' "${SUBJECT}") || ov_seam=0
+assert_eq "override: the production reader line the test seam rewrites exists once" "1" "${ov_seam}"
 
 # =========================================================
 # Summary

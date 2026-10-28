@@ -55,7 +55,8 @@
     "BASH_DEFAULT_TIMEOUT_MS": "300000",
     "BASH_ENV": "~/.config/bash/functions.sh",
     "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash",
-    "CLAUDE_CODE_THRIFTY_SONIC": "0"
+    "CLAUDE_CODE_THRIFTY_SONIC": "0",
+    "npm_config_cache": "~/.cache/npm"
   },
   "extraKnownMarketplaces": {
     "apple-notes-mcp": {
@@ -179,6 +180,10 @@
         "hooks": [
           {
             "command": "~/.claude/scripts/hook-gate-inline-approve.sh",
+            "type": "command"
+          },
+          {
+            "command": "~/.claude/scripts/hook-review-override.sh",
             "type": "command"
           }
         ]

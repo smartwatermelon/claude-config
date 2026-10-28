@@ -2,7 +2,7 @@
 # Keep the four approval directories agent-unwritable from the Bash tool.
 #
 #   ~/.claude/merge-locks/       merge authorization
-#   ~/.claude/gate-review/       commit/PR text approval
+#   ~/.claude/gate-review/       commit/PR text approval, review overrides
 #   ~/.config/personify/checks/  records from the retired Pangram check
 #   ~/.config/personify/stamps/  Human approval stamps
 #   ~/.claude/gate-rules.conf    destination routing rules (a file)
@@ -62,10 +62,12 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # route-command names personify's router; repointing it fakes a route. No .config anchor: $XDG_CONFIG_HOME spellings count.
 _route_name='personify/route-command'
 _route_file="${_route_name}([^[:alnum:]_.-]|\$)"
-_dirs_base='\.claude/(merge-locks|gate-review)/|\.config/personify/(checks|stamps)/|\.claude/(gate-rules|merge-lock-policy|copy-paths)\.conf'
+# A dir or anything in it: `/` or the end of the path token, so `rm -rf <dir>` with no trailing slash counts too.
+_end='([^[:alnum:]_./-]|$)'
+_dirs_base="\\.claude/(merge-locks|gate-review)(/|${_end})|\\.config/personify/(checks|stamps)/|\\.claude/(gate-rules|merge-lock-policy|copy-paths)\\.conf"
 _dirs="(${_dirs_base}|${_route_file})"
-# For cp/mv targets: the tail would eat the space after the name and let `cp -p <file> /tmp/x` read as a write.
-_dirs_last="(${_dirs_base}|${_route_name})"
+# For cp/mv targets: no boundary here, as one would eat the space after the name and let `cp -p <file> /tmp/x` read as a write.
+_dirs_last='(\.claude/(merge-locks|gate-review)|\.config/personify/(checks|stamps)/|\.claude/(gate-rules|merge-lock-policy|copy-paths)\.conf|personify/route-command)'
 
 # A verb counts only in COMMAND POSITION -- at the start of the line or just
 # after a separator. Without this anchor the alternation matched the letters
@@ -104,13 +106,13 @@ _redirect=">(>|\\|)?[[:space:]]*[^[:space:]|;&]*${_dirs}"
 
 # approve-hash and the chat hook write approvals; only a human prompt may run them. The bare word counts.
 _approve_hash="(^|[[:space:]\"'=])approve-hash([[:space:]\"';&|)]|\$)"
-_inline_hook="${_cmdpos}((bash|sh|zsh|source|\.)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*([^[:space:]|;&]*/)?)?hook-gate-inline-approve"
+_inline_hook="${_cmdpos}((bash|sh|zsh|source|\.)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*([^[:space:]|;&]*/)?)?hook-(gate-inline-approve|review-override)"
 
 blocked=""
 if printf '%s\n' "${cmd}" | grep -qE "${_approve_hash}"; then
   blocked="self-approval (approve-hash)"
 elif printf '%s\n' "${cmd}" | grep -qE "${_inline_hook}"; then
-  blocked="self-approval (inline-approve hook)"
+  blocked="self-approval (chat approval hook)"
 elif printf '%s\n' "${cmd}" | grep -qE "${_redirect}"; then
   blocked="shell redirect"
 elif printf '%s\n' "${cmd}" | grep -qE "${_inplace}"; then

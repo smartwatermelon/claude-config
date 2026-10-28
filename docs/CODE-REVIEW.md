@@ -159,6 +159,45 @@ progress (dev-env#35):
    filings, not one produced work in this repo — an arbiter FAIL turned out
    to mean "the reviewers disagreed and one was right", not "the tooling
    needs attention", and four of the five were about other repos entirely.
+4. **Andrew's override**: a blocked commit or push prints
+   ``review: Andrew can reply `override <code>` in chat to let this exact diff through once.``
+   Every block after the diff is hashed gets a code: a BLOCKING finding, an
+   upheld or UNPROVEN arbiter ruling, INCOMPLETE, too large, and the
+   attempt-limit refusal. The code is bound to the mode and `DIFF_HASH`
+   (script SHA plus exact diff). Andrew replies `override <code>`, and the
+   UserPromptSubmit hook `hook-review-override.sh` approves it. The next
+   review of that exact diff in that mode exits 0 without running a
+   reviewer, once. It logs the override to stderr, the review log and
+   `.git/reviewer-disagreements.log`. Any change to the diff, or to
+   `run-review.sh`, needs a new code. An approval expires after 30 minutes
+   unused; a code that is never approved expires after a day.
+   A commit override does not carry to the pre-push review. That review
+   is a different mode and diff, so it prints its own code if it blocks.
+   Codebase mode gets no codes.
+   - What it promises: this exact diff, in this mode, within 30 minutes
+     of the approval. One use is best effort: a used marker claimed with
+     a noclobber write, so of two concurrent runs only one passes. A
+     replay can only commit the identical diff Andrew already approved.
+   - Records: pending records and used markers in
+     `~/.local/state/claude-review/review-overrides/`, approvals in
+     `~/.claude/gate-review/review-overrides/`. The sandbox denies hook
+     writes to the approvals directory, and
+     `hook-block-gate-dir-write.sh` blocks agent writes there and agent
+     runs of the hook. The state directory is not guarded.
+   - `run-review.sh` reads approvals only under the passwd home
+     (`getent` on Linux, `id -P` on macOS), never `$HOME` or an env var,
+     because it runs in the agent's env.
+
+### Threat model
+
+The review gate and its override stop an agent that takes the obvious
+route. They do not stop one that sets out to get around them. The agent
+runs as Andrew's user and controls its own env, PATH and git config, so
+`git -c core.hooksPath=/dev/null commit`, a shim for `git` or `shasum`, or
+a path spelled through a variable or a glob gets past any local hook.
+Fixes here close the obvious spelling and stop there; chasing each new
+spelling does not converge. A real boundary needs the agent off Andrew's
+user and credentials, plus server-side checks (dev-env#158).
 
 If review still fails to converge after these mechanisms are in place,
 that is itself worth a fresh issue. Read
