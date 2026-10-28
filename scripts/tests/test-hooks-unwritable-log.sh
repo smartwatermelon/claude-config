@@ -23,7 +23,7 @@ fail=0
 # command line that builds them -- a bare merge endpoint or bypass flag in this
 # file's own invocation gets blocked by the very hook it is testing (#405).
 readonly NOVERIFY="--no""-verify"
-readonly WT_ADD="worktree ""add"
+readonly WT_MOVE="worktree ""move"
 readonly MERGE_EP="repos/o/r/pulls/1/""merge"
 readonly ML_AUTH="merge-lock.sh ""authorize"
 readonly GH_AUTH="gh ""auth"
@@ -78,7 +78,7 @@ check hook-block-no-verify.sh \
 
 check hook-block-git-worktree.sh \
   "git-worktree: blocks with exit 2" \
-  command "git ${WT_ADD} /tmp/evil"
+  command "git ${WT_MOVE} /tmp/a /tmp/b"
 
 check hook-block-api-merge.sh \
   "api-merge: blocks with exit 2" \
@@ -100,7 +100,7 @@ check hook-block-gate-dir-write.sh \
   "gate-dir-write: blocks with exit 2" \
   command "cp /tmp/x /Users/x/.claude/gate-review/approved/fake"
 
-# EnterWorktree carries a `name`, not a command. An invalid slug reaches deny(),
+# EnterWorktree carries a `name`, not a command. Every call hits the deny path,
 # which writes to the log and then exits 2 -- same shape as the five above.
 check hook-block-enter-worktree.sh \
   "enter-worktree: blocks with exit 2" \
