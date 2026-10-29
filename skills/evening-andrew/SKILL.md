@@ -71,13 +71,15 @@ summary adapts. Note any material gap in one line.
   `git -C` targets in the session. Keep `beacon-biosignals/*`, `andrewmrich/*`, and
   upstream work done for Beacon (for example `git-pkgs/proxy`).
 
-**2. GitHub** — as `andrewmrich`, with the token passed per call:
+**2. GitHub** — as `andrewmrich`, through the real binary. Confirm the account first:
 
 ```bash
-GH_TOKEN=$(/opt/homebrew/bin/gh auth token --user andrewmrich) /opt/homebrew/bin/gh ...
+/opt/homebrew/bin/gh api user --jq .login
 ```
 
-Never run `gh auth switch`. Always pass `--owner beacon-biosignals` or `--repo owner/name`.
+It prints anything but `andrewmrich` → skip GitHub and the issue tracker, and say so
+in one line. Never read a token with `gh auth token` (a hook blocks it), and never run
+`gh auth switch`. Always pass `--owner beacon-biosignals` or `--repo owner/name`.
 Collect, for the window:
 
 - PRs authored by andrewmrich opened, merged, or closed today.
@@ -97,7 +99,7 @@ channels such as `#random`, `#pet-pics`, and `#gripes`. Keep work threads only. 
 **6. Work issue tracker** — the profile's issue tracker (`owner/name`), filed or closed today:
 
 ```bash
-GH_TOKEN=$(/opt/homebrew/bin/gh auth token --user andrewmrich) /opt/homebrew/bin/gh issue list \
+/opt/homebrew/bin/gh issue list \
   --repo <issue tracker> --state all --search "updated:>=<date>" \
   --json number,title,url,state,createdAt,closedAt
 ```
