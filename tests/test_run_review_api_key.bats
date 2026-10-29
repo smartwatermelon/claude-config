@@ -93,6 +93,10 @@ err_json='{"type":"result","subtype":"success","is_error":true,"api_error_status
 if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   echo "⚠ claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login · Unset it to load your organization's connectors" >&2
   [[ -f "${MOCK_DIR}/keyed-timeout" ]] && exit 124
+  if [[ -f "${MOCK_DIR}/keyed-nocredit" ]]; then
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"total_cost_usd":0,"result":"Credit balance is too low to access the Anthropic API"}'
+    exit 1
+  fi
   if [[ -f "${MOCK_DIR}/keyed-fail" ]]; then
     printf '%s\n' "${err_json}"
     exit 1
@@ -205,6 +209,17 @@ _ledger_n() {
   cmp -s "${MOCK_DIR}/stdin-adversarial-reviewer-1" "${MOCK_DIR}/stdin-adversarial-reviewer-2"
   [[ "$output" == *"API-key run failed (exit 1): Invalid API key"*"retrying on subscription"* ]]
   [[ "$output" != *"${FAKE_KEY}"* ]]
+  grep -qx 'code-reviewer: PASS' "${EXPECTED_LOG}"
+}
+
+@test "keyed failure from exhausted credit: calm refill note, still one retry" {
+  touch "${MOCK_DIR}/has-key" "${MOCK_DIR}/keyed-nocredit"
+  run _run_review
+  [ "$status" -eq 0 ]
+  _count_is code-reviewer 2
+  _env_is code-reviewer-2 "<unset>"
+  [[ "$output" == *"credit is used up for this month (it refills on the 1st); using the subscription. No action needed."* ]]
+  [[ "$output" != *"API-key run failed"* ]]
   grep -qx 'code-reviewer: PASS' "${EXPECTED_LOG}"
 }
 

@@ -281,8 +281,13 @@ run_claude_cli() {
   why=$(jq -r '.result // empty' <"${out}" 2>/dev/null) || why=""
   [[ -n "${why}" ]] || why=$(grep -vF "${_REVIEW_KEY_STDERR_NOISE}" "${err}" 2>/dev/null) || why=""
   why=$(printf '%s' "${why}" | tr '\n' ' ' | cut -c1-300)
-  printf '[review] API-key run failed (exit %s): %s; retrying on subscription\n' \
-    "${rc}" "${why:-no error output}" >&2
+  if [[ "${why}" == *"Credit balance is too low"* ]]; then
+    # Expected: auto-reload is off by design and the credit refills on the 1st.
+    printf '[review] Reviewer API credit is used up for this month (it refills on the 1st); using the subscription. No action needed.\n' >&2
+  else
+    printf '[review] API-key run failed (exit %s): %s; retrying on subscription\n' \
+      "${rc}" "${why:-no error output}" >&2
+  fi
 
   # -u ANTHROPIC_API_KEY: the retry uses the subscription even if the caller exported a key.
   rc=0
