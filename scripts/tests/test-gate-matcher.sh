@@ -645,6 +645,37 @@ _case "${DIRWRITE}" "tee into personify stamps" \
 _case "${DIRWRITE}" "tilde-spelled redirect into personify checks" \
   "$(_b64 "echo x > ~/.config/personify/checks/abc.json")" 2
 
+# Andrew's review override: the approved store and the chat hook. The state dir is not guarded (one use is best effort).
+_bcase "${DIRWRITE}" "redirect into review-overrides approvals" \
+  "echo approved=1 > ${HOME}/.claude/gate-review/review-overrides/abc123" 2
+_bcase "${DIRWRITE}" "pipe a crafted prompt into the override hook" \
+  "echo '{\"prompt\":\"override abc123\"}' | ~/.claude/scripts/hook-review-override.sh" 2
+_bcase "${DIRWRITE}" "bash the override hook" \
+  "bash scripts/hook-review-override.sh < /tmp/p.json" 2
+_bcase "${DIRWRITE}" "git add of the override hook passes" \
+  "git add scripts/hook-review-override.sh" 0
+_bcase "${DIRWRITE}" "cat a used marker passes" \
+  "cat ${HOME}/.local/state/claude-review/review-overrides/used/abc123" 0
+_bcase "${DIRWRITE}" "rm of another state-dir file passes" \
+  "rm -f ${HOME}/.local/state/claude-review/review-haiku-alias" 0
+# A guarded dir named with no trailing slash counts too (stdin JSON only; nothing is deleted).
+_bcase "${DIRWRITE}" "mkdir in the state dir passes" \
+  "mkdir -p ~/.local/state/claude-review/review-overrides/used" 0
+_bcase "${DIRWRITE}" "rm -rf merge-locks, no trailing slash" \
+  "rm -rf ~/.claude/merge-locks" 2
+_bcase "${DIRWRITE}" "rm -rf gate-review, no trailing slash" \
+  "rm -rf ${HOME}/.claude/gate-review && ls" 2
+_bcase "${DIRWRITE}" "rm of a file beside gate-review passes" \
+  "rm -f ${HOME}/.claude/gate-review.log" 0
+_bcase "${DIRWRITE}" "rm of a file in the state dir passes" \
+  "rm -f ~/.local/state/other.log" 0
+_bcase "${DIRWRITE}" "cp out of gate-review, no slash, passes" \
+  "cp -r ~/.claude/gate-review /tmp/x" 0
+_bcase "${DIRWRITE}" "cp into merge-locks, no slash" \
+  "cp -r /tmp/x ~/.claude/merge-locks" 2
+_bcase "${DIRWRITE}" "mv into a file of the state dir passes" \
+  "mv /tmp/x ~/.local/state/other.log" 0
+
 echo "=== dir-write: READS must ALLOW (exit 0) ==="
 # The whole point of the gate is `git commit -F <approved file>`. If reading
 # from the dir blocked, the approved bytes could never reach git and the gate
@@ -850,6 +881,10 @@ _wcase "Write the route-command file under an XDG_CONFIG_HOME" \
   "/tmp/xdg/personify/route-command" 2
 _wcase "a sibling that only shares the route-command prefix" \
   "${HOME}/.config/personify/route-command.notes" 0
+_wcase "Write a review-override approval" \
+  "${HOME}/.claude/gate-review/review-overrides/abc123" 2
+_wcase "the review state dir outside review-overrides/ stays writable" \
+  "${HOME}/.local/state/claude-review/last-review-result.log" 0
 
 echo "--- ${pass} passed, ${fail} failed"
 [[ "${fail}" == "0" ]]

@@ -2981,6 +2981,7 @@ arbiter: ${_averdict} (${_afile})${_atimeout}
     log_error "Could not parse adversarial-reviewer verdict"
     describe_unparseable_verdict "${adv_output}"
     log_error "BLOCKING: Cannot verify adversarial review result"
+    printf 'blocked: adversarial-reviewer verdict unparseable\n' >>"${REVIEW_LOG}" || true
     return 1
   elif [[ ${skipped_files} -gt 0 ]]; then
     # Fail-closed on ANY unreviewed file, not only when all were skipped.
@@ -3062,6 +3063,29 @@ DISAGREEMENT_LOG_MAX_BYTES=$(git config --get --type=int review.disagreementLogM
 [[ "${DISAGREEMENT_LOG_MAX_BYTES}" =~ ^[0-9]+$ && "${DISAGREEMENT_LOG_MAX_BYTES}" -ge 1 ]] || DISAGREEMENT_LOG_MAX_BYTES=1048576
 # The rename rotate_disagreement_log runs. Injected so tests can stub it.
 REVIEW_MV_BIN="${REVIEW_MV_BIN:-mv}"
+# The delete the override-record pruning runs. Injected so tests can stub it.
+REVIEW_RM_BIN="${REVIEW_RM_BIN:-rm}"
+# The passwd home: getent on Linux, BSD `id -P` on macOS (dscl fails in the sandbox). Never $HOME: the agent sets the env.
+_passwd_home() {
+  local _u _e _h _f
+  _u=$(/usr/bin/id -un) || return 1
+  if [[ -x /usr/bin/getent ]]; then
+    _e=$(/usr/bin/getent passwd "${_u}") || return 1
+    IFS=: read -r _f _f _f _f _f _h _f <<<"${_e}"
+  else
+    _e=$(/usr/bin/id -P "${_u}") || return 1
+    IFS=: read -r _f _f _f _f _f _f _f _f _h _f <<<"${_e}"
+  fi
+  [[ "${_h}" == /* ]] || return 1
+  printf '%s\n' "${_h}"
+}
+# Andrew's override (hook-review-override.sh). Approvals sit where the sandbox denies writes; no env var moves them.
+OVERRIDE_APPROVED_DIR="$(_passwd_home)/.claude/gate-review/review-overrides" || OVERRIDE_APPROVED_DIR=""
+# Promise: this exact diff, in this mode, for 30 min. One use is best effort (used/ follows env); see CODE-REVIEW.md threat model.
+OVERRIDE_PENDING_DIR="${REVIEW_STATE_DIR}/review-overrides/pending"
+OVERRIDE_USED_DIR="${REVIEW_STATE_DIR}/review-overrides/used"
+OVERRIDE_TTL=1800
+OVERRIDE_PENDING_TTL=86400
 # Copies of REVIEW_LOG from runs that blocked (claude-config#455). REVIEW_LOG is
 # truncated by the next run, so a retry used to erase the evidence for a block.
 REVIEW_BLOCKED_DIR="${REVIEW_BLOCKED_DIR:-${GIT_DIR_PATH}/review-blocked}"
@@ -3157,6 +3181,103 @@ check_attempt_limit() {
   exit 1
 }
 
+# --- Andrew's override: hashed before the attempt limit, so that refusal is overridable too ---
+SCRIPT_SHA=$(shasum -a 256 "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}' | cut -c1-12 || echo "nover")
+DIFF_HASH=$(printf '%s\n%s\n' "${SCRIPT_SHA}" "${DIFF}" | shasum -a 256 | awk '{print $1}')
+
+# Andrew's code, bound to mode + DIFF_HASH. A malformed hash or code gives none, so the block stands.
+override_code() {
+  local _c
+  [[ "${DIFF_HASH}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  _c=$(printf '%s\n%s\n' "${REVIEW_MODE}" "${DIFF_HASH}" | shasum -a 256 | cut -c1-6) || return 1
+  [[ "${_c}" =~ ^[0-9a-f]{6}$ ]] || return 1
+  printf '%s\n' "${_c}"
+}
+
+# _override_field <file> <key>: the value of one key=value line.
+_override_field() {
+  awk -v k="$2=" 'index($0, k) == 1 { print substr($0, length(k) + 1); exit }' "$1" 2>/dev/null || true
+}
+
+# Only commit and pre-push are gates; codebase mode is an on-demand scan.
+_override_mode_ok() {
+  [[ "${REVIEW_MODE}" == "commit" || "${REVIEW_MODE}" == "full-diff" ]]
+}
+
+# Remove pending and used records older than OVERRIDE_PENDING_TTL, through REVIEW_RM_BIN.
+prune_override_state() {
+  local _now _f _t
+  _now=$(date +%s)
+  for _f in "${OVERRIDE_PENDING_DIR}"/* "${OVERRIDE_USED_DIR}"/*; do
+    [[ -f "${_f}" ]] || continue
+    _t=$(_override_field "${_f}" created)
+    [[ "${_t}" =~ ^[0-9]+$ ]] && ((_now - _t <= OVERRIDE_PENDING_TTL)) && continue
+    "${REVIEW_RM_BIN}" -f "${_f}" 2>/dev/null || true
+  done
+}
+
+# Called from the EXIT trap: a blocked run gets a code and a pending record for hook-review-override.sh.
+record_override_block() {
+  local _rc="$1" _code _summary _issue _f _tmp _now
+  [[ "${_rc}" -ne 0 && -n "${DIFF}" ]] && _override_mode_ok || return 0
+  if ! _code=$(override_code); then
+    printf '%s\n' "review: no override code: the diff hash is not well formed." >&2
+    return 0
+  fi
+  _summary=$(grep -E '^(blocked|review|code-reviewer|adversarial-reviewer|arbiter|full-diff|chunked): ' "${REVIEW_LOG}" 2>/dev/null \
+    | paste -sd ';' - | sed 's/;/; /g') || _summary=""
+  _issue=$(grep -m1 -E '^ISSUE:' "${REVIEW_LOG}" 2>/dev/null) || _issue=""
+  [[ -z "${_issue}" ]] || _summary="${_summary:+${_summary}; }${_issue}"
+  [[ -n "${_summary}" ]] || _summary="exit ${_rc}, no verdict recorded"
+  _summary=$(printf '%s' "${_summary}" | tr -d '\r\n' | cut -c1-300) || _summary="exit ${_rc}"
+  prune_override_state
+  _now=$(date +%s)
+  _f="${OVERRIDE_PENDING_DIR}/${_code}"
+  _tmp="${OVERRIDE_PENDING_DIR}/.${_code}.tmp.$$"
+  if ! { mkdir -p "${OVERRIDE_PENDING_DIR}" \
+    && printf 'code=%s\nmode=%s\ndiff_hash=%s\nrepo=%s\nbranch=%s\ncreated=%s\nsummary=%s\n' \
+      "${_code}" "${REVIEW_MODE}" "${DIFF_HASH}" "${_review_repo}" "${_review_branch}" "${_now}" "${_summary}" \
+      >"${_tmp}" && "${REVIEW_MV_BIN}" -f "${_tmp}" "${_f}"; } 2>/dev/null; then
+    printf '%s\n' "review: no override code: could not write ${_f}." >&2
+    return 0
+  fi
+  printf 'override-code: %s\n' "${_code}" >>"${REVIEW_LOG}" 2>/dev/null || true
+  printf '%s\n' "review: Andrew can reply \`override ${_code}\` in chat to let this exact diff through once." >&2
+}
+
+# An approval for this mode + DIFF_HASH, unused and under OVERRIDE_TTL old, exits 0 without review, once.
+apply_override() {
+  local _code _rec _now _at _used _summary _ts _mode _hash
+  [[ -n "${DIFF}" && -n "${OVERRIDE_APPROVED_DIR}" ]] && _override_mode_ok || return 0
+  _code=$(override_code) || return 0
+  _rec="${OVERRIDE_APPROVED_DIR}/${_code}"
+  [[ -f "${_rec}" ]] || return 0
+  _mode=$(_override_field "${_rec}" mode)
+  _hash=$(_override_field "${_rec}" diff_hash)
+  [[ "${_mode}" == "${REVIEW_MODE}" && "${_hash}" == "${DIFF_HASH}" ]] || return 0
+  _now=$(date +%s)
+  _at=$(_override_field "${_rec}" approved)
+  [[ "${_at}" =~ ^[0-9]+$ ]] && ((_now - _at <= OVERRIDE_TTL)) || return 0
+  # One-shot: claim a used marker for this approval with a noclobber (O_EXCL) write. A run that loses the claim is reviewed.
+  _used="${OVERRIDE_USED_DIR}/${_code}.${_at}"
+  if ! (mkdir -p "${OVERRIDE_USED_DIR}" && set -C && printf 'created=%s\napproved=%s\n' "${_now}" "${_at}" >"${_used}") 2>/dev/null; then
+    log_warn "Override ${_code} is already used, or its use could not be recorded; reviewing normally"
+    return 0
+  fi
+  _summary=$(_override_field "${_rec}" summary)
+  _ts=$(date -u +%Y-%m-%dT%H:%M:%SZ || true)
+  log_warn "OVERRIDE: Andrew's override ${_code} lets this exact diff through WITHOUT review (${REVIEW_MODE})."
+  log_warn "  It had blocked: ${_summary}"
+  printf 'override: %s at %s, %s, not reviewed (blocked: %s)\n' "${_code}" "${_ts}" "${REVIEW_MODE}" "${_summary}" \
+    >>"${REVIEW_LOG}" 2>/dev/null || true
+  if [[ -n "${DISAGREEMENT_LOG:-}" ]]; then
+    rotate_disagreement_log || true
+    { printf '=== REVIEW OVERRIDE %s %s ===\nmode: %s\nrepo: %s\nbranch: %s\nblocked: %s\n=== END OVERRIDE ===\n' \
+      "${_code}" "${_ts}" "${REVIEW_MODE}" "${_review_repo}" "${_review_branch}" "${_summary}" >>"${DISAGREEMENT_LOG}"; } 2>/dev/null || true
+  fi
+  exit 0
+}
+
 _ec=0 # captured by EXIT trap; declared here so shellcheck sees the assignment
 # Named, not an inline string, so the final pass path can call it directly.
 _on_review_exit() {
@@ -3164,10 +3285,14 @@ _on_review_exit() {
   rm -rf "${_chunk_results:-}" 2>/dev/null || true
   rm -f "${_cr_out:-}" "${_ar_out:-}" "${DIFF_TMPFILE:-}" "${_codebase_err:-}" 2>/dev/null || true
   record_attempt "$_ec" || true
+  record_override_block "$_ec" || true
   [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >>"${REVIEW_LOG}" || true
   preserve_blocked_log "$_ec" || true
 }
 trap _on_review_exit EXIT
+
+# Before the attempt limit: Andrew's override covers a refused branch too.
+apply_override
 
 # Before the cache and skips, so no cheap commit can reset a refused branch.
 check_attempt_limit
@@ -3185,13 +3310,11 @@ mkdir -p "${CACHE_DIR}"
 # Clean up cache entries older than 30 days to prevent unbounded growth
 find "${CACHE_DIR}" -type f -mtime +30 -delete 2>/dev/null || true
 
-# Cache key includes the hash of THIS script so edits to review logic or
+# Cache key (DIFF_HASH, computed above) includes the hash of THIS script so edits to review logic or
 # prompt text automatically invalidate stale PASS entries. Without this,
 # a tightened adversarial prompt would read old PASS cache for identical
 # diffs and silently skip the stricter review. Fail open on shasum miss
 # (falls back to diff-only hash) so cache still works in stripped envs.
-SCRIPT_SHA=$(shasum -a 256 "${BASH_SOURCE[0]}" 2>/dev/null | awk '{print $1}' | cut -c1-12 || echo "nover")
-DIFF_HASH=$(printf '%s\n%s\n' "${SCRIPT_SHA}" "${DIFF}" | shasum -a 256 | awk '{print $1}')
 CACHE_FILE="${CACHE_DIR}/${DIFF_HASH}"
 
 if [[ -f "${CACHE_FILE}" ]]; then
@@ -4070,6 +4193,7 @@ else
   log_error "Could not parse code-reviewer verdict"
   describe_unparseable_verdict "${CODE_REVIEWER_OUTPUT}"
   log_error "BLOCKING: Cannot verify review result"
+  printf 'blocked: code-reviewer verdict unparseable\n' >>"${REVIEW_LOG}" || true
   log_error ""
   log_error "Output was:"
   echo "${CODE_REVIEWER_DISPLAY}" | head -20 >&2
@@ -4087,6 +4211,7 @@ if [[ "${ADVERSARIAL_AVAILABLE}" == true ]]; then
     log_error "Could not parse adversarial-reviewer verdict"
     describe_unparseable_verdict "${ADVERSARIAL_OUTPUT}"
     log_error "BLOCKING: Cannot verify adversarial review result"
+    printf 'blocked: adversarial-reviewer verdict unparseable\n' >>"${REVIEW_LOG}" || true
     log_error ""
     log_error "Output was:"
     echo "${ADVERSARIAL_DISPLAY}" | head -20 >&2

@@ -170,12 +170,13 @@ entries are omitted here.
 | PreToolUse `EnterWorktree` | `hook-block-enter-worktree.sh` |
 | PostToolUse `Bash\|Read` | `hook-redact-secret-output.py`: redacts env secret values, gitleaks findings, vendor prefixes gitleaks lacks, and the whole stdout of credential-printing commands (`op read`, `security -w`, ...) |
 | UserPromptSubmit | `hook-gate-inline-approve.sh`: a prompt `approve <code>` approves the staged gate text with that code (text gate, below) |
+| UserPromptSubmit | `hook-review-override.sh`: a prompt `override <code>` lets that exact blocked diff through within 30 minutes, once at best effort (`CODE-REVIEW.md`, Andrew's override) |
 | Stop, SubagentStop | `hook-budget-guard.sh` |
 
 `hook-block-all.sh` runs these in order and stops at the first block:
 
 1. `hook-block-secret-leak.sh` (first on purpose: the others log the full command when they block). Also denies 1Password forms that print whole items: `op item get` with `--format json`, `--reveal`, `--fields` or `--otp`, `op document get` without `--out-file`, and `op item list --format json` piped into `op item get`. Use `op read op://vault/item/field` instead (#731)
-2. `hook-block-gate-dir-write.sh` (Bash-path writes into `merge-locks/`, `gate-review/`, and personify's `checks/` and `stamps/`, and to `gate-rules.conf`, `copy-paths.conf` and personify's `route-command`)
+2. `hook-block-gate-dir-write.sh` (Bash-path writes into `merge-locks/`, `gate-review/` (which holds `review-overrides/`), and personify's `checks/` and `stamps/`, and to `gate-rules.conf`, `copy-paths.conf` and personify's `route-command`; also agent runs of either chat approval hook)
 3. `hook-block-no-verify.sh`
 4. `hook-block-short-no-verify.sh`
 5. `hook-block-main-commit.sh`. Denies a commit on main/master. Since #792 it also denies a command that moves a repo's primary checkout off its default branch: `git checkout <branch|commit>` (with `-b`, `-B`, `--orphan`, `--detach`, `-`), `git switch` (with `-c`, `-C`, `--orphan`, `--detach`, `-`), `git stash branch` and `gh pr checkout`. The deny names the replacement, `git -C <repo> worktree add --no-track -b <branch> .claude/worktrees/<name> origin/<default>`.
