@@ -72,3 +72,6 @@ daemon.lock
 daemon.status.json
 policy-limits.json.signature.json
 .cc-writes
+policy-limits.json.signature-iat.json
+remote-settings.json.signature-iat.json
+remote-settings.json.signature.json
