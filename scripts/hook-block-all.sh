@@ -2,7 +2,10 @@
 # Hook: Wrapper that runs all block hooks
 # Keeps settings.json clean by consolidating block checks
 
-set -euo pipefail
+set -Eeuo pipefail
+# Claude Code treats only exit 2 as a blocking hook refusal. An unexpected
+# dispatcher failure must not turn into a successful unchecked tool call.
+trap 'printf "hook-block-all.sh: dispatcher failed; operation blocked. Report this failure and wait for guidance.\n" >&2; exit 2' ERR
 unset CDPATH
 
 # The hooks below use bash 4+ builtins (mapfile, ${var,,}). `env bash` gives
@@ -22,7 +25,7 @@ if ((BASH_VERSINFO[0] < 4)); then
     fi
   done
   printf 'hook-block-all.sh: bash %s is too old and no bash 4+ was found; block hooks did not run\n' "${BASH_VERSION}" >&2
-  exit 1
+  exit 2
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,5 +79,14 @@ if ((${#missing[@]} > 0)); then
 fi
 
 for name in "${REQUIRED_HOOKS[@]}"; do
-  printf '%s\n' "${input}" | "${SCRIPT_DIR}/${name}" || exit $?
+  if printf '%s\n' "${input}" | "${SCRIPT_DIR}/${name}"; then
+    continue
+  else
+    rc=$?
+    if [[ "${rc}" -ne 2 ]]; then
+      printf 'hook-block-all.sh: %s failed (exit %s); operation blocked unchecked.\n' "${name}" "${rc}" >&2
+    fi
+    printf 'Stop this operation, report the refusal or guard failure to the parent/human, and wait for guidance. Do not retry through another tool.\n' >&2
+    exit 2
+  fi
 done

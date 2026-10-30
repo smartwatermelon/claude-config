@@ -36,13 +36,11 @@ cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
 # would get). The command text is passed on stdin, never as an argument -- an
 # argument would be visible in `ps` to any local process.
 verdict=$(printf '%s' "${cmd}" | python3 "$(dirname "${BASH_SOURCE[0]}")/hook-block-secret-leak.py") || {
-  # Detector failure must not wedge every Bash call, but it must not be silent
-  # either -- a guard that quietly stops guarding is the worst outcome. Exit 1
-  # is non-blocking (the command still runs) AND surfaces stderr, unlike exit 0
-  # whose stderr is discarded.
-  printf '⚠️  secret-leak hook: detector failed to run; command allowed UNCHECKED.\n' >&2
-  printf '   Secrets in this command would not have been caught.\n' >&2
-  exit 1
+  # A failed detector is not permission to execute unchecked. Exit 2 is the
+  # blocking PreToolUse result, including when this hook is invoked directly.
+  printf 'secret-leak hook: detector failed; command blocked unchecked.\n' >&2
+  printf 'Report the guard failure and wait for guidance; do not bypass it.\n' >&2
+  exit 2
 }
 
 [[ -n "${verdict}" ]] || exit 0

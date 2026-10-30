@@ -1,0 +1,35 @@
+{
+  "allowManagedHooksOnly": true,
+  "allowManagedPermissionRulesOnly": true,
+  "permissions": {
+    "defaultMode": "auto",
+    "disableBypassPermissionsMode": "disable",
+    "deny": [
+      "Edit(//etc/claude-code/**)",
+      "Edit(//opt/claude-control/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.config/op/**)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "autoAllowBashIfSandboxed": true,
+    "excludedCommands": [],
+    "enableWeakerNestedSandbox": false,
+    "enableWeakerNetworkIsolation": false,
+    "filesystem": {
+      "denyWrite": ["/etc/claude-code", "/opt/claude-control"],
+      "denyRead": ["~/.ssh", "~/.aws", "~/.config/op"],
+      "allowManagedReadPathsOnly": true
+    },
+    "network": {
+      "allowedDomains": [],
+      "allowManagedDomainsOnly": true,
+      "allowAllUnixSockets": false,
+      "allowLocalBinding": false
+    }
+  }
+}

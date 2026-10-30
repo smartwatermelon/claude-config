@@ -1,5 +1,15 @@
 # Human Bypass Guide
 
+> Security correction (2026-10-30): this document describes legacy operational
+> procedures, **not a proven human-only boundary**. PreToolUse regexes and
+> environment variables do not distinguish a human from an agent under the
+> same OS account, nor constrain arbitrary code reached through an allowed
+> command. Claims below that a bypass is technically unavailable to agents are
+> not security guarantees. Do not use these procedures to circumvent a denial.
+> `clauded` and `suclauded` remain unchanged pending a separately authenticated
+> execution path and explicit operator approval. See the reconstruction design
+> in `smartwatermelon/dev-env`, `docs/plans/2026-10-30-authorization-rebuild.md`.
+
 This document explains how YOU (the human operator) can bypass the hardened review hooks when legitimately needed. These bypasses are **not available to the Claude Code agent** — with one caveat: `STRICT_PREPUSH=0` (see [section 3](#3-skipping-local-pre-push-review-with-strict_prepush0)) is not technically hook-blocked for the agent the way `--no-verify` is. The rule keeping it human-only is behavioral, not enforced — the agent must ask your permission before setting it, every time, with no standing authorization.
 
 ---
