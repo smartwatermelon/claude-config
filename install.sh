@@ -244,6 +244,9 @@ _is_excluded() {
     install.sh) return 0 ;;
     # Plans
     docs/plans/*) return 0 ;;
+    # Authorization replacement is staged only. Never symlink policy or its
+    # reference evaluator into a running session through the legacy installer.
+    security/*) return 0 ;;
     # Licensing
     LICENSE*) return 0 ;;
     # Test files

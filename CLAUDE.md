@@ -355,16 +355,35 @@ Banned until the PR is merged: "production ready", "ready for review", "all done
 - Creating public GitHub repositories
 - Setting `STRICT_PREPUSH=0` for a specific push when local review is genuinely blocking — ask in that specific conversation; never set it without asking, and never treat a past instance of permission as standing/reusable authorization for future pushes. Details: `~/.claude/docs/HUMAN-BYPASS.md`
 
-### Auto-Mode Classifier Denials
+### Authorization Denials: Stop, Report, Escalate, Wait
 
-A denial from the auto-mode classifier ("Permission for this action was denied by the Claude Code auto mode classifier") is a stop point for Andrew, not a puzzle to solve.
+A permission denial is a control-plane event, not a problem to work around.
+This applies to every authority: human decisions, permission rules, hooks,
+sandbox, runtime harness, OS, wrappers and remote services, as well as auto mode.
 
-1. Stop that line of work at once. Do not retry the action in another form, with another tool, or split into steps, even though the denial text says you may.
-2. Tell Andrew in your next message, at the top: the exact command, the classifier's stated reason, and what it was for. Send a `PushNotification` too, so he sees it away from the terminal.
-3. Give him the command in a form he can run or allow at once (`! <command>`, or the permission rule that would allow it). Then continue only with work that does not depend on it.
-4. **Subagents:** stop and put the denial (command, reason, purpose) at the top of your report, or send it to the parent at once with `SendMessage`. Never improvise past it. The parent relays it to Andrew immediately, not in an end-of-task summary.
+1. Stop the denied operation and work that depends on it. Do not retry through
+   alternative commands, spellings, tools, paths, subprocesses, identities or
+   indirect mechanisms. A tool's suggestion to retry does not grant authority.
+2. Report promptly: the attempted operation (redact secrets), the denying
+   authority and reason if known, and the work that remains blocked. Distinguish
+   evidence from inference; do not invent a reason for an unexplained refusal.
+3. A subagent reports to its parent immediately. The parent relays the blockage
+   to Andrew promptly; it must not perform the same denied operation itself.
+4. Wait for explicit guidance, approval, or a revised plan. Resume only within
+   the authority granted. Do not change policy or invoke `clauded`, `suclauded`,
+   a direct binary, another account or unsandboxed execution to get past a denial.
+5. Report verified results, partial results and blocked work separately. Never
+   silently abandon a denied task, claim completion, or substitute invented
+   verification. Continue independent authorized work only when it does not
+   attempt the denied effect.
 
-**Why:** Andrew is working to keep sessions in auto mode. Agents that route around a denial hide the friction he needs to tune the rules, and they can do the very thing the classifier stopped. He wants to grant permission right away instead.
+A transient operational failure can be retried within existing policy; an
+authorization denial cannot. If unclear which occurred, report the uncertainty
+and stop the affected operation. Do not automatically generate a broad allow
+rule or hand Andrew an unreviewed bypass command.
+
+Instructions alone do not enforce this boundary. The staged replacement under
+`security/` requires externally owned state and enforcement; it is not deployed.
 
 ### Verification Discipline
 
@@ -412,4 +431,6 @@ A denial from the auto-mode classifier ("Permission for this action was denied b
 
 ## Infrastructure
 
-Protocols are enforced automatically by git hooks and scripts. If a hook blocks you, you violated a protocol. Details: `~/.claude/docs/INFRASTRUCTURE.md`
+Hooks and scripts can block protocol violations and can also fail or produce
+false positives. A block is evidence of a refusal, not proof of agent misconduct.
+Apply the denial contract above. Details: `~/.claude/docs/INFRASTRUCTURE.md`
