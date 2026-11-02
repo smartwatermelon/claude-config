@@ -917,14 +917,14 @@ review_gate_reason() {
     return 1
   fi
   if ! reviews=$(command gh api --paginate "repos/${repo}/pulls/${pr}/reviews?per_page=100" \
-    --jq '.[] | select(.user.login != null) | [.user.login, .state, .commit_id] | @tsv' 2>/dev/null); then
+    --jq '.[] | select(.user.login != null) | [(.submitted_at // ""), .user.login, .state, .commit_id] | @tsv' 2>/dev/null); then
     echo "cannot read the PR reviews"
     return 1
   fi
-  # COMMENTED and PENDING reviews do not change an approval; the newest of the rest decides.
-  latest=$(awk -F'\t' -v who="${REVIEW_APPROVER}" \
-    'tolower($1) == tolower(who) && ($2 == "APPROVED" || $2 == "CHANGES_REQUESTED" || $2 == "DISMISSED") { l = $2 "\t" $3 }
-     END { print l }' <<<"${reviews}")
+  # Sorted by submit time, not page order. COMMENTED and PENDING do not change an approval; the newest other one decides.
+  latest=$(sort -s -t$'\t' -k1,1 <<<"${reviews}" | awk -F'\t' -v who="${REVIEW_APPROVER}" \
+    'tolower($2) == tolower(who) && ($3 == "APPROVED" || $3 == "CHANGES_REQUESTED" || $3 == "DISMISSED") { l = $3 "\t" $4 }
+     END { print l }')
   if [[ "${latest%%$'\t'*}" != "APPROVED" ]]; then
     echo "no approving review from ${REVIEW_APPROVER}"
     return 1

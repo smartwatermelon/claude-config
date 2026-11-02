@@ -465,6 +465,14 @@ _assert_review_refused() {
   _assert_review_refused "${status}" "${output}" "no approving review from twistedmelonman"
 }
 
+@test "known-bad: an older approval listed after a newer change request still refuses" {
+  local old new
+  old='{"user":{"login":"twistedmelonman"},"state":"APPROVED","commit_id":"'"${HEAD_SHA}"'","submitted_at":"2026-11-01T10:00:00Z"}'
+  new='{"user":{"login":"twistedmelonman"},"state":"CHANGES_REQUESTED","commit_id":"'"${HEAD_SHA}"'","submitted_at":"2026-11-02T10:00:00Z"}'
+  _review_merge SAFE_TO_MERGE "reviews=[${new},${old}]"
+  _assert_review_refused "${status}" "${output}" "no approving review from twistedmelonman"
+}
+
 @test "a comment after an approval keeps the approval" {
   _review_merge SAFE_TO_MERGE "reviews=[${APPROVED},${APPROVED/APPROVED/COMMENTED}]"
   [[ "${status}" -eq 0 ]]

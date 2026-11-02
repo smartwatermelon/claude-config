@@ -5,9 +5,7 @@
 
 set -euo pipefail
 
-input=$(cat)
-cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty')
-
+cmd=""
 block() {
   printf '%s BLOCKED PR APPROVE: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ || true)" "${cmd}" >>"${HOME}/.claude/blocked-commands.log" || true
   printf '🛑 BLOCKED: approving a pull request is a human-only action (%s).\n' "$1" >&2
@@ -17,6 +15,9 @@ block() {
   exit 2
 }
 
+# Exit 1 would be a non-blocking error, so input this hook cannot parse blocks.
+input=$(cat) || block "unreadable hook input"
+cmd=$(printf '%s\n' "${input}" | jq -r '.tool_input.command // empty' 2>/dev/null) || block "unparseable hook input"
 [[ -n "${cmd}" ]] || exit 0
 
 # 1. gh pr review with --approve, -a, or a short-flag cluster holding a.

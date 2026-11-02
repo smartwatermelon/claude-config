@@ -150,6 +150,11 @@ run_hook() {
   [ "${status}" -eq 0 ]
 }
 
+@test "known-bad: unparseable hook input blocks, it does not fail open" {
+  run bash -c 'printf "not json" | bash "$1"' _ "${HOOK}"
+  [ "${status}" -eq 2 ]
+}
+
 @test "allows an empty command" {
   run run_hook ''
   [ "${status}" -eq 0 ]
