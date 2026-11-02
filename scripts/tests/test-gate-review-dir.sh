@@ -64,8 +64,27 @@ if [[ -f "${GATE_REVIEW_DIR}/pending/alpha-main/c1" ]]; then _ok "staged under a
 _gate --dir "${BETA}" stage --kind commit c2 "${TMP}/body.txt"
 if [[ -f "${GATE_REVIEW_DIR}/pending/beta-feat-x/c2" ]]; then _ok "a second repo keys to its own branch"; else
   _no "a second repo keys to its own branch: ${OUT}"; fi
-if [[ ! -e "${GATE_REVIEW_DIR}/pending/batch" ]]; then _ok "nothing keyed to the caller's cwd"; else
-  _no "nothing keyed to the caller's cwd"; fi
+keys="$(find "${GATE_REVIEW_DIR}/pending" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | paste -sd ' ' -)"
+if [[ "${keys}" == "alpha-main beta-feat-x" ]]; then _ok "only the two --dir keys exist"; else
+  _no "only the two --dir keys exist: [${keys}]"; fi
+
+echo "--- --dir with a relative <file> is refused ---"
+printf 'fix(x): repo copy\n' >"${ALPHA}/body.txt"
+RC=0
+OUT="$(cd "${TMP}" && bash "${GATE}" --dir "${ALPHA}" stage --kind commit rel body.txt 2>&1)" || RC=$?
+if [[ "${RC}" != 0 && "${OUT}" == *"absolute path"* && ! -e "${GATE_REVIEW_DIR}/pending/alpha-main/rel" ]]; then
+  _ok "relative file refused, nothing staged"
+else
+  _no "relative file refused, nothing staged (rc=${RC}): ${OUT}"
+fi
+
+echo "--- --dir with spaces in the path ---"
+SPACED="${TMP}/my repo"
+mkdir -p "${SPACED}"
+git -C "${SPACED}" init -q -b main
+_gate --dir "${SPACED}" stage --kind commit sp "${TMP}/body.txt"
+if [[ "${RC}" == 0 && -f "${GATE_REVIEW_DIR}/pending/my-repo-main/sp" ]]; then _ok "spaced path stages"; else
+  _no "spaced path stages (rc=${RC}): ${OUT}"; fi
 
 echo "--- --dir reaches open: it shows that repo's items ---"
 STUB="${TMP}/stub-bin"

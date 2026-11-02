@@ -510,7 +510,9 @@ _segment_starts() {
 QUOTED_PASS=0
 
 _deny() {
-  local reason="$1" surface="$2"
+  local reason="$1" surface="$2" qdir
+  # %q keeps a path with spaces one argument when the line is pasted.
+  qdir="$(printf '%q' "${DEST_DIR:-${PWD}}")"
   {
     echo '🛑 BLOCKED: this text has not been visually approved.'
     echo ''
@@ -521,8 +523,8 @@ _deny() {
     echo 'read and approved in the editor before they are written. To do that:'
     echo ''
     echo '  1. Write the text to a file.'
-    echo "  2. ${GATE} --dir ${DEST_DIR:-${PWD}} stage --kind <kind> <label> <file>"
-    echo "  3. ${GATE} --dir ${DEST_DIR:-${PWD}} open"
+    echo "  2. ${GATE} --dir ${qdir} stage --kind <kind> <label> <absolute file path>"
+    echo "  3. ${GATE} --dir ${qdir} open"
     echo '     Run each as its own command, exactly as shown: no cd, nothing'
     echo '     before the script path. Staged items are kept per repo and branch'
     echo '     of the --dir path, and open shows only those items.'
@@ -960,7 +962,8 @@ _public_call_ok() {
 }
 
 _deny_copy() {
-  local reason="$1" surface="$2" extract="${3:-}" label
+  local reason="$1" surface="$2" extract="${3:-}" label qdir
+  qdir="$(printf '%q' "${DEST_DIR:-${PWD}}")"
   {
     echo '🛑 BLOCKED: this commit changes public-facing copy that has not been approved.'
     echo ''
@@ -975,8 +978,8 @@ _deny_copy() {
       echo 'The extract is the added or changed text of the staged copy files'
       echo '(the whole text of a new file). Approve it like commit text:'
       echo ''
-      echo "  1. ${GATE} --dir ${DEST_DIR:-${PWD}} stage --kind copy ${label} ${extract}"
-      echo "  2. ${GATE} --dir ${DEST_DIR:-${PWD}} open"
+      echo "  1. ${GATE} --dir ${qdir} stage --kind copy ${label} ${extract}"
+      echo "  2. ${GATE} --dir ${qdir} open"
       echo '     Run each as its own command, exactly as shown: no cd, nothing'
       echo '     before the script path.'
       echo '  3. Andrew reads it and types APPROVED in the STATUS line.'

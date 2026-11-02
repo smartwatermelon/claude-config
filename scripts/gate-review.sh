@@ -383,6 +383,8 @@ _cmd_stage() {
   [[ -n "${kind}" ]] || _die "stage: --kind is required, one of: ${LENGTH_KINDS}"
   _valid_kind "${kind}" || _die "stage: unknown --kind '${kind}'; one of: ${LENGTH_KINDS}"
   [[ -n "${name}" && -n "${file}" ]] || _die "usage: gate-review.sh stage --kind <kind> <name> <file>"
+  # After --dir's cd a relative file would resolve in the repo, not where the caller wrote it.
+  [[ "${GATE_VIA_DIR:-0}" == 0 || "${file}" == /* ]] || _die "with --dir, give the file as an absolute path: ${file}"
   [[ -f "${file}" ]] || _die "no such file: ${file}"
   [[ "${name}" =~ ^[A-Za-z0-9._-]+$ ]] || _die "bad artifact name: ${name}"
   # Say so before any check or review is spent on text the gate may not need (#642). Notice only; staging goes on.
@@ -1330,6 +1332,7 @@ if [[ "${1:-}" == "--dir" ]]; then
   (($# >= 2)) || _die "--dir needs an absolute directory path"
   [[ "$2" == /* ]] || _die "--dir needs an absolute path, got '$2'"
   cd -- "$2" 2>/dev/null || _die "--dir: not a directory: $2"
+  GATE_VIA_DIR=1
   shift 2
 fi
 
