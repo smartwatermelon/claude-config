@@ -521,11 +521,11 @@ _deny() {
     echo 'read and approved in the editor before they are written. To do that:'
     echo ''
     echo '  1. Write the text to a file.'
-    echo "  2. ${GATE} stage --kind <kind> <label> <file>"
-    echo "  3. ${GATE} open"
-    echo '     Run both from the same directory: staged items are kept per'
-    echo '     repo and branch of the current directory, and open shows only'
-    echo "     that directory's items."
+    echo "  2. ${GATE} --dir ${DEST_DIR:-${PWD}} stage --kind <kind> <label> <file>"
+    echo "  3. ${GATE} --dir ${DEST_DIR:-${PWD}} open"
+    echo '     Run each as its own command, exactly as shown: no cd, nothing'
+    echo '     before the script path. Staged items are kept per repo and branch'
+    echo '     of the --dir path, and open shows only those items.'
     echo '  4. Andrew reads the batch and types APPROVED in the STATUS line.'
     echo '  5. Re-run the command against the APPROVED file, absolute path.'
     echo '     open prints it on an "approved:" line; it sits under your'
@@ -975,9 +975,10 @@ _deny_copy() {
       echo 'The extract is the added or changed text of the staged copy files'
       echo '(the whole text of a new file). Approve it like commit text:'
       echo ''
-      echo "  1. ${GATE} stage --kind copy ${label} ${extract}"
-      echo "  2. ${GATE} open"
-      echo '     Run 1 and 2 from the same directory.'
+      echo "  1. ${GATE} --dir ${DEST_DIR:-${PWD}} stage --kind copy ${label} ${extract}"
+      echo "  2. ${GATE} --dir ${DEST_DIR:-${PWD}} open"
+      echo '     Run each as its own command, exactly as shown: no cd, nothing'
+      echo '     before the script path.'
       echo '  3. Andrew reads it and types APPROVED in the STATUS line.'
       echo '  4. Re-run the same git commit. The hook rebuilds the extract from the'
       echo '     index; the same staged text gives the same bytes and passes.'

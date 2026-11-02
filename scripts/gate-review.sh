@@ -16,7 +16,8 @@
 #
 # `open -a` works from a tool call with no TTY. With no window server (SSH, cloud), open prints each approve-code instead.
 #
-# Usage:
+# Usage (every form also takes a leading --dir <abs path>: run as if from that
+# directory; staging is keyed to its repo and branch):
 #   gate-review.sh stage --kind <kind> <name> <file>   queue one artifact (under its length cap) for review
 #                 [--allow RULE --reason TEXT]...      gated routes run gate-lint.sh; these override a rule
 #   gate-review.sh open                  open the batch, wait for save
@@ -1324,6 +1325,14 @@ _cmd_suspended() {
   return 0
 }
 
+# --dir: run as if from that directory. The sandbox exclusion needs the script path first, so no `cd && ...`.
+if [[ "${1:-}" == "--dir" ]]; then
+  (($# >= 2)) || _die "--dir needs an absolute directory path"
+  [[ "$2" == /* ]] || _die "--dir needs an absolute path, got '$2'"
+  cd -- "$2" 2>/dev/null || _die "--dir: not a directory: $2"
+  shift 2
+fi
+
 case "${1:-}" in
   stage) shift; _tmp_traps; _cmd_stage "$@" ;;
   open) _cmd_open ;;
@@ -1334,5 +1343,5 @@ case "${1:-}" in
   route) shift; _cmd_route "$@" ;;
   personify-path) _personify_path ;;
   suspended) _cmd_suspended ;;
-  *) _die "usage: gate-review.sh {stage --kind <kind> <name> <file>|open|approve-hash <code>...|hash <file>|check [--kind <kind>] <file> [--repo owner/name] [--dir path]|measure --kind <kind> [--title T] [--repo owner/name] [--dir path] <body|route [--kind <kind>] [--repo owner/name] [--dir path]|personify-path|suspended}" ;;
+  *) _die "usage: gate-review.sh [--dir <abs path>] {stage --kind <kind> <name> <file>|open|approve-hash <code>...|hash <file>|check [--kind <kind>] <file> [--repo owner/name] [--dir path]|measure --kind <kind> [--title T] [--repo owner/name] [--dir path] <body|route [--kind <kind>] [--repo owner/name] [--dir path]|personify-path|suspended}" ;;
 esac

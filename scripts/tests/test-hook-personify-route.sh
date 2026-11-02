@@ -443,6 +443,13 @@ if ((rc == 2)) && [[ "${err}" == *"(review): no visual approval matches"* &&
 else
   _no "unapproved: deny gives the stage/open steps and no Pangram step (rc=${rc}): ${err}"
 fi
+# Steps start with the script path (--dir, no cd): the only form the sandbox exclusion matches.
+if [[ "${err}" == *"gate-review.sh --dir /"*" stage --kind <kind> <label>"* &&
+  "${err}" == *"gate-review.sh --dir /"*" open"* && "${err}" != *"same directory"* ]]; then
+  _ok "unapproved: steps use --dir <repo>, not a cd"
+else
+  _no "unapproved: steps use --dir <repo>, not a cd: ${err}"
+fi
 
 # Unchanged behaviour, in a gated repo.
 _case "inline -m still blocks" 2 "text given inline" "${THIRD}" \

@@ -233,7 +233,12 @@ record. A `review` destination needs clean lint plus Andrew's approval. An
     `hook-block-personify.sh`; gate v3 PR 4 (landing) adds it there. The
     dotfiles pre-push hook checks text added to a ready (non-draft)
     Beacon PR against gate-review approval.
-- `scripts/gate-review.sh stage --kind <kind> <name> <file>` queues text.
+- `scripts/gate-review.sh [--dir <abs path>] stage --kind <kind> <name> <file>`
+  queues text. `--dir` (any subcommand) runs as if from that directory, so
+  staging keys to its repo and branch with no `cd`. Agents use it: the
+  sandbox exclusion for this script matches only a command that starts with
+  its path, and the `cd <repo> && gate-review.sh` form ran sandboxed, where it
+  can neither write `gate-review/` nor open the editor.
   `--kind` is required: `commit`, `pr`, `issue`, `line-comment`,
   `pr-comment`, `code-comment` or `docstring`. `open` shows the batch and
   waits. Each batch gets its own file,
