@@ -27,6 +27,7 @@ readonly WT_MOVE="worktree ""move"
 readonly MERGE_EP="repos/o/r/pulls/1/""merge"
 readonly ML_AUTH="merge-lock.sh ""authorize"
 readonly GH_AUTH="gh ""auth"
+readonly PR_APPROVE="gh pr review 1 --""approve"
 
 # make_input <json-key> <value>
 make_input() {
@@ -87,6 +88,10 @@ check hook-block-api-merge.sh \
 check hook-block-merge-lock-authorize.sh \
   "merge-lock-authorize: blocks with exit 2" \
   command "${ML_AUTH} 123 ok"
+
+check hook-block-pr-approve.sh \
+  "pr-approve: blocks with exit 2" \
+  command "${PR_APPROVE}"
 
 check hook-block-gh-auth.sh \
   "gh-auth: blocks with exit 2" \

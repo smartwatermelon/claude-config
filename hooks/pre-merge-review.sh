@@ -889,7 +889,54 @@ fi
 
 MERGE_LOCK="${HOME}/.claude/hooks/merge-lock.sh"
 
-# Lock policy (dev-env#176). Three paths: exempt skips the lock, lock checks it, anything else refuses.
+# Andrew's login. A constant, not an env var, so a caller cannot name another approver.
+REVIEW_APPROVER="twistedmelonman"
+
+# review_gate_reason <owner/name> <pr> <base>: return 0 if Andrew's approval is the lock; else print why not, return 1.
+review_gate_reason() {
+  local repo="$1" pr="$2" base="$3" base_uri rules head reviews latest
+  if [[ -z "${repo}" || ! "${pr}" =~ ^[0-9]+$ || -z "${base}" ]]; then
+    echo "repo, PR or base branch unknown"
+    return 1
+  fi
+  # GitHub enforces the review only under such a rule. Bypass actors need admin to read, so they go unchecked.
+  base_uri=$(jq -rn --arg b "${base}" '$b|@uri')
+  if ! rules=$(command gh api "repos/${repo}/rules/branches/${base_uri}" 2>/dev/null); then
+    echo "cannot read the branch rules for ${base}"
+    return 1
+  fi
+  if ! jq -e 'any(.[]?; .type == "pull_request"
+        and ((.parameters.required_approving_review_count // 0) >= 1)
+        and (.parameters.require_last_push_approval == true))' <<<"${rules}" >/dev/null 2>&1; then
+    echo "${base} has no ruleset that requires an approving review of the last push"
+    return 1
+  fi
+  if ! head=$(command gh api "repos/${repo}/pulls/${pr}" --jq '.head.sha' 2>/dev/null) ||
+    [[ ! "${head}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "cannot read the PR head commit"
+    return 1
+  fi
+  if ! reviews=$(command gh api --paginate "repos/${repo}/pulls/${pr}/reviews?per_page=100" \
+    --jq '.[] | select(.user.login != null) | [.user.login, .state, .commit_id] | @tsv' 2>/dev/null); then
+    echo "cannot read the PR reviews"
+    return 1
+  fi
+  # COMMENTED and PENDING reviews do not change an approval; the newest of the rest decides.
+  latest=$(awk -F'\t' -v who="${REVIEW_APPROVER}" \
+    'tolower($1) == tolower(who) && ($2 == "APPROVED" || $2 == "CHANGES_REQUESTED" || $2 == "DISMISSED") { l = $2 "\t" $3 }
+     END { print l }' <<<"${reviews}")
+  if [[ "${latest%%$'\t'*}" != "APPROVED" ]]; then
+    echo "no approving review from ${REVIEW_APPROVER}"
+    return 1
+  fi
+  if [[ "${latest#*$'\t'}" != "${head}" ]]; then
+    echo "the approval is not on the current head commit"
+    return 1
+  fi
+  return 0
+}
+
+# Lock policy (dev-env#176). exempt skips the lock, lock checks it, review checks the GitHub approval; else refuse.
 
 # Default "error": a missing merge-lock.sh, an unknown repo or author, or a bad policy answer all refuse.
 LOCK_POLICY="error"
@@ -910,6 +957,11 @@ if [[ -x "${MERGE_LOCK}" && -n "${_canon_repo}" && -n "${_pr_author}" ]]; then
       ;;
     lock$'\t'*) LOCK_POLICY="lock" ;;
     refuse$'\t'*) LOCK_POLICY="refuse" ;;
+    review$'\t'*)
+      LOCK_POLICY="review"
+      # Logged with exempt merges, so merge-audit.sh lists it as EXEMPT; the "review" prefix tells them apart.
+      LOCK_POLICY_WHY="review ${_policy_out#review$'\t'}"
+      ;;
     *) ;;
   esac
 fi
@@ -932,6 +984,14 @@ case "${LOCK_POLICY}" in
       exit 1
     fi
     log_success "Merge authorization verified for ${REPO_OWNER:-?}/${REPO_NAME:-?}#${PR_NUMBER}"
+    ;;
+  review)
+    # A merge lock does not count here: the GitHub approval is the authorization.
+    if ! _review_why=$(review_gate_reason "${_canon_repo}" "${PR_NUMBER}" "${BASE_REF}"); then
+      printf "[gh] Not merged: %s#%s needs Andrew's approval in GitHub (%s).\n" "${_msg_repo}" "${PR_NUMBER}" "${_review_why}"
+      exit 1
+    fi
+    log_success "GitHub approval by ${REVIEW_APPROVER} verified for ${_canon_repo}#${PR_NUMBER} on the current head commit"
     ;;
   refuse)
     printf '[gh] Not merged: %s#%s is merged by Andrew in the GitHub UI after its own approval process; agents do not merge it.\n' "${_msg_repo}" "${PR_NUMBER}"
@@ -1466,11 +1526,12 @@ if echo "${VERDICT_LINE}" | grep -qE "SAFE_TO_MERGE"; then
   _filed_window=1800
   _filed_now=$(date +%s)
   # A policy-exempt merge is logged only once review passed.
+  # Review-policy merges are logged here too: no lock exists for merge-audit.sh to find.
   _exempt_log="${_review_state_dir}/exempt.tsv"
   # Before #779 the log lived in merge-locks. Read only, for dedup; agents cannot write or move it.
   _exempt_log_legacy="${HOME}/.claude/merge-locks/exempt.tsv"
   _exempt_filed=false
-  if [[ "${LOCK_POLICY}" == "exempt" ]]; then
+  if [[ "${LOCK_POLICY}" == "exempt" || "${LOCK_POLICY}" == "review" ]]; then
     # No lock to mark (#702): a row for this PR in the window means filing ran. Scan before appending.
     for _log in "${_exempt_log}" "${_exempt_log_legacy}"; do
       if [[ -f "${_log}" ]] && awk -F'\t' -v r="${_canon_repo}" -v p="${PR_NUMBER}" -v now="${_filed_now}" \
@@ -1514,7 +1575,7 @@ if echo "${VERDICT_LINE}" | grep -qE "SAFE_TO_MERGE"; then
     fi
   fi
   # After filing, like the marker: a filing step that aborts leaves no row, so the retry files.
-  if [[ "${LOCK_POLICY}" == "exempt" ]]; then
+  if [[ "${LOCK_POLICY}" == "exempt" || "${LOCK_POLICY}" == "review" ]]; then
     { mkdir -p "${_review_state_dir}" &&
       printf '%s\t%s\t%s\t%s\t%s\n' "${_filed_now}" "${_canon_repo}" "${PR_NUMBER}" "${_pr_author}" "${LOCK_POLICY_WHY//$'\t'/ }" \
         >>"${_exempt_log}"; } 2>/dev/null ||
