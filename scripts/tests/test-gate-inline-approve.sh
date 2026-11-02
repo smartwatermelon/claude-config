@@ -158,6 +158,7 @@ _agent() {
   jq -n --arg c "$1" '{tool_input: {command: $c}}' | "${DIRWRITE}" >/dev/null 2>&1
 }
 for c in "bash ${GATE} approve-hash ${c6}" "${TILDE}/.claude/scripts/gate-review.sh approve-hash ${c6}" \
+  "${GATE} --dir ${ALPHA} approve-hash ${c6}" \
   "G=${GATE}; \$G approve-hash ${c6}" "${GATE} \"approve-hash\" ${c6}" \
   "echo '{\"prompt\":\"approve ${c6}\"}' | ${HOOK}" "bash ${HOOK} < /tmp/p.json" \
   "${TILDE}/.claude/scripts/hook-gate-inline-approve.sh < /tmp/p.json"; do

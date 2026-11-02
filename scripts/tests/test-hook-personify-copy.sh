@@ -224,6 +224,9 @@ _case "staged copy change: blocked" 2 "public-facing copy that has not been appr
   "git commit -m 'fix: wording'"
 _contains "  ... names the extract" "${err}" "extract: ${GATE_REVIEW_DIR}/copy/"
 _contains "  ... and the stage --kind copy step" "${err}" "stage --kind copy copy-"
+# Script path first, --dir for the repo: the only form the sandbox exclusion matches.
+_contains "  ... stage step starts with the script and --dir" "${err}" "gate-review.sh --dir /"
+_contains "  ... and no run-from-the-same-directory advice" "${err}" "same directory" absent
 EX1="${extract}"
 _contains "  ... and no Pangram check step" "${err}" "pangram_check" absent
 body="$(cat "${EX1}" 2>/dev/null)"

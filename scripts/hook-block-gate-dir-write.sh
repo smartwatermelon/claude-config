@@ -148,7 +148,9 @@ printf '%s BLOCKED GATE-DIR WRITE (%s)\n' \
   echo '  git commit -F ~/.claude/gate-review/approved/<repo>-<branch>/<name>'
   echo ''
   echo 'To get something approved, stage it and ask him to review:'
-  echo '  gate-review.sh stage --kind <kind> <label> <file> && gate-review.sh open'
+  echo '  ~/.claude/scripts/gate-review.sh --dir <abs repo path> stage --kind <kind> <label> <file>'
+  echo '  ~/.claude/scripts/gate-review.sh --dir <abs repo path> open'
+  echo '(two separate commands, no cd: only that form runs outside the sandbox)'
   echo 'or show him the text and its approve-code; he replies "approve <code>" in chat.'
 } >&2
 exit 2
