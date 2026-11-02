@@ -56,13 +56,28 @@ policy() {
   [[ "${output}" == exempt$'\t'* ]]
 }
 
-@test "the four infrastructure repos stay locked" {
+@test "the three infrastructure repos stay locked" {
   local r
-  for r in claude-config dotfiles github-workflows claude-wrapper; do
+  for r in claude-config dotfiles github-workflows; do
     policy "smartwatermelon/${r}" twistedmelonman
     [[ "${status}" -eq 0 ]]
     [[ "${output}" == lock$'\t'* ]]
   done
+}
+
+@test "claude-wrapper merges on Andrew's GitHub review" {
+  policy smartwatermelon/claude-wrapper twistedmelonman
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == review$'\t'*$'\t'repo=smartwatermelon/claude-wrapper ]]
+}
+
+@test "an outcome that only looks like review is still an error" {
+  printf 'owner=x reviewed\n* exempt\n' >"${CC}/merge-lock-policy.conf"
+  git -C "${CC}" -c user.name=t -c user.email=t@t commit -q -am typo
+  git -C "${CC}" update-ref refs/remotes/origin/main HEAD
+  policy x/y twistedmelonman
+  [[ "${status}" -ne 0 ]]
+  [[ "${output}" != review* && "${output}" != exempt* ]]
 }
 
 @test "the Netlify sites stay locked" {
@@ -300,6 +315,27 @@ if [[ "\$1" == "issue" && "\$2" == "create" ]]; then
   echo "https://github.com/$1/issues/99"
   exit 0
 fi
+if [[ "\$1" == "api" ]]; then
+  # The review gate's reads, answered from the stub-* files _review_merge writes; --jq is applied here.
+  shift
+  path="" filter="."
+  while [[ \$# -gt 0 ]]; do
+    case "\$1" in
+      --jq) filter="\$2"; shift 2 ;;
+      --*) shift ;;
+      *) [[ -z "\${path}" ]] && path="\$1"; shift ;;
+    esac
+  done
+  case "\${path}" in
+    repos/$1/rules/branches/main) body=\$(cat "${TMP_HOME}/stub-rules" 2>/dev/null || echo "[]") ;;
+    repos/$1/pulls/7/reviews*) body=\$(cat "${TMP_HOME}/stub-reviews" 2>/dev/null || echo "[]") ;;
+    repos/$1/pulls/7) body="{\"head\":{\"sha\":\"\$(cat "${TMP_HOME}/stub-head" 2>/dev/null)\"}}" ;;
+    *) body="[]" ;;
+  esac
+  [[ "\$(cat "${TMP_HOME}/stub-fail" 2>/dev/null)" == "\${path%%\?*}" ]] && { echo "HTTP 403" >&2; exit 1; }
+  jq -r "\${filter}" <<<"\${body}"
+  exit \$?
+fi
 echo "[]"
 EOF
   local finding=""
@@ -343,6 +379,133 @@ EOF
   [[ "${status}" -eq 1 ]]
   [[ "${output}" == *"[gh] Not merged: smartwatermelon/claude-config#7 needs Andrew's approval."* ]]
   [[ "${output}" != *"authorize"* ]]
+}
+
+# --- review: Andrew's GitHub approval is the lock ----------------------------
+
+HEAD_SHA="1744a79bff97a0b262bdd8b33235f44ee44cd5f7"
+OLD_SHA="0000000000000000000000000000000000000001"
+# The pull_request rule as GitHub returns it for claude-wrapper's main ruleset (read 2026-11-02).
+GOOD_RULES='[{"type":"deletion","parameters":null},{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_last_push_approval":true}}]'
+APPROVED='{"user":{"login":"twistedmelonman"},"state":"APPROVED","commit_id":"'"${HEAD_SHA}"'"}'
+
+# _review_merge <verdict> [rules=|head=|reviews=|fail=VALUE]...: merge a claude-wrapper PR as the App; each arg replaces a passing default.
+_review_merge() {
+  local verdict="$1" rules="${GOOD_RULES}" head="${HEAD_SHA}" reviews="[${APPROVED}]" fail="" kv
+  shift
+  for kv in "$@"; do
+    case "${kv}" in
+      rules=*) rules="${kv#rules=}" ;;
+      head=*) head="${kv#head=}" ;;
+      reviews=*) reviews="${kv#reviews=}" ;;
+      fail=*) fail="${kv#fail=}" ;;
+      *) return 1 ;;
+    esac
+  done
+  printf '%s' "${rules}" >"${TMP_HOME}/stub-rules"
+  printf '%s' "${head}" >"${TMP_HOME}/stub-head"
+  printf '%s' "${reviews}" >"${TMP_HOME}/stub-reviews"
+  printf '%s' "${fail}" >"${TMP_HOME}/stub-fail"
+  _pre_merge smartwatermelon/claude-wrapper app/smartwatermelon-agent "${verdict}"
+}
+
+# _assert_review_refused <status> <output> <reason>: the one review line, no analysis, no merge.
+_assert_review_refused() {
+  [[ "$1" -eq 1 ]]
+  [[ "$2" == *"[gh] Not merged: smartwatermelon/claude-wrapper#7 needs Andrew's approval in GitHub ($3)."* ]]
+  [[ ! -f "${TMP_HOME}/claude-ran" ]]
+  [[ ! -e "${TMP_HOME}/gh-merges" ]]
+}
+
+@test "review: Andrew's approval on the head commit merges with no lock" {
+  _review_merge SAFE_TO_MERGE
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == *"GitHub approval by twistedmelonman verified"* ]]
+  [[ "${output}" != *"Not merged"* ]]
+  [[ -f "${TMP_HOME}/claude-ran" ]]
+  # merge-audit.sh finds no lock for it, so the exempt log names the review rule.
+  grep -q $'\tsmartwatermelon/claude-wrapper\t7\tapp/smartwatermelon-agent\treview rule ' "${EXEMPT_LOG}"
+}
+
+@test "known-bad: a refused review merge writes no exempt row" {
+  _review_merge SAFE_TO_MERGE 'reviews=[]'
+  [[ "${status}" -eq 1 ]]
+  [[ ! -s "${EXEMPT_LOG}" ]]
+}
+
+@test "review: an approval still goes through the pre-merge analysis" {
+  _review_merge BLOCK_MERGE
+  [[ -f "${TMP_HOME}/claude-ran" ]]
+  [[ "${status}" -ne 0 ]]
+}
+
+@test "known-bad: review with no approval refuses, even with a valid lock" {
+  _valid_lock smartwatermelon/claude-wrapper
+  _review_merge SAFE_TO_MERGE 'reviews=[]'
+  _assert_review_refused "${status}" "${output}" "no approving review from twistedmelonman"
+}
+
+@test "known-bad: an approval from another account does not count" {
+  _review_merge SAFE_TO_MERGE "reviews=[${APPROVED/twistedmelonman/smartwatermelon-agent[bot]}]"
+  _assert_review_refused "${status}" "${output}" "no approving review from twistedmelonman"
+}
+
+@test "known-bad: an approval on an older commit does not count" {
+  _review_merge SAFE_TO_MERGE "reviews=[${APPROVED/${HEAD_SHA}/${OLD_SHA}}]"
+  _assert_review_refused "${status}" "${output}" "the approval is not on the current head commit"
+}
+
+@test "known-bad: changes requested after an approval refuses" {
+  _review_merge SAFE_TO_MERGE "reviews=[${APPROVED},${APPROVED/APPROVED/CHANGES_REQUESTED}]"
+  _assert_review_refused "${status}" "${output}" "no approving review from twistedmelonman"
+}
+
+@test "known-bad: a dismissed approval refuses" {
+  _review_merge SAFE_TO_MERGE "reviews=[${APPROVED},${APPROVED/APPROVED/DISMISSED}]"
+  _assert_review_refused "${status}" "${output}" "no approving review from twistedmelonman"
+}
+
+@test "known-bad: an older approval listed after a newer change request still refuses" {
+  local old new
+  old='{"user":{"login":"twistedmelonman"},"state":"APPROVED","commit_id":"'"${HEAD_SHA}"'","submitted_at":"2026-11-01T10:00:00Z"}'
+  new='{"user":{"login":"twistedmelonman"},"state":"CHANGES_REQUESTED","commit_id":"'"${HEAD_SHA}"'","submitted_at":"2026-11-02T10:00:00Z"}'
+  _review_merge SAFE_TO_MERGE "reviews=[${new},${old}]"
+  _assert_review_refused "${status}" "${output}" "no approving review from twistedmelonman"
+}
+
+@test "a comment after an approval keeps the approval" {
+  _review_merge SAFE_TO_MERGE "reviews=[${APPROVED},${APPROVED/APPROVED/COMMENTED}]"
+  [[ "${status}" -eq 0 ]]
+}
+
+@test "known-bad: an approval with no review ruleset on the base refuses" {
+  _review_merge SAFE_TO_MERGE 'rules=[{"type":"deletion","parameters":null}]'
+  _assert_review_refused "${status}" "${output}" "main has no ruleset that requires an approving review of the last push"
+}
+
+@test "known-bad: a review rule without last-push approval refuses" {
+  _review_merge SAFE_TO_MERGE 'rules=[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_last_push_approval":false}}]'
+  _assert_review_refused "${status}" "${output}" "main has no ruleset that requires an approving review of the last push"
+}
+
+@test "known-bad: a review rule needing 0 approvals refuses" {
+  _review_merge SAFE_TO_MERGE 'rules=[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_last_push_approval":true}}]'
+  _assert_review_refused "${status}" "${output}" "main has no ruleset that requires an approving review of the last push"
+}
+
+@test "known-bad: unreadable branch rules refuse" {
+  _review_merge SAFE_TO_MERGE fail=repos/smartwatermelon/claude-wrapper/rules/branches/main
+  _assert_review_refused "${status}" "${output}" "cannot read the branch rules for main"
+}
+
+@test "known-bad: unreadable reviews refuse" {
+  _review_merge SAFE_TO_MERGE fail=repos/smartwatermelon/claude-wrapper/pulls/7/reviews
+  _assert_review_refused "${status}" "${output}" "cannot read the PR reviews"
+}
+
+@test "known-bad: an unreadable head commit refuses" {
+  _review_merge SAFE_TO_MERGE head=
+  _assert_review_refused "${status}" "${output}" "cannot read the PR head commit"
 }
 
 # --- policy failure refuses ---------------------------------------------------

@@ -452,7 +452,7 @@ policy_origin_ok() {
   [[ "$1" =~ ^git@github-[A-Za-z0-9._-]+:smartwatermelon/claude-config(\.git)?$ ]]
 }
 
-# policy_decide <owner/name> <author>: print "lock|exempt|refuse<TAB>rule N<TAB>matcher". Return 1 on any error.
+# policy_decide <owner/name> <author>: print "lock|exempt|refuse|review<TAB>rule N<TAB>matcher". Return 1 on any error.
 policy_decide() {
   local repo="${1,,}" author="${2,,}" text line lineno=0 matcher outcome extra value hit result=""
   validate_repo_slug "${repo}" || {
@@ -469,8 +469,8 @@ policy_decide() {
     line="${line//$'\r'/}"
     read -r matcher outcome extra <<<"${line}"
     [[ -z "${matcher}" || "${matcher}" == \#* ]] && continue
-    if [[ -z "${outcome}" || -n "${extra}" ]] || [[ "${outcome}" != "lock" && "${outcome}" != "exempt" && "${outcome}" != "refuse" ]]; then
-      echo "policy: line ${lineno}: expected '<matcher> lock|exempt|refuse'" >&2
+    if [[ -z "${outcome}" || -n "${extra}" ]] || [[ "${outcome}" != "lock" && "${outcome}" != "exempt" && "${outcome}" != "refuse" && "${outcome}" != "review" ]]; then
+      echo "policy: line ${lineno}: expected '<matcher> lock|exempt|refuse|review'" >&2
       return 1
     fi
     value="${matcher#*=}"
@@ -1022,7 +1022,7 @@ case "${SUBCOMMAND}" in
     fi
     ;;
   policy)
-    # Read-only. pre-merge-review.sh: "refuse" stops the merge, "exempt" skips the lock, "lock" checks it, anything else refuses.
+    # Read-only. pre-merge-review.sh acts on lock, exempt, refuse or review; anything else refuses.
     if [[ -z "${REPO_OVERRIDE}" || -z "${AUTHOR_ARG}" ]]; then
       echo "Usage: $0 policy --repo OWNER/NAME --author LOGIN" >&2
       exit 1
@@ -1054,8 +1054,9 @@ case "${SUBCOMMAND}" in
     echo "  check <pr>               - Check if PR is authorized (exit 0/1)"
     echo "  status <pr>              - Show detailed authorization status"
     echo "  list                     - List all active authorizations"
-    echo "  policy --repo R --author L - Print lock, exempt or refuse for a PR (merge-lock-policy.conf)"
+    echo "  policy --repo R --author L - Print lock, exempt, refuse or review for a PR (merge-lock-policy.conf)"
     echo "                             refuse: agents never merge it, and a lock does not override it"
+    echo "                             review: Andrew's approving GitHub review is the lock"
     echo ""
     echo "Locks are keyed on repo + PR number. The repo comes from --repo OWNER/NAME"
     echo "(after the subcommand) or from 'gh repo view' in the current directory."

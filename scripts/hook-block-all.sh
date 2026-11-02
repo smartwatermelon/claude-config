@@ -45,6 +45,7 @@ REQUIRED_HOOKS=(
   hook-block-personify.sh
   hook-check-commit-message.py
   hook-block-merge-lock-authorize.sh
+  hook-block-pr-approve.sh
   hook-block-api-merge.sh
   hook-block-gh-auth.sh
   hook-block-git-worktree.sh

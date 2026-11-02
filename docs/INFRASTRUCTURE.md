@@ -23,7 +23,7 @@ Many protocols are enforced by git hooks and scripts:
 | Protocol 6 (No REST/GraphQL merge) | gh() wrapper (sourced by `functions.sh`) | `~/.config/bash/gh-wrapper.sh` |
 | Protocol 6 (Off-org PRs forced draft) | gh-wrapper.sh | `~/.config/bash/gh-wrapper.sh` |
 | Restricted gh tokens (no keyring fallback) | PreToolUse Bash hook + gh-wrapper.sh | `~/.claude/scripts/hook-block-gh-auth.sh`, `~/.config/bash/gh-wrapper.sh` |
-| Protocol 6 (Merge-lock is human-only) | PreToolUse Bash + Write/Edit hooks | `~/.claude/scripts/hook-block-merge-lock-authorize.sh`, `hook-block-merge-locks-write.sh` |
+| Protocol 6 (Merge-lock is human-only) | PreToolUse Bash + Write/Edit hooks | `~/.claude/scripts/hook-block-merge-lock-authorize.sh`, `hook-block-merge-locks-write.sh`, `hook-block-pr-approve.sh` |
 | Commit/PR text approval | PreToolUse Bash hook + gh-wrapper.sh | `~/.claude/scripts/hook-block-personify.sh`, `gate-review.sh` |
 
 The pre-commit hook no longer runs AI review. It blocks commits on
@@ -189,9 +189,10 @@ entries are omitted here.
 6. `hook-block-personify.sh` (text gate, below)
 7. `hook-check-commit-message.py`
 8. `hook-block-merge-lock-authorize.sh`
-9. `hook-block-api-merge.sh`
-10. `hook-block-gh-auth.sh` (`gh auth token|switch|login|logout|refresh|git-credential` and `status -t`: these reach gh's keyring token)
-11. `hook-block-git-worktree.sh`
+9. `hook-block-pr-approve.sh` (`gh pr review --approve`, REST review writes, GraphQL review mutations: Andrew's approval is the lock under the `review` policy outcome)
+10. `hook-block-api-merge.sh`
+11. `hook-block-gh-auth.sh` (`gh auth token|switch|login|logout|refresh|git-credential` and `status -t`: these reach gh's keyring token)
+12. `hook-block-git-worktree.sh`
 
 ### Text Gate (v3)
 
