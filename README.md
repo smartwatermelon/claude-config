@@ -113,17 +113,10 @@ Plugins are sourced from marketplaces registered in
 `~/.claude/plugins/known_marketplaces.json` and managed by Claude Code.
 Enabled state is tracked in `settings.json`.
 
-### From claude-code-workflows
-
-- **comprehensive-review** ✓ — 3 agents: code-reviewer, architect-review, security-auditor
-- **tdd-workflows** ✓ — test-driven development workflows
-- **debugging-toolkit** ✓ — debugging and error analysis
-- **frontend-mobile-development** — React, Next.js, React Native patterns (disabled on some machines — see [Per-Machine Notes](#per-machine-notes))
-- git-pr-workflows, error-debugging, code-refactoring, dependency-management, code-documentation, backend-development, unit-testing, security-compliance, incident-response, team-collaboration (available, not enabled)
-
 ### From smartwatermelon-marketplace
 
 - **code-critic** ✓ — adversarial code review agent
+- **comprehensive-review** ✓: vendored from wshobson/agents, with 3 agents (code-reviewer, architect-review, security-auditor). Its code-reviewer is the default commit-time reviewer; see `plugins/comprehensive-review/README.md` in that repo for provenance
 - **superpowers** ✓ — hook-less vendored subset of obra/superpowers (brainstorming, planning, subagent-driven development, debugging, TDD, code review, verification). Vendored so upstream's SessionStart hook no longer injects `using-superpowers` into every session; see `plugins/superpowers/README.md` in that repo
 - **react-native-3d** — 3D rendering with React Three Fiber, expo-gl, Three.js (disabled on some machines — see [Per-Machine Notes](#per-machine-notes))
 
@@ -213,7 +206,6 @@ single object keys. It must be one file.
 ~/.claude/
 ├── plugins/
 │   └── marketplaces/
-│       ├── claude-code-workflows         # Plugin marketplace
 │       ├── claude-plugins-official       # Plugin marketplace
 │       ├── smartwatermelon-marketplace   # Personal marketplace
 │       ├── personify                     # Plugin marketplace
@@ -262,6 +254,6 @@ See `CLAUDE.md` for protocol documentation.
 
 - Main config: [CLAUDE.md](./CLAUDE.md)
 - Superpowers: vendored in <https://github.com/smartwatermelon/smartwatermelon-marketplace> (`plugins/superpowers`, from obra/superpowers)
-- claude-code-workflows: <https://github.com/smartwatermelon/claude-code-workflows-agents> (fork of wshobson/agents)
+- comprehensive-review: vendored in <https://github.com/smartwatermelon/smartwatermelon-marketplace> (`plugins/comprehensive-review`, from wshobson/agents)
 - Personify skill: <https://github.com/twistedmelonman/personify>
 - pr-review skill: <https://github.com/smartwatermelon/pr-review>

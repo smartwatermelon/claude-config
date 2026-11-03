@@ -25,31 +25,18 @@
   "enabledPlugins": {
     "apple-notes@apple-notes-mcp": false,
     "asana@claude-plugins-official": false,
-    "backend-development@claude-code-workflows": false,
     "cc-plugin-you-should-know@builtin": true,
     "ci-workflows@smartwatermelon-marketplace": true,
     "code-critic@smartwatermelon-marketplace": true,
-    "code-documentation@claude-code-workflows": false,
-    "code-refactoring@claude-code-workflows": false,
-    "comprehensive-review@claude-code-workflows": true,
+    "comprehensive-review@smartwatermelon-marketplace": true,
     "context7@claude-plugins-official": true,
-    "debugging-toolkit@claude-code-workflows": false,
-    "dependency-management@claude-code-workflows": false,
-    "error-debugging@claude-code-workflows": false,
     "frontend-design@claude-plugins-official": false,
-    "frontend-mobile-development@claude-code-workflows": false,
-    "git-pr-workflows@claude-code-workflows": false,
     "i-have-adhd@i-have-adhd": true,
-    "incident-response@claude-code-workflows": false,
     "personify@synced": true,
     "react-native-3d@smartwatermelon-marketplace": false,
-    "security-compliance@claude-code-workflows": false,
     "sentry@claude-plugins-official": true,
     "slack@claude-plugins-official": false,
-    "superpowers@smartwatermelon-marketplace": true,
-    "tdd-workflows@claude-code-workflows": false,
-    "team-collaboration@claude-code-workflows": false,
-    "unit-testing@claude-code-workflows": false
+    "superpowers@smartwatermelon-marketplace": true
   },
   "env": {
     "BASH_DEFAULT_TIMEOUT_MS": "300000",
@@ -63,12 +50,6 @@
       "source": {
         "repo": "sweetrb/apple-notes-mcp",
         "source": "github"
-      }
-    },
-    "claude-code-workflows": {
-      "source": {
-        "source": "git",
-        "url": "https://github.com/smartwatermelon/claude-code-workflows-agents.git"
       }
     },
     "claude-plugins-official": {
