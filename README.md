@@ -136,11 +136,37 @@ Enabled state is tracked in `settings.json`.
 
 `settings.json` is shared across every machine via the symlink install, so
 plugin choices are global by default. Machines with a narrower purpose
-disable what they don't need rather than forking the config:
+disable what they don't need rather than forking the config.
+
+Some extensions are off in `settings.json` and switched back on only where
+they are used. Each one puts its skill list in context on every session
+(estimated from the descriptions, 2026-11-04):
+
+- `sentry@claude-plugins-official`: 8 skills, about 750 tokens.
+- `cloudflare@cloudflare`: 19 skills, about 1,050 tokens. Not in
+  `settings.json` at all; machines that use it enable it themselves.
+- `morning-andrew` and `evening-andrew` (`skillOverrides`): Beacon briefs,
+  about 300 tokens together.
+
+A machine turns one back on in `~/.config/claude-code/machine-settings.json`
+(see [Shared vs machine settings](#shared-vs-machine-settings)). Plugins
+need `enabledPlugins`; `skillOverrides` doesn't apply to plugin skills.
+
+```json
+{
+  "enabledPlugins": { "sentry@claude-plugins-official": true },
+  "skillOverrides": { "morning-andrew": "on" }
+}
+```
+
+`cowork-plugin-management@synced` is off everywhere: its skills need Cowork
+mode and do nothing in Claude Code.
 
 | Machine | Purpose | Deviates from default by |
 |---|---|---|
-| Beacon Biosignals work laptop (`arich@...`, provisioned 2026-07-12) | Infrastructure work: Python/Bash, infra CLIs, web-based tools, ssh. No app/mobile dev. | `frontend-mobile-development` and `react-native-3d` disabled — no Android/iOS/Expo/React Native work happens on this machine. |
+| MIMOLETTE | Night Owl Studio app development. | `sentry` and `cloudflare` enabled in `machine-settings.json`. |
+| TILSIT | Media server (Plex). | `cloudflare` enabled in `machine-settings.json`. |
+| Beacon Biosignals work laptop (arich-mac, `arich@...`, provisioned 2026-07-12) | Infrastructure work: Python/Bash, infra CLIs, web-based tools, ssh. No app/mobile dev. | `frontend-mobile-development` and `react-native-3d` disabled, because no Android/iOS/Expo/React Native work happens on this machine. Also `morning-andrew` and `evening-andrew` set to `"on"` in `machine-settings.json`. |
 
 When setting up a new machine: check this table first. If the new machine's
 purpose matches an existing entry, replicate its deviations; if it's closer
