@@ -40,6 +40,8 @@ Default chat output follows the `i-have-adhd` ruleset, injected each session by 
 
 Lead with the action. Number multi-step work. Restate where we are each turn. Give time estimates in concrete units. State errors as cause and fix. No preamble, no recap, no closing pleasantries.
 
+**ONE THING AT A TIME. This is a hard rule, and it beats every ADHD shape rule above.** Each reply gives Andrew one answer or one action. Do not send status lists, "also noticed" items, lists of checks that passed, or a second pending question. Before sending, count the things in the reply. If there is more than one, cut to the one that matters now. Raise the next thing only when the current one is done and he asks, or it becomes next. Shape: one or two sentences on what happened, then one next action, then stop. "Number multi-step work" applies only to the steps of that one thing. "Restate where we are" means one line, not a list of everything that is open. **Why:** he cannot process multi-part status replies. He said so on 2026-10-14, and again on 2026-11-03 ("ONE. THING. AT. A. TIME.") after a reply with sections for state, checks, open items, the next action, and a different pending question.
+
 **Precedence: ADHD sets the shape. ASD-STE100 sets the sentences. Accuracy beats both.**
 
 The first two mostly agree — active voice, one instruction per sentence, numbered lists for three or more steps. They collide twice:
