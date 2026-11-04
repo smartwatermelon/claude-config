@@ -30,11 +30,12 @@
     "code-critic@smartwatermelon-marketplace": true,
     "comprehensive-review@smartwatermelon-marketplace": true,
     "context7@claude-plugins-official": true,
+    "cowork-plugin-management@synced": false,
     "frontend-design@claude-plugins-official": false,
     "i-have-adhd@i-have-adhd": true,
     "personify@synced": true,
     "react-native-3d@smartwatermelon-marketplace": false,
-    "sentry@claude-plugins-official": true,
+    "sentry@claude-plugins-official": false,
     "slack@claude-plugins-official": false,
     "superpowers@smartwatermelon-marketplace": true
   },
@@ -193,6 +194,10 @@
     ]
   },
   "remoteControlAtStartup": true,
+  "skillOverrides": {
+    "evening-andrew": "off",
+    "morning-andrew": "off"
+  },
   "skipDangerousModePermissionPrompt": true,
   "statusLine": {
     "command": "~/.claude/scripts/status-line.sh",
