@@ -936,6 +936,24 @@ review_gate_reason() {
   return 0
 }
 
+# request_approver_review <owner/name> <pr> <reason>: request Andrew's review when it fixes the refusal.
+# Prints one sentence.
+request_approver_review() {
+  local repo="$1" pr="$2" why="$3"
+  case "${why}" in
+    "no approving review from ${REVIEW_APPROVER}" | "the approval is not on the current head commit") ;;
+    *) return 0 ;;
+  esac
+  # Path first: the call goes through the gh shim, so on App-routed owners the request comes from the App.
+  if command gh api "repos/${repo}/pulls/${pr}/requested_reviewers" -X POST \
+    -f "reviewers[]=${REVIEW_APPROVER}" >/dev/null 2>&1; then
+    printf ' Review requested from %s.' "${REVIEW_APPROVER}"
+  else
+    printf ' Could not request a review from %s.' "${REVIEW_APPROVER}"
+  fi
+  return 0
+}
+
 # Lock policy (dev-env#176). exempt skips the lock, lock checks it, review checks the GitHub approval; else refuse.
 
 # Default "error": a missing merge-lock.sh, an unknown repo or author, or a bad policy answer all refuse.
@@ -988,7 +1006,8 @@ case "${LOCK_POLICY}" in
   review)
     # A merge lock does not count here: the GitHub approval is the authorization.
     if ! _review_why=$(review_gate_reason "${_canon_repo}" "${PR_NUMBER}" "${BASE_REF}"); then
-      printf "[gh] Not merged: %s#%s needs Andrew's approval in GitHub (%s).\n" "${_msg_repo}" "${PR_NUMBER}" "${_review_why}"
+      _review_ask=$(request_approver_review "${_canon_repo}" "${PR_NUMBER}" "${_review_why}")
+      printf "[gh] Not merged: %s#%s needs Andrew's approval in GitHub (%s).%s\n" "${_msg_repo}" "${PR_NUMBER}" "${_review_why}" "${_review_ask}"
       exit 1
     fi
     log_success "GitHub approval by ${REVIEW_APPROVER} verified for ${_canon_repo}#${PR_NUMBER} on the current head commit"

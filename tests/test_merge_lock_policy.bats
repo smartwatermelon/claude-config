@@ -317,6 +317,7 @@ if [[ "\$1" == "issue" && "\$2" == "create" ]]; then
 fi
 if [[ "\$1" == "api" ]]; then
   # The review gate's reads, answered from the stub-* files _review_merge writes; --jq is applied here.
+  all="\$*"
   shift
   path="" filter="."
   while [[ \$# -gt 0 ]]; do
@@ -333,6 +334,7 @@ if [[ "\$1" == "api" ]]; then
     *) body="[]" ;;
   esac
   [[ "\$(cat "${TMP_HOME}/stub-fail" 2>/dev/null)" == "\${path%%\?*}" ]] && { echo "HTTP 403" >&2; exit 1; }
+  [[ "\${path}" == */requested_reviewers ]] && printf '%s\n' "\${all}" >>"${TMP_HOME}/gh-review-requests"
   jq -r "\${filter}" <<<"\${body}"
   exit \$?
 fi
@@ -501,6 +503,49 @@ _assert_review_refused() {
 @test "known-bad: unreadable reviews refuse" {
   _review_merge SAFE_TO_MERGE fail=repos/smartwatermelon/claude-wrapper/pulls/7/reviews
   _assert_review_refused "${status}" "${output}" "cannot read the PR reviews"
+}
+
+# --- review: a refusal Andrew can fix asks him for a review ------------------
+
+REQUESTS_PATH="repos/smartwatermelon/claude-wrapper/pulls/7/requested_reviewers"
+
+@test "review: no approval requests a review from twistedmelonman" {
+  _review_merge SAFE_TO_MERGE 'reviews=[]'
+  _assert_review_refused "${status}" "${output}" "no approving review from twistedmelonman"
+  [[ "${output}" == *"Review requested from twistedmelonman."* ]]
+  [[ "$(cat "${TMP_HOME}/gh-review-requests")" == "api ${REQUESTS_PATH} -X POST -f reviewers[]=twistedmelonman" ]]
+}
+
+@test "review: an approval on an older commit requests a review again" {
+  _review_merge SAFE_TO_MERGE "reviews=[${APPROVED/${HEAD_SHA}/${OLD_SHA}}]"
+  _assert_review_refused "${status}" "${output}" "the approval is not on the current head commit"
+  [[ "${output}" == *"Review requested from twistedmelonman."* ]]
+  [[ -s "${TMP_HOME}/gh-review-requests" ]]
+}
+
+@test "review: a failed request still refuses, for the original reason" {
+  _review_merge SAFE_TO_MERGE 'reviews=[]' "fail=${REQUESTS_PATH}"
+  _assert_review_refused "${status}" "${output}" "no approving review from twistedmelonman"
+  [[ "${output}" == *"Could not request a review from twistedmelonman."* ]]
+}
+
+@test "review: an approval on the head commit requests nothing" {
+  _review_merge SAFE_TO_MERGE
+  [[ "${status}" -eq 0 ]]
+  [[ ! -e "${TMP_HOME}/gh-review-requests" ]]
+}
+
+@test "known-bad: no review ruleset requests nothing, since a review cannot fix it" {
+  _review_merge SAFE_TO_MERGE 'reviews=[]' 'rules=[{"type":"deletion","parameters":null}]'
+  _assert_review_refused "${status}" "${output}" "main has no ruleset that requires an approving review of the last push"
+  [[ "${output}" != *"eview requested"* && "${output}" != *"Could not request"* ]]
+  [[ ! -e "${TMP_HOME}/gh-review-requests" ]]
+}
+
+@test "known-bad: unreadable branch rules request nothing" {
+  _review_merge SAFE_TO_MERGE 'reviews=[]' fail=repos/smartwatermelon/claude-wrapper/rules/branches/main
+  _assert_review_refused "${status}" "${output}" "cannot read the branch rules for main"
+  [[ ! -e "${TMP_HOME}/gh-review-requests" ]]
 }
 
 @test "known-bad: an unreadable head commit refuses" {
