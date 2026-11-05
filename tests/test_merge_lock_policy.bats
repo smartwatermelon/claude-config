@@ -56,19 +56,13 @@ policy() {
   [[ "${output}" == exempt$'\t'* ]]
 }
 
-@test "the three infrastructure repos stay locked" {
+@test "the ruleset repos merge on Andrew's GitHub review" {
   local r
-  for r in claude-config dotfiles github-workflows; do
+  for r in claude-config dotfiles github-workflows claude-wrapper projectinsomnia crazy-larry; do
     policy "smartwatermelon/${r}" twistedmelonman
     [[ "${status}" -eq 0 ]]
-    [[ "${output}" == lock$'\t'* ]]
+    [[ "${output}" == review$'\t'*$'\t'repo=smartwatermelon/${r} ]]
   done
-}
-
-@test "claude-wrapper merges on Andrew's GitHub review" {
-  policy smartwatermelon/claude-wrapper twistedmelonman
-  [[ "${status}" -eq 0 ]]
-  [[ "${output}" == review$'\t'*$'\t'repo=smartwatermelon/claude-wrapper ]]
 }
 
 @test "an outcome that only looks like review is still an error" {
@@ -78,13 +72,6 @@ policy() {
   policy x/y twistedmelonman
   [[ "${status}" -ne 0 ]]
   [[ "${output}" != review* && "${output}" != exempt* ]]
-}
-
-@test "the Netlify sites stay locked" {
-  policy smartwatermelon/projectinsomnia twistedmelonman
-  [[ "${output}" == lock$'\t'* ]]
-  policy smartwatermelon/crazy-larry twistedmelonman
-  [[ "${output}" == lock$'\t'* ]]
 }
 
 @test "an outcome that only looks like refuse is still an error" {
@@ -127,7 +114,7 @@ policy() {
 
 @test "matching ignores case" {
   policy SmartWatermelon/Claude-Config twistedmelonman
-  [[ "${output}" == lock$'\t'* ]]
+  [[ "${output}" == review$'\t'* ]]
 }
 
 # --- fail closed ------------------------------------------------------------
@@ -154,7 +141,7 @@ policy() {
 @test "an uncommitted edit to the checkout does not count" {
   printf 'repo=smartwatermelon/claude-config exempt\n' >"${CC}/merge-lock-policy.conf"
   policy smartwatermelon/claude-config twistedmelonman
-  [[ "${output}" == lock$'\t'* ]]
+  [[ "${output}" == review$'\t'* ]]
 }
 
 @test "policy is read from main while another branch is checked out" {
@@ -163,7 +150,7 @@ policy() {
   [[ "${status}" -eq 0 ]]
   [[ "${output}" == exempt$'\t'* ]]
   policy smartwatermelon/claude-config twistedmelonman
-  [[ "${output}" == lock$'\t'* ]]
+  [[ "${output}" == review$'\t'* ]]
 }
 
 @test "known-bad: an edit committed only on the checked-out branch does not count" {
@@ -174,13 +161,13 @@ policy() {
   git -C "${CC}" update-ref refs/remotes/origin/main HEAD
   policy smartwatermelon/claude-config twistedmelonman
   [[ "${status}" -eq 0 ]]
-  [[ "${output}" == lock$'\t'* ]]
+  [[ "${output}" == review$'\t'* ]]
 }
 
 @test "a detached HEAD still reads main" {
   git -C "${CC}" checkout -q --detach
   policy smartwatermelon/claude-config twistedmelonman
-  [[ "${output}" == lock$'\t'* ]]
+  [[ "${output}" == review$'\t'* ]]
 }
 
 @test "a checkout with no local main is an error, never exempt" {
@@ -377,9 +364,9 @@ EOF
 }
 
 @test "locked repo still needs the lock" {
-  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE
+  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE
   [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"[gh] Not merged: smartwatermelon/claude-config#7 needs Andrew's approval."* ]]
+  [[ "${output}" == *"[gh] Not merged: nightowlstudiollc/kebab-tax-netlify#7 needs Andrew's approval."* ]]
   [[ "${output}" != *"authorize"* ]]
 }
 
@@ -731,14 +718,14 @@ _issue_count() {
 }
 
 @test "locked merge: files once, then a retry in the auth window skips" {
-  local lock="${HOME}/.claude/merge-locks/smartwatermelon/claude-config/pr-7.lock"
+  local lock="${HOME}/.claude/merge-locks/nightowlstudiollc/kebab-tax-netlify/pr-7.lock"
   mkdir -p "$(dirname "${lock}")"
   printf 'TIMESTAMP=%s\n' "$(date +%s)" >"${lock}"
-  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
-  [[ -s "$(_marker smartwatermelon/claude-config)" ]]
-  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  [[ -s "$(_marker nightowlstudiollc/kebab-tax-netlify)" ]]
+  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
   [[ "${output}" == *"already filed for PR #7 in this auth window"* ]]
@@ -755,12 +742,12 @@ _marker() {
 }
 
 @test "known-bad: a merge run never modifies the lock file" {
-  local lock="${HOME}/.claude/merge-locks/smartwatermelon/claude-config/pr-7.lock"
+  local lock="${HOME}/.claude/merge-locks/nightowlstudiollc/kebab-tax-netlify/pr-7.lock"
   mkdir -p "$(dirname "${lock}")"
   printf 'TIMESTAMP=%s\n' "$(date +%s)" >"${lock}"
   local before
   before=$(cat "${lock}")
-  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
   [[ "$(cat "${lock}")" == "${before}" ]]
@@ -768,53 +755,53 @@ _marker() {
 }
 
 @test "the issues-filed marker holds the filing time" {
-  local lock="${HOME}/.claude/merge-locks/smartwatermelon/claude-config/pr-7.lock"
+  local lock="${HOME}/.claude/merge-locks/nightowlstudiollc/kebab-tax-netlify/pr-7.lock"
   mkdir -p "$(dirname "${lock}")"
   printf 'TIMESTAMP=%s\n' "$(date +%s)" >"${lock}"
   local t0
   t0=$(date +%s)
-  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
   local ts
-  ts=$(head -1 "$(_marker smartwatermelon/claude-config)")
+  ts=$(head -1 "$(_marker nightowlstudiollc/kebab-tax-netlify)")
   [[ "${ts}" =~ ^[0-9]+$ ]]
   ((ts >= t0 && ts <= $(date +%s)))
 }
 
 @test "a marker inside the window skips filing" {
-  _valid_lock smartwatermelon/claude-config
-  mkdir -p "$(dirname "$(_marker smartwatermelon/claude-config)")"
-  printf '%s\n' "$(($(date +%s) - 60))" >"$(_marker smartwatermelon/claude-config)"
-  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  _valid_lock nightowlstudiollc/kebab-tax-netlify
+  mkdir -p "$(dirname "$(_marker nightowlstudiollc/kebab-tax-netlify)")"
+  printf '%s\n' "$(($(date +%s) - 60))" >"$(_marker nightowlstudiollc/kebab-tax-netlify)"
+  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 0 ]]
   [[ "${output}" == *"already filed for PR #7 in this auth window"* ]]
 }
 
 @test "known-bad: a stale marker from an earlier authorization files again" {
-  _valid_lock smartwatermelon/claude-config
-  mkdir -p "$(dirname "$(_marker smartwatermelon/claude-config)")"
-  printf '%s\n' "$(($(date +%s) - 7200))" >"$(_marker smartwatermelon/claude-config)"
-  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  _valid_lock nightowlstudiollc/kebab-tax-netlify
+  mkdir -p "$(dirname "$(_marker nightowlstudiollc/kebab-tax-netlify)")"
+  printf '%s\n' "$(($(date +%s) - 7200))" >"$(_marker nightowlstudiollc/kebab-tax-netlify)"
+  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
   [[ "${output}" != *"already filed"* ]]
   # The new filing refreshes the marker.
-  (($(date +%s) - $(head -1 "$(_marker smartwatermelon/claude-config)") < 60))
+  (($(date +%s) - $(head -1 "$(_marker nightowlstudiollc/kebab-tax-netlify)") < 60))
 }
 
 @test "known-bad: a marker for the same PR number in another repo does not skip filing" {
-  _valid_lock smartwatermelon/claude-config
-  mkdir -p "$(dirname "$(_marker smartwatermelon/dotfiles)")"
-  date +%s >"$(_marker smartwatermelon/dotfiles)"
-  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  _valid_lock nightowlstudiollc/kebab-tax-netlify
+  mkdir -p "$(dirname "$(_marker nightowlstudiollc/reliquarist)")"
+  date +%s >"$(_marker nightowlstudiollc/reliquarist)"
+  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
   [[ "$(_issue_count)" -eq 1 ]]
 }
 
 @test "a legacy ISSUES_CREATED=1 in a lock still skips filing" {
-  local lock="${HOME}/.claude/merge-locks/smartwatermelon/claude-config/pr-7.lock"
+  local lock="${HOME}/.claude/merge-locks/nightowlstudiollc/kebab-tax-netlify/pr-7.lock"
   mkdir -p "$(dirname "${lock}")"
   printf 'TIMESTAMP=%s\nISSUES_CREATED=1\n' "$(date +%s)" >"${lock}"
-  _pre_merge smartwatermelon/claude-config twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 0 ]]
   [[ "${output}" == *"already filed for PR #7 in this auth window"* ]]
