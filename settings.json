@@ -195,8 +195,11 @@
   },
   "remoteControlAtStartup": true,
   "skillOverrides": {
+    "docx": "off",
     "evening-andrew": "off",
-    "morning-andrew": "off"
+    "morning-andrew": "off",
+    "pptx": "off",
+    "xlsx": "off"
   },
   "skipDangerousModePermissionPrompt": true,
   "statusLine": {
