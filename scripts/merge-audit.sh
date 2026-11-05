@@ -17,6 +17,8 @@
 #              read with its own token, named indirectly (the variable NAME,
 #              never the value). Built-in: smartwatermelon=GH_TOKEN_SWM,
 #              nightowlstudiollc=GH_TOKEN_NOS, twistedmelonman=GH_TOKEN_TWM.
+#              If that variable is unset and gh-app-token.sh routes the owner
+#              (an owner/* line), the owner is read with an App token.
 #   --ledger   Ledger file(s) to read. Defaults to
 #              ~/.claude/merge-locks/ledger.tsv. Pass one per machine to audit
 #              authorizations granted on several laptops.
@@ -75,9 +77,11 @@ declare -A TOKEN_VAR_FOR=(
   [twistedmelonman]=GH_TOKEN_TWM
 )
 DEFAULT_OWNERS=(smartwatermelon nightowlstudiollc twistedmelonman)
+# With the owner's token variable unset, an owner this minter routes (owner-route) is read as the App.
+APP_MINTER="${MERGE_AUDIT_APP_MINTER:-${HOME}/.config/bash/gh-app-token.sh}"
 
 usage() {
-  sed -n '12,30p' "$0" | sed 's/^# \{0,1\}//' >&2
+  sed -n '12,32p' "$0" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 
@@ -319,12 +323,21 @@ audit_owner() {
     READ_ERRORS=$((READ_ERRORS + 1))
     return
   fi
-  if [[ -z "${!token_var:-}" ]]; then
+  local GH_TOKEN
+  if [[ -n "${!token_var:-}" ]]; then
+    GH_TOKEN="${!token_var}"
+  elif [[ -f "${APP_MINTER}" ]] && bash "${APP_MINTER}" owner-route "${owner}" >/dev/null 2>&1; then
+    # An owner routed to the agent App (gh-app-routes.conf owner/*) has no personal token any more.
+    if ! GH_TOKEN="$(bash "${APP_MINTER}" "${owner}" 2>/dev/null)" || [[ -z "${GH_TOKEN}" ]]; then
+      echo "Error: ${owner} is routed to a GitHub App, but no App token could be minted" >&2
+      READ_ERRORS=$((READ_ERRORS + 1))
+      return
+    fi
+  else
     echo "Error: ${token_var} is not set; cannot audit ${owner}" >&2
     READ_ERRORS=$((READ_ERRORS + 1))
     return
   fi
-  local GH_TOKEN="${!token_var}"
   export GH_TOKEN
 
   local repos

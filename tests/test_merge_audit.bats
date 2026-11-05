@@ -227,6 +227,64 @@ run_audit() {
   [ ! -s "${STUB_LOG}" ]
 }
 
+install_app_minter() {
+  # Stub gh-app-token.sh. $1: the owners owner-route answers 0 for. $2: "fail" makes minting fail.
+  mkdir -p "${HOME}/.config/bash"
+  {
+    printf '#!/usr/bin/env bash\nowners=" %s "\nmint=%s\n' "$1" "${2:-ok}"
+    cat <<'STUB'
+if [[ "$1" == "owner-route" ]]; then
+  [[ "${owners}" == *" $2 "* ]] && { echo "op://Automation/stub app"; exit 0; }
+  exit 1
+fi
+[[ "${mint}" == fail ]] && exit 1
+echo "tok-app"
+STUB
+  } >"${HOME}/.config/bash/gh-app-token.sh"
+}
+
+@test "an App-routed owner with no token variable is read with an App token" {
+  unset GH_TOKEN_SWM
+  install_app_minter acme
+  repos acme acme/a
+  pulls acme/a 1 '[]'
+  ledger "${START}"
+  run_audit
+  [ "${status}" -eq 0 ]
+  grep -q 'token=tok-app args=repo list acme' "${STUB_LOG}"
+  grep -q 'token=tok-app args=api repos/acme/a/pulls' "${STUB_LOG}"
+}
+
+@test "known-bad: an owner the minter does not route still needs its token variable" {
+  unset GH_TOKEN_SWM
+  install_app_minter other
+  ledger "${START}"
+  run_audit
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"GH_TOKEN_SWM is not set"* ]]
+  [ ! -s "${STUB_LOG}" ]
+}
+
+@test "known-bad: an App-routed owner whose mint fails exits 2 without calling gh" {
+  unset GH_TOKEN_SWM
+  install_app_minter acme fail
+  ledger "${START}"
+  run_audit
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"no App token could be minted"* ]]
+  [ ! -s "${STUB_LOG}" ]
+}
+
+@test "a set token variable wins over an App route" {
+  install_app_minter acme
+  repos acme acme/a
+  pulls acme/a 1 '[]'
+  ledger "${START}"
+  run_audit
+  [ "${status}" -eq 0 ]
+  grep -q 'token=tok-swm args=repo list acme' "${STUB_LOG}"
+}
+
 @test "known-bad: an owner listing no repos exits 2 rather than reading as clean" {
   repos acme
   : >"${STUB_FX}/repos-acme"
