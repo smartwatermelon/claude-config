@@ -162,10 +162,13 @@ need `enabledPlugins`; `skillOverrides` doesn't apply to plugin skills.
 `cowork-plugin-management@synced` is off everywhere: its skills need Cowork
 mode and do nothing in Claude Code.
 
+`docx`, `pptx` and `xlsx` sync from claude.ai, which has no switch for them.
+`skillOverrides` sets them to `"off"` because no machine makes Office files.
+
 | Machine | Purpose | Deviates from default by |
 |---|---|---|
 | MIMOLETTE | Night Owl Studio app development. | `sentry` and `cloudflare` enabled in `machine-settings.json`. |
-| TILSIT | Media server (Plex). | `cloudflare` enabled in `machine-settings.json`. |
+| TILSIT | Media server (Plex). | `cloudflare@claude-plugins-official` enabled in `machine-settings.json`. |
 | Beacon Biosignals work laptop (arich-mac, `arich@...`, provisioned 2026-07-12) | Infrastructure work: Python/Bash, infra CLIs, web-based tools, ssh. No app/mobile dev. | `frontend-mobile-development` and `react-native-3d` disabled, because no Android/iOS/Expo/React Native work happens on this machine. Also `morning-andrew` and `evening-andrew` set to `"on"` in `machine-settings.json`. |
 
 When setting up a new machine: check this table first. If the new machine's
