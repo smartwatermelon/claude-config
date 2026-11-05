@@ -99,6 +99,8 @@ fi
 if [[ -z "${GH_WRAPPER_LIB:-}" && -f "${HOME}/.config/bash/gh-wrapper.sh" ]]; then
   export GH_WRAPPER_LIB="${HOME}/.config/bash/gh-wrapper.sh"
 fi
+# No App routes: the real file would mint App tokens for smartwatermelon fixtures.
+export GH_APP_ROUTES_FILE=/dev/null
 
 LOG_DIR="$(mktemp -d)"
 trap 'rm -rf "${LOG_DIR}"' EXIT
