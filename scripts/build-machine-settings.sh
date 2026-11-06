@@ -198,26 +198,24 @@ _check() {
 # ── 5. Write ────────────────────────────────────────────
 out_dir="$(dirname "${OUT}")"
 
+tmp=""
+_cleanup() { [[ -z "${tmp}" ]] || "${RM_BIN}" -f "${tmp}" || true; }
+trap _cleanup EXIT
+
 if ${DRY_RUN}; then
-  tmp_check="$(mktemp)"
-  printf '%s\n' "${built}" >"${tmp_check}"
-  if ! _check "${tmp_check}"; then
-    "${RM_BIN}" -f "${tmp_check}" || true
-    _fail "built file failed the check (not an object, or a \${ is left)"
-  fi
-  if [[ -f "${OUT}" ]] && cmp -s "${tmp_check}" "${OUT}"; then
+  tmp="$(mktemp)" || _fail "cannot create a temp file"
+  printf '%s\n' "${built}" >"${tmp}" || _fail "cannot write ${tmp}"
+  _check "${tmp}" || _fail "built file failed the check (not an object, or a \${ is left)"
+  if [[ -f "${OUT}" ]] && cmp -s "${tmp}" "${OUT}"; then
     _log "dry run: ${OUT} already matches ${host}"
   else
     _log "dry run: would write ${OUT} for ${host}"
   fi
-  "${RM_BIN}" -f "${tmp_check}" || true
   exit 0
 fi
 
 mkdir -p "${out_dir}" || _fail "cannot create ${out_dir}"
 tmp="$(mktemp "${out_dir}/.machine-settings.XXXXXX")" || _fail "cannot create a temp file in ${out_dir}"
-_cleanup() { [[ -z "${tmp}" ]] || "${RM_BIN}" -f "${tmp}" || true; }
-trap _cleanup EXIT
 
 printf '%s\n' "${built}" >"${tmp}" || _fail "cannot write ${tmp}"
 chmod 600 "${tmp}" || _fail "cannot chmod ${tmp}"

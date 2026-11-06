@@ -360,6 +360,8 @@ JSON
   grep -q '"old": true' "${OUT}"
   run find "${OUT%/*}" -name '*.bak-*' -o -name '.machine-settings.*'
   [ -z "${output}" ]
+  run find "${TEST_ROOT}/tmp" -type f
+  [ -z "${output}" ]
 }
 
 @test "--dry-run still fails on an unknown placeholder" {
@@ -489,7 +491,8 @@ JSON
   GIT_CONFIG_GLOBAL=/dev/null git -C "${CLONE}" commit -q -m "bad"
   old_file
   run run_install "${CLONE}" --sync
-  [ "${status}" -ne 0 ]
-  [[ "${output}" == *"machine-settings"* ]]
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *"Machine settings build failed"* ]]
+  [[ "${output}" == *"! machine-settings"* ]]
   grep -q '"old": true' "${OUT}"
 }
