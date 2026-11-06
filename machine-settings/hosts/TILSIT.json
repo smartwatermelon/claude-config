@@ -1,0 +1,10 @@
+{
+  "autoMode": {
+    "environment": [
+      "**Host containment (TILSIT)**: one of Andrew's personal Macs; Claude Code runs in its sandbox with open internet. Clones live under ~/Developer/"
+    ]
+  },
+  "enabledPlugins": {
+    "cloudflare@claude-plugins-official": true
+  }
+}
