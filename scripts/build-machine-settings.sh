@@ -97,7 +97,7 @@ command -v jq >/dev/null 2>&1 || _fail "jq not found on PATH (${PATH})"
 [[ -n "${HOME:-}" && "${HOME}" == /* ]] || _fail "HOME is unset or not absolute"
 
 # ── 1. Host ─────────────────────────────────────────────
-# Not scutil LocalHostName: on ASIAGO it is "MacBook-Air", no host file.
+# Not scutil LocalHostName: the Claude sandbox returns a default for it.
 host="${MACHINE_SETTINGS_HOST:-}"
 if [[ -z "${host}" ]]; then
   host="$(hostname -s 2>/dev/null)" || host=""
