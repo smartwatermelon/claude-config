@@ -1,7 +1,7 @@
 {
   "autoMode": {
     "environment": [
-      "**Host containment (MIMOLETTE)**: macOS dev server, usually reached over SSH; Claude Code does not run in the sandbox yet (planned), so commands have full disk and network access. Repos live under /Volumes/extra-vieille/Workspaces/ (also reachable via ~/Developer/). Disposable macOS VMs on MIMOLETTE are the place for tests that call real macOS tools"
+      "**Host containment (MIMOLETTE)**: macOS dev server, usually reached over SSH; Claude Code runs in its sandbox; network access is limited to an allowlist, and other hosts need approval per command. Repos live under /Volumes/extra-vieille/Workspaces/ (also reachable via ~/Developer/). Disposable macOS VMs on MIMOLETTE are the place for tests that call real macOS tools"
     ],
     "allow": [
       "Bash(merge-lock check:*) in /Volumes/extra-vieille/Workspaces/kebab-tax",
@@ -15,5 +15,67 @@
   "enabledPlugins": {
     "cloudflare@cloudflare": true,
     "sentry@claude-plugins-official": true
+  },
+  "permissions": {
+    "defaultMode": "auto",
+    "deny": [
+      "Bash(gh repo delete *)",
+      "Bash(gh secret delete *)",
+      "Bash(gh auth logout *)"
+    ],
+    "ask": [
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git push --force-with-lease *)",
+      "Bash(sudo *)",
+      "Bash(gh secret set *)",
+      "Bash(security add-generic-password *)",
+      "Bash(security delete-generic-password *)",
+      "Bash(launchctl bootstrap *)",
+      "Bash(launchctl load *)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": true,
+    "failIfUnavailable": true,
+    "excludedCommands": [
+      "ssh *",
+      "gh pr merge *",
+      "${HOME}/.claude/scripts/gate-review.sh *",
+      "rsync *",
+      "scp *"
+    ],
+    "filesystem": {
+      "allowWrite": [
+        "~/Developer",
+        "/Volumes/extra-vieille/Workspaces",
+        "~/.local/state",
+        "~/.cache",
+        "~/Library/Caches",
+        "/private/tmp/claude-501",
+        "~/.semgrep",
+        "${TMPDIR}",
+        "${GDRIVE_HANDOFF}"
+      ]
+    },
+    "network": {
+      "allowedDomains": [
+        "github.com",
+        "api.github.com",
+        "*.githubusercontent.com",
+        "api.anthropic.com",
+        "registry.npmjs.org",
+        "semgrep.dev",
+        "*.semgrep.dev",
+        "my.1password.com",
+        "*.1password.com",
+        "*.blob.core.windows.net"
+      ],
+      "allowUnixSockets": ["/private/var/run/mDNSResponder"],
+      "allowMachLookup": ["com.apple.pasteboard.1"]
+    },
+    "enableWeakerNetworkIsolation": true
   }
 }
