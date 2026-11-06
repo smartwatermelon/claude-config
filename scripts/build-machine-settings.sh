@@ -320,7 +320,7 @@ if [[ "${CASE}" == same ]]; then
 fi
 
 # No record yet: keep the file this build replaces, unless an identical backup already exists.
-if [[ "${CASE}" == first ]]; then
+if [[ "${CASE}" == first && -f "${OUT}" ]]; then
   have_backup=false
   for b in "${OUT}".bak-*-pre-build; do
     if [[ -f "${b}" ]] && cmp -s "${b}" "${OUT}"; then
@@ -331,6 +331,7 @@ if [[ "${CASE}" == first ]]; then
   if ! ${have_backup}; then
     backup="${OUT}.bak-$(date +%Y%m%d)-pre-build"
     [[ ! -e "${backup}" ]] || backup="${OUT}.bak-$(date +%Y%m%d-%H%M%S)-pre-build"
+    [[ ! -e "${backup}" ]] || _fail "backup ${backup} already exists; ${OUT} left as it is"
     cp -p "${OUT}" "${backup}" || _fail "cannot back up ${OUT} to ${backup}"
     _log "saved the pre-build file as ${backup}"
   fi
