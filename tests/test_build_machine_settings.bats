@@ -373,6 +373,149 @@ JSON
   [ "${status}" -eq 1 ]
 }
 
+# --- hand edits: the .built record and drift ------------------------------------
+
+REPORT_REL=".local/state/claude-config/machine-settings.drift.diff"
+
+# A hand edit to the live file: same JSON plus one key.
+hand_edit() {
+  jq -c '. + {"hand": "edit"}' "${OUT}" >"${TEST_ROOT}/edit.json"
+  cat "${TEST_ROOT}/edit.json" >"${OUT}"
+}
+
+@test "built record: the first build records exactly what it wrote, mode 600" {
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  run build
+  [ "${status}" -eq 0 ]
+  cmp -s "${OUT}" "${OUT}.built"
+  run mode_of "${OUT}.built"
+  [ "${output}" = "600" ]
+  grep -q "^mv -f ${OUT%/*}/.machine-settings\.built\.[^ ]* ${OUT}.built$" "${STUB_LOG}"
+}
+
+@test "built record: a first run whose live file already matches writes nothing and records .built" {
+  mkdir -p "${OUT%/*}"
+  printf '{"a":1}\n' >"${OUT}"
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  run build
+  [ "${status}" -eq 0 ]
+  run cat "${OUT}"
+  [ "${output}" = '{"a":1}' ]
+  [[ -f "${OUT}.built" ]]
+  leftovers '*.bak-*'
+  [ -z "${output}" ]
+}
+
+@test "built record: unchanged live file plus a repo change writes and updates .built" {
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  run build
+  [ "${status}" -eq 0 ]
+  write_base <<<'{"a": 2}'
+  run build
+  [ "${status}" -eq 0 ]
+  out_json '.a'
+  [ "${output}" = "2" ]
+  cmp -s "${OUT}" "${OUT}.built"
+}
+
+@test "drift: a hand edit with no repo change is kept, reported, and fails" {
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  run build
+  [ "${status}" -eq 0 ]
+  hand_edit
+  cp "${OUT}" "${TEST_ROOT}/edited"
+  cp "${OUT}.built" "${TEST_ROOT}/built-before"
+  : >"${STUB_LOG}"
+  run build
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"DRIFT: ${OUT} was edited by hand"* ]]
+  [[ "${output}" == *"via a PR"* ]]
+  [[ "${output}" == *"${FAKE_HOME}/${REPORT_REL}"* ]]
+  cmp -s "${OUT}" "${TEST_ROOT}/edited"
+  cmp -s "${OUT}.built" "${TEST_ROOT}/built-before"
+  grep -q '^+ *"hand": "edit"' "${FAKE_HOME}/${REPORT_REL}"
+  [[ -f "${FAKE_HOME}/.local/state/claude-config/machine-settings.drift.built.json" ]]
+  [[ -f "${FAKE_HOME}/.local/state/claude-config/machine-settings.drift.live.json" ]]
+  run grep -c '^mv ' "${STUB_LOG}"
+  [ "${output}" = "0" ]
+}
+
+@test "drift: a repo change does not override a hand edit either" {
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  run build
+  hand_edit
+  cp "${OUT}" "${TEST_ROOT}/edited"
+  write_base <<<'{"a": 2}'
+  run build
+  [ "${status}" -eq 2 ]
+  cmp -s "${OUT}" "${TEST_ROOT}/edited"
+}
+
+@test "drift: it persists across runs until the repo catches up, then clears" {
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  run build
+  hand_edit
+  run build
+  [ "${status}" -eq 2 ]
+  run build
+  [ "${status}" -eq 2 ]
+  [[ -f "${FAKE_HOME}/${REPORT_REL}" ]]
+  cp "${OUT}" "${TEST_ROOT}/edited"
+
+  # The edit lands in the repo: the new build equals the live file.
+  write_base <<<'{"a": 1, "hand": "edit"}'
+  : >"${STUB_LOG}"
+  run build
+  [ "${status}" -eq 0 ]
+  cmp -s "${OUT}" "${TEST_ROOT}/edited"
+  run jq -S . "${OUT}.built"
+  [[ "${output}" == *'"hand": "edit"'* ]]
+  run grep -c " ${OUT}\$" "${STUB_LOG}"
+  [ "${output}" = "0" ]
+  [[ ! -e "${FAKE_HOME}/${REPORT_REL}" ]]
+
+  # And the next repo change writes normally again.
+  write_base <<<'{"a": 3, "hand": "edit"}'
+  run build
+  [ "${status}" -eq 0 ]
+  out_json '.a'
+  [ "${output}" = "3" ]
+}
+
+@test "drift: a dry run reports it, fails, and writes nothing" {
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  run build
+  hand_edit
+  cp "${OUT}" "${TEST_ROOT}/edited"
+  cp "${OUT}.built" "${TEST_ROOT}/built-before"
+  : >"${STUB_LOG}"
+  run build --dry-run
+  [ "${status}" -eq 2 ]
+  [[ "${output}" == *"dry run: DRIFT"* ]]
+  cmp -s "${OUT}" "${TEST_ROOT}/edited"
+  cmp -s "${OUT}.built" "${TEST_ROOT}/built-before"
+  [[ ! -e "${FAKE_HOME}/${REPORT_REL}" ]]
+  run grep -c '^mv ' "${STUB_LOG}"
+  [ "${output}" = "0" ]
+}
+
+@test "drift: a reformatted but equal live file is not drift" {
+  write_base <<<'{"a": 1, "b": [1, 2]}'
+  write_host <<<'{}'
+  run build
+  jq -S -c . "${OUT}" >"${TEST_ROOT}/edit.json"
+  cat "${TEST_ROOT}/edit.json" >"${OUT}"
+  run build
+  [ "${status}" -eq 0 ]
+}
+
 # --- the real source files ------------------------------------------------------
 
 @test "repo sources: base.json and every host file build, with no private values" {
@@ -495,4 +638,18 @@ JSON
   [[ "${output}" == *"Machine settings build failed"* ]]
   [[ "${output}" == *"! machine-settings"* ]]
   grep -q '"old": true' "${OUT}"
+}
+
+@test "install: drift fails the deploy and keeps the hand edit" {
+  setup_install
+  make_repo "${CLONE}"
+  run run_install "${CLONE}" --sync
+  [ "${status}" -eq 0 ]
+  hand_edit
+  cp "${OUT}" "${TEST_ROOT}/edited"
+  run run_install "${CLONE}" --sync
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *"DRIFT"* ]]
+  [[ "${output}" == *"! machine-settings"* ]]
+  cmp -s "${OUT}" "${TEST_ROOT}/edited"
 }

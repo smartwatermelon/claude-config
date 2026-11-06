@@ -34,9 +34,18 @@ let an agent change its own sandbox.
                           in ~/ form; exactly one match or the build fails
      ${TMPDIR} and ${GDRIVE_HANDOFF} are looked up only when used.
   4. Check: a JSON object with no "${" left.
-  5. Write a temp file beside the output, chmod 600, mv it over the
-     output. Identical content is left alone. The first build saves the
-     old file once as <out>.bak-<date>-pre-build.
+  5. Compare the live output with <out>.built, the record of the last
+     build (jq -S equality), and with the new build:
+       - no output, or no .built yet: write it. The first build saves
+         the old file once as <out>.bak-<date>-pre-build.
+       - live equals the new build: write nothing, record .built. A hand
+         edit that has since landed in the repo resolves this way.
+       - live equals .built: write the new build if it differs.
+       - live differs from both: DRIFT, a hand edit the repo lacks.
+         Write nothing, save a report, exit 2. Fold the change into
+         machine-settings/ via a PR; the next deploy clears it.
+     A write is a temp file beside the output, chmod 600, mv. After it,
+     .built records exactly what was written (same way).
   A failure leaves the old output in place.
 
 Options:
@@ -48,9 +57,12 @@ Environment (tests and one-off checks):
   MACHINE_SETTINGS_OUT     output file, as --out
   MACHINE_SETTINGS_HOST    host name instead of hostname -s
   MACHINE_SETTINGS_TMPDIR  ${TMPDIR} value instead of getconf's
+  MACHINE_SETTINGS_DRIFT_REPORT  drift report (default:
+                           ~/.local/state/claude-config/machine-settings.drift.diff;
+                           read-only for people, never read by the build)
   MACHINE_SETTINGS_MV_BIN, MACHINE_SETTINGS_RM_BIN  injected mv and rm
 
-Exit: 0 built, unchanged or no host file; 1 failed; 64 usage.
+Exit: 0 built, unchanged or no host file; 1 failed; 2 drift; 64 usage.
 USAGE
 }
 
@@ -197,20 +209,84 @@ _check() {
 
 # ── 5. Write ────────────────────────────────────────────
 out_dir="$(dirname "${OUT}")"
+BUILT="${OUT}.built"
+REPORT="${MACHINE_SETTINGS_DRIFT_REPORT:-${HOME}/.local/state/claude-config/machine-settings.drift.diff}"
 
 tmp=""
-_cleanup() { [[ -z "${tmp}" ]] || "${RM_BIN}" -f "${tmp}" || true; }
+tmp_rec=""
+_cleanup() {
+  [[ -z "${tmp}" ]] || "${RM_BIN}" -f "${tmp}" || true
+  [[ -z "${tmp_rec}" ]] || "${RM_BIN}" -f "${tmp_rec}" || true
+}
 trap _cleanup EXIT
+
+# Same settings, ignoring key order and whitespace. Unreadable or invalid JSON is never equal.
+_same() {
+  local a b
+  a="$(jq -S . "$1" 2>/dev/null)" || return 1
+  b="$(jq -S . "$2" 2>/dev/null)" || return 1
+  [[ "${a}" == "${b}" ]]
+}
+
+# Sets CASE to new, same, first, normal or drift; --help explains each.
+_classify() {
+  if [[ ! -f "${OUT}" ]]; then
+    CASE=new
+  elif _same "${OUT}" "$1"; then
+    CASE=same
+  elif [[ ! -f "${BUILT}" ]]; then
+    CASE=first
+  elif _same "${OUT}" "${BUILT}"; then
+    CASE=normal
+  else
+    CASE=drift
+  fi
+}
+
+DRIFT_LINE="DRIFT: ${OUT} was edited by hand since the last build, so it was not overwritten."
+DRIFT_LINE+=" Fold the change into claude-config machine-settings/ via a PR; the next deploy then clears it."
+DRIFT_LINE+=" Diff: ${REPORT}"
+
+# Writes the drift report: jq -S of .built and of the live file, and a unified diff of the two.
+_write_report() {
+  local dir="${REPORT%/*}" base="${REPORT%.diff}"
+  mkdir -p "${dir}" || return 1
+  jq -S . "${BUILT}" >"${base}.built.json" 2>/dev/null || cp "${BUILT}" "${base}.built.json" || return 1
+  jq -S . "${OUT}" >"${base}.live.json" 2>/dev/null || cp "${OUT}" "${base}.live.json" || return 1
+  local rc=0 now
+  now="$(date '+%Y-%m-%d %H:%M:%S %Z')" || now="unknown time"
+  {
+    printf '# %s\n' "${DRIFT_LINE}"
+    printf '# Written %s. --- is the last build (%s), +++ is the live file (%s).\n' \
+      "${now}" "${BUILT}" "${OUT}"
+    diff -u --label "${BUILT}" --label "${OUT}" "${base}.built.json" "${base}.live.json" || rc=$?
+  } >"${REPORT}"
+  ((rc <= 1))
+}
+
+# Records exactly what was built as ${BUILT}: temp file, mode 600, mv.
+_record_built() {
+  if [[ -f "${BUILT}" ]] && cmp -s "$1" "${BUILT}"; then
+    return 0
+  fi
+  tmp_rec="$(mktemp "${out_dir}/.machine-settings.built.XXXXXX")" || return 1
+  cp "$1" "${tmp_rec}" && chmod 600 "${tmp_rec}" && "${MV_BIN}" -f "${tmp_rec}" "${BUILT}" || return 1
+  tmp_rec=""
+}
 
 if ${DRY_RUN}; then
   tmp="$(mktemp)" || _fail "cannot create a temp file"
   printf '%s\n' "${built}" >"${tmp}" || _fail "cannot write ${tmp}"
   _check "${tmp}" || _fail "built file failed the check (not an object, or a \${ is left)"
-  if [[ -f "${OUT}" ]] && cmp -s "${tmp}" "${OUT}"; then
-    _log "dry run: ${OUT} already matches ${host}"
-  else
-    _log "dry run: would write ${OUT} for ${host}"
-  fi
+  _classify "${tmp}"
+  case "${CASE}" in
+    drift)
+      printf 'build-machine-settings: dry run: %s\n' "${DRIFT_LINE}" >&2
+      exit 2
+      ;;
+    same) _log "dry run: ${OUT} already matches ${host}; would record ${BUILT}" ;;
+    *) _log "dry run: would write ${OUT} for ${host} (${CASE})" ;;
+  esac
   exit 0
 fi
 
@@ -221,8 +297,23 @@ printf '%s\n' "${built}" >"${tmp}" || _fail "cannot write ${tmp}"
 chmod 600 "${tmp}" || _fail "cannot chmod ${tmp}"
 _check "${tmp}" || _fail "built file failed the check (not an object, or a \${ is left); ${OUT} left as it is"
 
-if [[ -f "${OUT}" ]] && cmp -s "${tmp}" "${OUT}"; then
+_classify "${tmp}"
+
+if [[ "${CASE}" == drift ]]; then
+  _write_report || _fail "${DRIFT_LINE} (and the report could not be written)"
+  printf 'build-machine-settings: %s\n' "${DRIFT_LINE}" >&2
+  exit 2
+fi
+
+# No drift now: a report left from an earlier run is stale.
+if [[ -e "${REPORT}" ]]; then
+  "${RM_BIN}" -f "${REPORT}" "${REPORT%.diff}.built.json" "${REPORT%.diff}.live.json" ||
+    _log "could not remove the stale drift report ${REPORT}"
+fi
+
+if [[ "${CASE}" == same ]]; then
   chmod 600 "${OUT}" || _fail "cannot chmod ${OUT}"
+  _record_built "${tmp}" || _fail "cannot record ${BUILT}"
   _log "${OUT} already matches ${host}"
   exit 0
 fi
@@ -245,4 +336,5 @@ fi
 
 "${MV_BIN}" -f "${tmp}" "${OUT}" || _fail "cannot move ${tmp} over ${OUT}"
 tmp=""
+_record_built "${OUT}" || _fail "wrote ${OUT}, but cannot record ${BUILT}; the next run records it"
 _log "wrote ${OUT} for ${host}"
