@@ -408,6 +408,18 @@ hand_edit() {
   [ -z "${output}" ]
 }
 
+@test "built record: no record but an older, different backup: the live file is still saved" {
+  old_file
+  printf '{"older": true}\n' >"${OUT}.bak-20260101-pre-build"
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  run build
+  [ "${status}" -eq 0 ]
+  run grep -l '"old": true' "${OUT%/*}"/machine-settings.json.bak-*-pre-build
+  [ "${status}" -eq 0 ]
+  grep -q '"older": true' "${OUT}.bak-20260101-pre-build"
+}
+
 @test "built record: unchanged live file plus a repo change writes and updates .built" {
   write_base <<<'{"a": 1}'
   write_host <<<'{}'

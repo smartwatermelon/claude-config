@@ -36,8 +36,9 @@ let an agent change its own sandbox.
   4. Check: a JSON object with no "${" left.
   5. Compare the live output with <out>.built, the record of the last
      build (jq -S equality), and with the new build:
-       - no output, or no .built yet: write it. The first build saves
-         the old file once as <out>.bak-<date>-pre-build.
+       - no output, or no .built yet: write it. With no .built, the old
+         file is saved first as <out>.bak-<date>-pre-build (skipped when
+         an identical backup exists).
        - live equals the new build: write nothing, record .built. A hand
          edit that has since landed in the repo resolves this way.
        - live equals .built: write the new build if it differs.
@@ -318,17 +319,18 @@ if [[ "${CASE}" == same ]]; then
   exit 0
 fi
 
-# Once per machine: keep the hand-made file the first build replaces.
-if [[ -f "${OUT}" ]]; then
+# No record yet: keep the file this build replaces, unless an identical backup already exists.
+if [[ "${CASE}" == first ]]; then
   have_backup=false
   for b in "${OUT}".bak-*-pre-build; do
-    if [[ -e "${b}" ]]; then
+    if [[ -f "${b}" ]] && cmp -s "${b}" "${OUT}"; then
       have_backup=true
       break
     fi
   done
   if ! ${have_backup}; then
     backup="${OUT}.bak-$(date +%Y%m%d)-pre-build"
+    [[ ! -e "${backup}" ]] || backup="${OUT}.bak-$(date +%Y%m%d-%H%M%S)-pre-build"
     cp -p "${OUT}" "${backup}" || _fail "cannot back up ${OUT} to ${backup}"
     _log "saved the pre-build file as ${backup}"
   fi
