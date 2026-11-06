@@ -1,0 +1,85 @@
+{
+  "autoMode": {
+    "environment": [
+      "**Host containment (ASIAGO)**: one of Andrew's personal Macs; Claude Code runs in its sandbox with open internet. Clones live flat at ~/Developer/<repo>"
+    ],
+    "allow": [
+      "Running `~/.claude/scripts/gate-review.sh [--dir <abs repo path>] stage ...` or `... open` is allowed: it queues text and opens Andrew's editor for his review. It approves nothing; approval is Andrew typing APPROVED. `approve-hash` stays forbidden.",
+      "Allowed: ssh dsadmin@romano.local for read-only settings and configuration checks. Writing or saving anything is not allowed."
+    ]
+  },
+  "permissions": {
+    "defaultMode": "auto",
+    "deny": [
+      "Bash(gh repo delete *)",
+      "Bash(gh secret delete *)",
+      "Bash(gh auth logout *)"
+    ],
+    "ask": [
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git push --force-with-lease *)",
+      "Bash(sudo *)",
+      "Bash(gh secret set *)",
+      "Bash(security add-generic-password *)",
+      "Bash(security delete-generic-password *)",
+      "Bash(launchctl bootstrap *)",
+      "Bash(launchctl load *)"
+    ]
+  },
+  "hooks": {
+    "PermissionDenied": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${HOME}/.config/claude-code/hooks/log-permission-denied.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true,
+    "allowUnsandboxedCommands": true,
+    "failIfUnavailable": true,
+    "excludedCommands": [
+      "ssh *",
+      "gh pr merge *",
+      "${HOME}/.claude/scripts/gate-review.sh *",
+      "rsync *",
+      "scp *"
+    ],
+    "filesystem": {
+      "allowWrite": [
+        "~/Developer",
+        "~/.local/state",
+        "~/.cache",
+        "~/Library/Caches",
+        "/private/tmp/claude-501",
+        "~/.semgrep",
+        "${TMPDIR}",
+        "${GDRIVE_HANDOFF}"
+      ]
+    },
+    "network": {
+      "allowedDomains": [
+        "github.com",
+        "api.github.com",
+        "*.githubusercontent.com",
+        "api.anthropic.com",
+        "registry.npmjs.org",
+        "semgrep.dev",
+        "*.semgrep.dev",
+        "my.1password.com",
+        "*.1password.com",
+        "*.blob.core.windows.net"
+      ],
+      "allowUnixSockets": ["/private/var/run/mDNSResponder"],
+      "allowMachLookup": ["com.apple.pasteboard.1"]
+    },
+    "enableWeakerNetworkIsolation": true
+  }
+}
