@@ -111,6 +111,7 @@ command -v jq >/dev/null 2>&1 || _fail "jq not found on PATH (${PATH})"
 
 # ── 1. Host ─────────────────────────────────────────────
 # Not scutil LocalHostName: the Claude sandbox returns a default for it.
+# Upstream bug: https://github.com/anthropics/claude-code/issues/108059
 host="${MACHINE_SETTINGS_HOST:-}"
 if [[ -z "${host}" ]]; then
   host="$(hostname -s 2>/dev/null)" || host=""
