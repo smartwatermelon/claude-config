@@ -244,6 +244,8 @@ _is_excluded() {
     install.sh) return 0 ;;
     # Plans
     docs/plans/*) return 0 ;;
+    # Built into one file outside ~/.claude by section 7c (dev-env#249)
+    machine-settings/*) return 0 ;;
     # Licensing
     LICENSE*) return 0 ;;
     # Test files
@@ -716,6 +718,40 @@ else
     [[ -z "${_route_tmp}" ]] || rm -f "${_route_tmp}"
     _err "Failed to write ${_route_file}"
     failures+=("route-command:${_route_file}")
+  fi
+fi
+
+# ============================================================================
+# 7c. MACHINE SETTINGS (dev-env#249)
+# ============================================================================
+# Deploy clone only: built from an agent-writable --dev checkout, an agent could change its own sandbox.
+_ms_rel="scripts/build-machine-settings.sh"
+_ms_tracked=false
+for _tf in "${_TRACKED_FILES[@]}"; do
+  if [[ "${_tf}" == "${_ms_rel}" ]]; then
+    _ms_tracked=true
+    break
+  fi
+done
+
+if [[ "${IS_DEPLOY_CLONE}" != true || "${DEV_MODE}" == true ]]; then
+  _skip "Not the deploy clone — machine settings not built"
+elif ! ${_ms_tracked}; then
+  # Not an error: the bats fixture copies only install.sh into a throwaway repo.
+  _skip "No tracked ${_ms_rel} — machine settings not built"
+elif [[ ! -x "${REPO_DIR}/${_ms_rel}" ]]; then
+  _warn "Not executable: ${REPO_DIR}/${_ms_rel}"
+  failures+=("machine-settings-not-executable")
+else
+  _ms_args=(--src "${REPO_DIR}/machine-settings")
+  if [[ "${DRY_RUN}" == true ]]; then
+    _ms_args+=(--dry-run)
+  fi
+  if "${REPO_DIR}/${_ms_rel}" "${_ms_args[@]}"; then
+    _ok "Machine settings step passed"
+  else
+    _err "Machine settings build failed; the previous file is unchanged"
+    failures+=("machine-settings")
   fi
 fi
 
