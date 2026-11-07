@@ -108,6 +108,15 @@ digest() { # digest <marker line or empty>: one digest issue plus an unrelated o
   [ "$(wc -l <"${CALLS}" | tr -d ' ')" -eq 2 ]
 }
 
+@test "cache: an unknown result is not cached, so the next start retries" {
+  RED_MAIN_NOW=1000 run bash "${SCRIPT}"
+  [[ "${output}" == *"status unknown"* ]]
+  digest '<!-- dependabot-digest:main-red: o/a -->'
+  RED_MAIN_NOW=1060 run bash -c 'bash "$1" 2>/dev/null' _ "${SCRIPT}"
+  [[ "${output}" == "RED DEFAULT BRANCH: o/a."* ]]
+  [ "$(wc -l <"${CALLS}" | tr -d ' ')" -eq 2 ]
+}
+
 @test "hook: runs the check and passes its notice through" {
   digest '<!-- dependabot-digest:main-red: o/a -->'
   run bash -c 'bash "$1" </dev/null 2>/dev/null' _ "${HOOK}"

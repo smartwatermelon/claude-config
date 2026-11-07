@@ -72,7 +72,10 @@ else
   fi
 fi
 
-mkdir -p "${cache%/*}" 2>/dev/null &&
-  printf '%s\n%s' "${now}" "${notice}" >"${cache}" 2>/dev/null
+# Cache only a definite answer; an unknown retries on the next start.
+if [[ "${notice}" != "Red default branch status unknown"* ]]; then
+  mkdir -p "${cache%/*}" 2>/dev/null &&
+    printf '%s\n%s' "${now}" "${notice}" >"${cache}" 2>/dev/null
+fi
 [[ -n "${notice}" ]] && emit "${notice}"
 exit 0
