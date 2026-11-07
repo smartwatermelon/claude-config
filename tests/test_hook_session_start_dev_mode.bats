@@ -11,6 +11,7 @@ setup() {
   SCRIPT="${BATS_TEST_DIRNAME}/../scripts/hook-session-start.sh"
   export HOME="${BATS_TEST_TMPDIR}/home"
   unset PENDING_ISSUES_DIR REVIEW_STATE_DIR
+  export RED_MAIN_CHECK=0 # network read; covered by test_session_start_red_main.bats
   CLONE="${HOME}/.local/share/claude-config"
   DEV="${HOME}/Developer/claude-config"
   MARKER="${HOME}/.local/state/claude-config/dev-mode"

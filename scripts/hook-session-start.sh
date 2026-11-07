@@ -120,4 +120,9 @@ if [[ -e "${deploy_clone}/.git" ]]; then
     printf '⚠️  %s\n' "${deploy_notice}" >&2
   fi
 fi
+
+# Red default branches from the Dependabot digest (dev-env#229 decision D). RED_MAIN_CHECK=0 skips (tests).
+if [[ "${RED_MAIN_CHECK:-1}" != "0" ]]; then
+  bash "$(dirname "${BASH_SOURCE[0]}")/session-start-red-main.sh" </dev/null || true
+fi
 exit 0

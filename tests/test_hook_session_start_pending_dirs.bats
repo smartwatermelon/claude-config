@@ -8,6 +8,7 @@ setup() {
   NEW_DIR="${HOME}/.local/state/claude-review/pending-issues"
   OLD_DIR="${HOME}/.claude/pending-issues"
   unset PENDING_ISSUES_DIR REVIEW_STATE_DIR
+  export RED_MAIN_CHECK=0 # network read; covered by test_session_start_red_main.bats
 }
 
 @test "REVIEW_STATE_DIR override is read, matching the writer" {
