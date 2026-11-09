@@ -426,6 +426,29 @@ JSON
   [[ -f "${backups[0]}" ]]
 }
 
+@test "a symlinked output with identical content is still replaced by a regular file" {
+  local with_built
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  for with_built in no yes; do
+    rm -rf "${OUT%/*}"
+    mkdir -p "${OUT%/*}"
+    printf '{"a":1}\n' >"${TEST_ROOT}/target.json"
+    ln -s "${TEST_ROOT}/target.json" "${OUT}"
+    if [ "${with_built}" = yes ]; then
+      printf '{"a":1}\n' >"${OUT}.built"
+    fi
+    run build
+    [ "${status}" -eq 0 ]
+    [[ ! -L "${OUT}" ]]
+    [[ -f "${OUT}" ]]
+    run jq -c . "${OUT}"
+    [ "${output}" = '{"a":1}' ]
+    run cat "${TEST_ROOT}/target.json"
+    [ "${output}" = '{"a":1}' ]
+  done
+}
+
 @test "a dangling symlink output is replaced by a regular file" {
   write_base <<<'{"a": 1}'
   write_host <<<'{}'

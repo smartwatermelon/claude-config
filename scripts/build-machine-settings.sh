@@ -256,6 +256,8 @@ _same() {
 _classify() {
   if [[ ! -f "${OUT}" ]]; then
     CASE=new
+  elif [[ -L "${OUT}" ]]; then
+    CASE=first # a link must become a regular file, even when its content matches
   elif _same "${OUT}" "$1"; then
     CASE=same
   elif [[ ! -f "${BUILT}" ]]; then
