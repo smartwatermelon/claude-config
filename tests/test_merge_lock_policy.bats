@@ -100,6 +100,12 @@ policy() {
   [[ "${output}" == lock$'\t'*$'\t'owner=nightowlstudiollc ]]
 }
 
+@test "nightowlstudiollc/stupid-github-app merges on review, above the NOS lock" {
+  policy nightowlstudiollc/stupid-github-app twistedmelonman
+  [[ "${status}" -eq 0 ]]
+  [[ "${output}" == review$'\t'*$'\t'repo=nightowlstudiollc/stupid-github-app ]]
+}
+
 @test "an andrewmrich-authored PR in an otherwise exempt repo stays locked" {
   policy smartwatermelon/spokane-snow andrewmrich
   [[ "${output}" == lock$'\t'*$'\t'author=andrewmrich ]]
