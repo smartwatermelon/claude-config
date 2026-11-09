@@ -92,7 +92,8 @@
         "*.blob.core.windows.net"
       ],
       "allowUnixSockets": ["/private/var/run/mDNSResponder"],
-      "allowMachLookup": ["com.apple.pasteboard.1"]
+      "allowMachLookup": ["com.apple.pasteboard.1"],
+      "allowLocalBinding": true
     },
     "enableWeakerNetworkIsolation": true
   }
