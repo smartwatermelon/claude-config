@@ -10,10 +10,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="${SCRIPT_DIR}/../machine-settings"
 OUT="${MACHINE_SETTINGS_OUT:-${HOME}/.config/claude-code/machine-settings.json}"
 DRY_RUN=false
+HOST_OPTIONAL=false
+REPORT_ARG=""
 
 usage() {
   cat <<'USAGE'
-Usage: build-machine-settings.sh [--src <dir>] [--out <file>] [--dry-run]
+Usage: build-machine-settings.sh [--src <dir>] [--out <file>] [--report <file>]
+                                [--host-optional] [--dry-run]
 
 Builds ~/.config/claude-code/machine-settings.json, which claude-wrapper
 passes to Claude Code with --settings (smartwatermelon/dev-env#249).
@@ -22,7 +25,8 @@ checkout: that checkout is agent-writable, and a build from it would
 let an agent change its own sandbox.
 
   1. Read the host name (hostname -s, upper-case). No
-     <src>/hosts/<HOST>.json: do nothing, leave any output as it is.
+     <src>/hosts/<HOST>.json: do nothing, leave any output as it is,
+     unless --host-optional: then build from base.json alone.
   2. Merge <src>/base.json and the host file: objects merge deep, host
      arrays append to base arrays, a host scalar replaces the base's.
      An object or array clashing with another type fails.
@@ -52,6 +56,8 @@ let an agent change its own sandbox.
 Options:
   --src <dir>   source directory (default: machine-settings/ in this repo)
   --out <file>  output (default: ~/.config/claude-code/machine-settings.json)
+  --report <file>  drift report path (overrides MACHINE_SETTINGS_DRIFT_REPORT)
+  --host-optional  no host file: build from base.json alone, not nothing
   --dry-run     build and check; print what would change; write nothing
 
 Environment (tests and one-off checks):
@@ -91,6 +97,18 @@ while (($# > 0)); do
       OUT="$2"
       shift 2
       ;;
+    --report)
+      [[ $# -ge 2 ]] || {
+        echo "build-machine-settings: --report needs a value" >&2
+        exit 64
+      }
+      REPORT_ARG="$2"
+      shift 2
+      ;;
+    --host-optional)
+      HOST_OPTIONAL=true
+      shift
+      ;;
     --dry-run)
       DRY_RUN=true
       shift
@@ -122,7 +140,10 @@ host="$(printf '%s' "${host}" | tr '[:lower:]' '[:upper:]')"
 
 base_file="${SRC}/base.json"
 host_file="${SRC}/hosts/${host}.json"
-if [[ ! -f "${host_file}" ]]; then
+if [[ ! -f "${host_file}" ]] && ${HOST_OPTIONAL}; then
+  _log "no ${host_file}; building from base.json alone"
+  host_file=/dev/stdin # the merge step reads an empty object there
+elif [[ ! -f "${host_file}" ]]; then
   _log "no ${host_file}; ${OUT} left as it is"
   exit 0
 fi
@@ -142,7 +163,7 @@ merged="$(jq -n --slurpfile b "${base_file}" --slurpfile h "${host_file}" '
   if ($b | length) != 1 or ($h | length) != 1 then error("each source file must hold one JSON value")
   elif ($b[0] | type) != "object" or ($h[0] | type) != "object" then error("base and host files must be JSON objects")
   else merge($b[0]; $h[0]; []) end
-')" || _fail "cannot merge ${base_file} and ${host_file}"
+' <<<'{}')" || _fail "cannot merge ${base_file} and ${host_file}"
 
 # ── 3. Placeholders ─────────────────────────────────────
 KNOWN_PLACEHOLDERS=(HOME TMPDIR GDRIVE_HANDOFF)
@@ -212,7 +233,7 @@ _check() {
 # ── 5. Write ────────────────────────────────────────────
 out_dir="$(dirname "${OUT}")"
 BUILT="${OUT}.built"
-REPORT="${MACHINE_SETTINGS_DRIFT_REPORT:-${HOME}/.local/state/claude-config/machine-settings.drift.diff}"
+REPORT="${REPORT_ARG:-${MACHINE_SETTINGS_DRIFT_REPORT:-${HOME}/.local/state/claude-config/machine-settings.drift.diff}}"
 
 tmp=""
 tmp_rec=""

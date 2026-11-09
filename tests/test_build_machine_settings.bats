@@ -78,6 +78,12 @@ out_json() { run jq -c "$1" "${OUT}"; }
 # Leftover temp or backup files beside the output, into ${output}.
 leftovers() { run find "${OUT%/*}" -name "$1"; }
 
+# A hand edit to the live file: same JSON plus one key.
+hand_edit() {
+  jq -c '. + {"hand": "edit"}' "${OUT}" >"${TEST_ROOT}/edit.json"
+  cat "${TEST_ROOT}/edit.json" >"${OUT}"
+}
+
 # --- merge ------------------------------------------------------------------
 
 @test "merge: objects merge deep and a host scalar replaces the base's" {
@@ -373,15 +379,67 @@ JSON
   [ "${status}" -eq 1 ]
 }
 
+# --- second output: --host-optional, --report, symlinked outputs -----------------
+
+@test "--host-optional builds base.json alone when the host file is missing" {
+  write_base <<<'{"b": 2, "a": {"y": 1, "x": [1]}}'
+  run build --host-optional
+  [ "${status}" -eq 0 ]
+  run jq -S . "${OUT}"
+  local got="${output}"
+  run jq -S . "${SRC}/base.json"
+  [ "${got}" = "${output}" ]
+}
+
+@test "without --host-optional a missing host file still writes nothing" {
+  write_base <<<'{"a": 1}'
+  run build
+  [ "${status}" -eq 0 ]
+  [[ ! -e "${OUT}" ]]
+}
+
+@test "--report writes the drift report to the given path" {
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  run build
+  [ "${status}" -eq 0 ]
+  hand_edit
+  run build --report "${TEST_ROOT}/r.diff"
+  [ "${status}" -eq 2 ]
+  [[ -f "${TEST_ROOT}/r.diff" ]]
+  [[ ! -e "${FAKE_HOME}/.local/state/claude-config/machine-settings.drift.diff" ]]
+}
+
+@test "a symlinked output is replaced by a regular file, and the link target is untouched" {
+  write_base <<<'{"a": 2}'
+  write_host <<<'{}'
+  mkdir -p "${OUT%/*}"
+  printf '{"a":1}\n' >"${TEST_ROOT}/target.json"
+  ln -s "${TEST_ROOT}/target.json" "${OUT}"
+  run build
+  [ "${status}" -eq 0 ]
+  [[ ! -L "${OUT}" ]]
+  [[ -f "${OUT}" ]]
+  run cat "${TEST_ROOT}/target.json"
+  [ "${output}" = '{"a":1}' ]
+  local backups=("${OUT}".bak-*-pre-build)
+  [[ -f "${backups[0]}" ]]
+}
+
+@test "a dangling symlink output is replaced by a regular file" {
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  mkdir -p "${OUT%/*}"
+  ln -s "${TEST_ROOT}/gone.json" "${OUT}"
+  run build
+  [ "${status}" -eq 0 ]
+  [[ ! -L "${OUT}" ]]
+  [[ -f "${OUT}" ]]
+}
+
 # --- hand edits: the .built record and drift ------------------------------------
 
 REPORT_REL=".local/state/claude-config/machine-settings.drift.diff"
-
-# A hand edit to the live file: same JSON plus one key.
-hand_edit() {
-  jq -c '. + {"hand": "edit"}' "${OUT}" >"${TEST_ROOT}/edit.json"
-  cat "${TEST_ROOT}/edit.json" >"${OUT}"
-}
 
 @test "built record: the first build records exactly what it wrote, mode 600" {
   write_base <<<'{"a": 1}'
