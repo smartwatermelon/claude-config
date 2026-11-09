@@ -31,6 +31,13 @@ setup() {
   [ "${status}" -eq 0 ] || { echo "${BASE} lacks the Edit deny for ~/.config/claude-code" >&2; return 1; }
 }
 
+# Agents always run git -C <path>, so each "git push" ask rule needs a "git -C *" twin.
+@test "every git push ask rule also covers git -C" {
+  run jq -e '.permissions.ask as $a | [$a[] | select(startswith("Bash(git push "))
+    | sub("^Bash\\(git push "; "Bash(git -C * push ") | select(. as $t | $a | index($t) == null)] | length == 0' "${BASE}"
+  [ "${status}" -eq 0 ] || { echo "${BASE}: a git push ask rule has no git -C twin" >&2; return 1; }
+}
+
 @test "permissions.allow is never in machine-settings" {
   run jq -e '.permissions.allow == null' "${BASE}"
   [ "${status}" -eq 0 ]
