@@ -148,6 +148,32 @@ _release_lock() {
 NO_HOOKS=(-c core.hooksPath=/dev/null -c core.fsmonitor=false)
 _git() { GIT_TERMINAL_PROMPT=0 "${GIT_BIN}" "${NO_HOOKS[@]}" -C "${CLONE}" "$@"; }
 
+# Lists changed object keys ("+KEY"); array items and other lines print "(other)". Never values; max 20.
+_changed_keys() {
+  local line rest sign n=0 keys=""
+  while IFS= read -r line; do
+    case "${line}" in
+      '+++ '* | '--- '*) continue ;;
+      '+'* | '-'*) ;;
+      *) continue ;;
+    esac
+    sign="${line:0:1}"
+    rest="${line:1}"
+    rest="${rest#"${rest%%[![:space:]]*}"}"
+    if [[ "${rest}" =~ ^\"([^\"]*)\"[[:space:]]*: ]]; then
+      keys+="${sign}${BASH_REMATCH[1]}; "
+    else
+      keys+="${sign}(other); "
+    fi
+    ((n += 1))
+    if ((n >= 20)); then
+      keys+="..."
+      break
+    fi
+  done < <(_git diff --no-ext-diff --no-color -U0 HEAD -- 2>/dev/null || true)
+  printf '%s' "${keys:-none}"
+}
+
 _link_target() { readlink "${DEPLOY_DIR}/${CANARY}" 2>/dev/null || true; }
 
 # Sets DEV_PATH and DEV_SINCE from the marker install.sh --dev writes; both empty when there is none.
@@ -179,7 +205,7 @@ _run_install() {
 
 # deploy_once <scheduled: true|false>. Holds the lock for the whole run.
 deploy_once() {
-  local scheduled="$1" branch dirty fetch_out old new merge_out target at_clone=false moved=false
+  local scheduled="$1" branch dirty keys stale add_out fetch_out old new merge_out target at_clone=false moved=false
   local rc=0 now age ttl from upto
   if ! _acquire_lock; then
     _log "another deploy holds ${LOCK}; skipping"
@@ -197,14 +223,39 @@ deploy_once() {
     return 2
   fi
 
-  if ! dirty="$(_git status --porcelain --untracked-files=no 2>&1)"; then
-    _problem status-failed "git status failed in ${CLONE}: ${dirty}"
+  # Content, not stat: a stale stat after iTerm2's filtered rewrite fools `git status` (#842). A failed filter fails closed.
+  if ! dirty="$(_git diff --no-ext-diff --no-color --name-status HEAD -- 2>&1)"; then
+    _problem status-failed "git diff failed in ${CLONE}: ${dirty}"
     return 1
   fi
   if [[ -n "${dirty}" ]]; then
     _problem dirty "Refused: the deploy clone has local changes. Nothing was changed. Inspect: git -C ${CLONE} diff"
     _log "changed in the clone: ${dirty//$'\n'/; }"
+    keys="$(_changed_keys)"
+    _log "changed keys (values not logged): ${keys}"
     return 2
+  fi
+  # A stale stat still blocks `git merge`. Re-stage the same blob, as install.sh does; safe only because the diff is empty.
+  if ! stale="$(_git status --porcelain --untracked-files=no 2>&1)"; then
+    _problem status-failed "git status failed in ${CLONE}: ${stale}"
+    return 1
+  fi
+  if [[ -n "${stale}" ]]; then
+    if ! add_out="$(_git add -u 2>&1)"; then
+      _problem status-failed "could not refresh stale index entries in ${CLONE}: ${add_out}"
+      return 1
+    fi
+    # An edit made after the diff check was just staged: check again and refuse, keeping it.
+    if ! dirty="$(_git diff --no-ext-diff --no-color --name-status HEAD -- 2>&1)"; then
+      _problem status-failed "git diff failed in ${CLONE}: ${dirty}"
+      return 1
+    fi
+    if [[ -n "${dirty}" ]]; then
+      _problem dirty "Refused: the deploy clone changed during the check. No deploy ran; the edit may be staged. Inspect: git -C ${CLONE} diff HEAD"
+      _log "changed in the clone: ${dirty//$'\n'/; }"
+      return 2
+    fi
+    _log "refreshed stale index entries (content unchanged): ${stale//$'\n'/; }"
   fi
 
   # lowSpeed* aborts a stalled transfer; launchd would otherwise wait on it until the next interval.
