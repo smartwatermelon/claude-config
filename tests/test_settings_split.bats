@@ -25,6 +25,12 @@ setup() {
   [ "${status}" -eq 0 ] || { echo "${PREFS} still holds a policy path" >&2; return 1; }
 }
 
+# The build output and its local overlay (merged last, so it can unset the sandbox) live there.
+@test "agents cannot edit ~/.config/claude-code" {
+  run jq -e '.permissions.deny | index("Edit(~/.config/claude-code/**)") != null' "${BASE}"
+  [ "${status}" -eq 0 ] || { echo "${BASE} lacks the Edit deny for ~/.config/claude-code" >&2; return 1; }
+}
+
 @test "permissions.allow is never in machine-settings" {
   run jq -e '.permissions.allow == null' "${BASE}"
   [ "${status}" -eq 0 ]

@@ -40,6 +40,7 @@
   "permissions": {
     "defaultMode": "auto",
     "deny": [
+      "Edit(~/.config/claude-code/**)",
       "Bash(gh repo delete *)",
       "Bash(gh secret delete *)",
       "Bash(gh auth logout *)",
