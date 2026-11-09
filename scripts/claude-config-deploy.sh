@@ -251,7 +251,7 @@ deploy_once() {
       return 1
     fi
     if [[ -n "${dirty}" ]]; then
-      _problem dirty "Refused: the deploy clone changed during the check. No deploy ran; the edit is staged. Inspect: git -C ${CLONE} diff HEAD"
+      _problem dirty "Refused: the deploy clone changed during the check. No deploy ran; the edit may be staged. Inspect: git -C ${CLONE} diff HEAD"
       _log "changed in the clone: ${dirty//$'\n'/; }"
       return 2
     fi
