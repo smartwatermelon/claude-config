@@ -42,7 +42,16 @@
     "deny": [
       "Bash(gh repo delete *)",
       "Bash(gh secret delete *)",
-      "Bash(gh auth logout *)"
+      "Bash(gh auth logout *)",
+      "mcp__claude_ai_Asana__add_comment",
+      "mcp__claude_ai_Asana__create_project",
+      "mcp__claude_ai_Asana__create_project_from_template",
+      "mcp__claude_ai_Asana__create_project_status_update",
+      "mcp__claude_ai_Asana__create_task_from_template",
+      "mcp__claude_ai_Asana__create_tasks",
+      "mcp__claude_ai_Asana__delete_task",
+      "mcp__claude_ai_Asana__update_project",
+      "mcp__claude_ai_Asana__update_tasks"
     ],
     "ask": [
       "Bash(git push --force *)",
@@ -98,5 +107,121 @@
       "allowLocalBinding": true
     },
     "enableWeakerNetworkIsolation": true
-  }
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "python3 ~/.claude/scripts/hook-redact-secret-output.py",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash|Read"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-block-all.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-block-merge-locks-write.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "Write"
+      },
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-block-merge-locks-write.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "Edit"
+      },
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-block-enter-worktree.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": "EnterWorktree"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-session-start.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-budget-guard.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-budget-guard.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "~/.claude/scripts/hook-gate-inline-approve.sh",
+            "type": "command"
+          },
+          {
+            "command": "~/.claude/scripts/hook-review-override.sh",
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "300000",
+    "BASH_ENV": "~/.config/bash/functions.sh",
+    "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash",
+    "CLAUDE_CODE_THRIFTY_SONIC": "0",
+    "npm_config_cache": "~/.cache/npm"
+  },
+  "deniedMcpServers": [
+    {
+      "serverName": "claude.ai Linear"
+    },
+    {
+      "serverName": "claude.ai Sentry"
+    },
+    {
+      "serverName": "claude.ai Slack"
+    }
+  ]
 }
