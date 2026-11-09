@@ -29,7 +29,8 @@
     "allow": [
       "$defaults",
       "Merging with `gh pr merge <N> --squash --delete-branch` on a repo owned by smartwatermelon, nightowlstudiollc or twistedmelonman is allowed: a local wrapper refuses the merge unless CI is green and, where required, Andrew created a merge-lock for that PR. Does NOT cover --admin, --auto, or merges through gh api.",
-      "Commenting on, labeling, or closing GitHub issues and PRs in repos owned by smartwatermelon, nightowlstudiollc or twistedmelonman is allowed when it is part of the task the user gave; a PreToolUse hook gates commit, PR and issue text only for Beacon and third-party destinations, plus public-facing copy files. Text under these three owners is exempt unless the hook blocks."
+      "Commenting on, labeling, or closing GitHub issues and PRs in repos owned by smartwatermelon, nightowlstudiollc or twistedmelonman is allowed when it is part of the task the user gave; a PreToolUse hook gates commit, PR and issue text only for Beacon and third-party destinations, plus public-facing copy files. Text under these three owners is exempt unless the hook blocks.",
+      "pnpm install and pnpm build are allowed when in projects that use that tool"
     ],
     "soft_deny": [
       "$defaults",
