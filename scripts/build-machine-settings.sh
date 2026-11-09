@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds machine-settings.json from machine-settings/ (dev-env#249). Run by install.sh in the deploy clone only. See --help.
+# Builds the --out file (default machine-settings.json) from machine-settings/ (dev-env#249). See --help.
 set -euo pipefail
 unset CDPATH
 
@@ -18,7 +18,7 @@ usage() {
 Usage: build-machine-settings.sh [--src <dir>] [--out <file>] [--report <file>]
                                 [--host-optional] [--dry-run]
 
-Builds ~/.config/claude-code/machine-settings.json, which claude-wrapper
+Builds the --out file, by default ~/.config/claude-code/machine-settings.json, which claude-wrapper
 passes to Claude Code with --settings (smartwatermelon/dev-env#249).
 install.sh runs it from the deploy clone only, never from a --dev
 checkout: that checkout is agent-writable, and a build from it would
@@ -140,9 +140,10 @@ host="$(printf '%s' "${host}" | tr '[:lower:]' '[:upper:]')"
 
 base_file="${SRC}/base.json"
 host_file="${SRC}/hosts/${host}.json"
+host_src="${host_file}"
 if [[ ! -f "${host_file}" ]] && ${HOST_OPTIONAL}; then
   _log "no ${host_file}; building from base.json alone"
-  host_file=/dev/stdin # the merge step reads an empty object there
+  host_src=/dev/stdin # the merge reads an empty object from the here-string below
 elif [[ ! -f "${host_file}" ]]; then
   _log "no ${host_file}; ${OUT} left as it is"
   exit 0
@@ -151,7 +152,7 @@ fi
 
 # ── 2. Merge ────────────────────────────────────────────
 # A type clash fails: neither side is safe to pick for a sandbox setting.
-merged="$(jq -n --slurpfile b "${base_file}" --slurpfile h "${host_file}" '
+merged="$(jq -n --slurpfile b "${base_file}" --slurpfile h "${host_src}" '
   def merge($a; $b; $path):
     if ($a | type) == "object" and ($b | type) == "object" then
       reduce ($b | keys_unsorted[]) as $k ($a;
