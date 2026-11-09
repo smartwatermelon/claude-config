@@ -12,11 +12,12 @@ OUT="${MACHINE_SETTINGS_OUT:-${HOME}/.config/claude-code/machine-settings.json}"
 DRY_RUN=false
 HOST_OPTIONAL=false
 REPORT_ARG=""
+LOCAL_ARG=""
 
 usage() {
   cat <<'USAGE'
 Usage: build-machine-settings.sh [--src <dir>] [--out <file>] [--report <file>]
-                                [--host-optional] [--dry-run]
+                                [--local <file>] [--host-optional] [--dry-run]
 
 Builds the --out file, by default ~/.config/claude-code/machine-settings.json, which claude-wrapper
 passes to Claude Code with --settings (smartwatermelon/dev-env#249).
@@ -27,9 +28,13 @@ let an agent change its own sandbox.
   1. Read the host name (hostname -s, upper-case). No
      <src>/hosts/<HOST>.json: do nothing, leave any output as it is,
      unless --host-optional: then build from base.json alone.
-  2. Merge <src>/base.json and the host file: objects merge deep, host
-     arrays append to base arrays, a host scalar replaces the base's.
-     An object or array clashing with another type fails.
+  2. Merge <src>/base.json, then the host file, then the local file:
+     objects merge deep, later arrays append to earlier ones, a later
+     scalar replaces the earlier one. An object or array clashing with
+     another type fails. The local file is optional and stays on the
+     machine (the repo is public). Missing: skipped. Not a JSON
+     object: the build fails. It never makes a missing host file
+     optional.
   3. Fill the placeholders. An unknown ${NAME} fails.
        ${HOME}            $HOME
        ${TMPDIR}          getconf DARWIN_USER_TEMP_DIR, no trailing slash
@@ -57,11 +62,13 @@ Options:
   --src <dir>   source directory (default: machine-settings/ in this repo)
   --out <file>  output (default: ~/.config/claude-code/machine-settings.json)
   --report <file>  drift report path (overrides MACHINE_SETTINGS_DRIFT_REPORT)
+  --local <file>  local overlay (default: --out with .json replaced by .local.json)
   --host-optional  no host file: build from base.json alone, not nothing
   --dry-run     build and check; print what would change; write nothing
 
 Environment (tests and one-off checks):
   MACHINE_SETTINGS_OUT     output file, as --out
+  MACHINE_SETTINGS_LOCAL   local overlay file, as --local
   MACHINE_SETTINGS_HOST    host name instead of hostname -s
   MACHINE_SETTINGS_TMPDIR  ${TMPDIR} value instead of getconf's
   MACHINE_SETTINGS_DRIFT_REPORT  drift report (default:
@@ -103,6 +110,14 @@ while (($# > 0)); do
         exit 64
       }
       REPORT_ARG="$2"
+      shift 2
+      ;;
+    --local)
+      [[ $# -ge 2 ]] || {
+        echo "build-machine-settings: --local needs a value" >&2
+        exit 64
+      }
+      LOCAL_ARG="$2"
       shift 2
       ;;
     --host-optional)
@@ -152,19 +167,37 @@ fi
 
 # ── 2. Merge ────────────────────────────────────────────
 # A type clash fails: neither side is safe to pick for a sandbox setting.
-merged="$(jq -n --slurpfile b "${base_file}" --slurpfile h "${host_src}" '
+# Local overlay: option, then env, then the output path with .json replaced by .local.json.
+if [[ -n "${LOCAL_ARG}" ]]; then
+  local_file="${LOCAL_ARG}"
+elif [[ -n "${MACHINE_SETTINGS_LOCAL:-}" ]]; then
+  local_file="${MACHINE_SETTINGS_LOCAL}"
+else
+  local_file="${OUT%.json}.local.json"
+fi
+
+IFS= read -r -d '' MERGE_JQ <<'JQ' || true
   def merge($a; $b; $path):
     if ($a | type) == "object" and ($b | type) == "object" then
       reduce ($b | keys_unsorted[]) as $k ($a;
         .[$k] = (if has($k) then merge(.[$k]; $b[$k]; $path + [$k]) else $b[$k] end))
     elif ($a | type) == "array" and ($b | type) == "array" then $a + $b
     elif ($a | type) == ($b | type) and (["object", "array"] | index([$a | type]) | not) then $b
-    else error("type clash at \($path | map(tostring) | join(".")): base \($a | type), host \($b | type)")
+    else error("type clash at \($path | map(tostring) | join(".")): earlier \($a | type), later \($b | type)")
     end;
   if ($b | length) != 1 or ($h | length) != 1 then error("each source file must hold one JSON value")
-  elif ($b[0] | type) != "object" or ($h[0] | type) != "object" then error("base and host files must be JSON objects")
+  elif ($b[0] | type) != "object" or ($h[0] | type) != "object" then error("each source file must be a JSON object")
   else merge($b[0]; $h[0]; []) end
-' <<<'{}')" || _fail "cannot merge ${base_file} and ${host_file}"
+JQ
+
+merged="$(jq -n --slurpfile b "${base_file}" --slurpfile h "${host_src}" "${MERGE_JQ}" <<<'{}')" ||
+  _fail "cannot merge ${base_file} and ${host_file}"
+
+if [[ -f "${local_file}" ]]; then
+  _log "merging the local overlay ${local_file}"
+  merged="$(jq -n --slurpfile b <(printf '%s' "${merged}") --slurpfile h "${local_file}" "${MERGE_JQ}")" ||
+    _fail "cannot merge the local file ${local_file} (it must be a JSON object)"
+fi
 
 # ── 3. Placeholders ─────────────────────────────────────
 KNOWN_PLACEHOLDERS=(HOME TMPDIR GDRIVE_HANDOFF)

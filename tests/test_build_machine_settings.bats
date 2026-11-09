@@ -60,6 +60,8 @@ STUB
 # Fixtures come from quoted heredocs on stdin, so ${HOME} and friends stay literal.
 write_base() { cat >"${SRC}/base.json"; }
 write_host() { cat >"${SRC}/hosts/${1:-TESTHOST}.json"; }
+# The local overlay sits beside the output by default: machine-settings.local.json.
+write_local() { mkdir -p "${OUT%/*}" && cat >"${OUT%.json}.local.json"; }
 
 build() {
   HOME="${FAKE_HOME}" TMPDIR="${TEST_ROOT}/tmp" bash "${SCRIPT}" --src "${SRC}" --out "${OUT}" "$@"
@@ -607,6 +609,131 @@ REPORT_REL=".local/state/claude-config/machine-settings.drift.diff"
   cat "${TEST_ROOT}/edit.json" >"${OUT}"
   run build
   [ "${status}" -eq 0 ]
+}
+
+# --- local overlay ------------------------------------------------------------
+
+@test "local: merged last, arrays append in base, host, local order and a local scalar wins" {
+  write_base <<'JSON'
+{"autoMode": {"allow": ["b1"]}, "s": "base", "t": "base"}
+JSON
+  write_host <<'JSON'
+{"autoMode": {"allow": ["h1"]}, "s": "host"}
+JSON
+  write_local <<'JSON'
+{"autoMode": {"allow": ["l1"]}, "s": "local"}
+JSON
+  run build
+  [ "${status}" -eq 0 ]
+  out_json '.autoMode.allow'
+  [ "${output}" = '["b1","h1","l1"]' ]
+  out_json '.s'
+  [ "${output}" = '"local"' ]
+  out_json '.t'
+  [ "${output}" = '"base"' ]
+}
+
+@test "local: a missing local file builds the same as the build before it existed" {
+  write_base <<<'{"a": [1], "b": "base"}'
+  write_host <<<'{"a": [2]}'
+  run build --local "${TEST_ROOT}/absent.local.json"
+  [ "${status}" -eq 0 ]
+  jq -S . "${OUT}" >"${TEST_ROOT}/with-option.json"
+  rm -f "${OUT}" "${OUT}.built"
+  run build
+  [ "${status}" -eq 0 ]
+  jq -S . "${OUT}" >"${TEST_ROOT}/without.json"
+  cmp "${TEST_ROOT}/with-option.json" "${TEST_ROOT}/without.json"
+}
+
+@test "local: invalid JSON fails, names the local path and keeps the old file" {
+  old_file
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  write_local <<<'{not json'
+  run build
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *"machine-settings.local.json"* ]]
+  grep -q '"old": true' "${OUT}"
+}
+
+@test "local: a JSON array fails and keeps the old file" {
+  old_file
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  write_local <<<'["x"]'
+  run build
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *"machine-settings.local.json"* ]]
+  grep -q '"old": true' "${OUT}"
+}
+
+@test "local: --local beats MACHINE_SETTINGS_LOCAL, which beats the default" {
+  write_base <<<'{"v": "base"}'
+  write_host <<<'{}'
+  write_local <<<'{"v": "default"}'
+  printf '{"v": "env"}\n' >"${TEST_ROOT}/env.json"
+  printf '{"v": "option"}\n' >"${TEST_ROOT}/option.json"
+  MACHINE_SETTINGS_LOCAL="${TEST_ROOT}/env.json" run build
+  [ "${status}" -eq 0 ]
+  out_json '.v'
+  [ "${output}" = '"env"' ]
+  MACHINE_SETTINGS_LOCAL="${TEST_ROOT}/env.json" run build --local "${TEST_ROOT}/option.json"
+  [ "${status}" -eq 0 ]
+  out_json '.v'
+  [ "${output}" = '"option"' ]
+}
+
+@test "local: no host file and no --host-optional writes nothing, even with a local file" {
+  write_base <<<'{"a": 1}'
+  write_local <<<'{"b": 2}'
+  run build
+  [ "${status}" -eq 0 ]
+  [ ! -e "${OUT}" ]
+}
+
+@test "local: --host-optional still merges the local file" {
+  write_base <<<'{"a": [1]}'
+  write_local <<<'{"a": [2]}'
+  run build --host-optional
+  [ "${status}" -eq 0 ]
+  out_json '.a'
+  [ "${output}" = '[1,2]' ]
+}
+
+@test "local: a HOME placeholder in the local file is filled" {
+  write_base <<<'{}'
+  write_host <<<'{}'
+  write_local <<'JSON'
+{"list": ["${HOME}/x *"]}
+JSON
+  run build
+  [ "${status}" -eq 0 ]
+  out_json '.list'
+  [ "${output}" = "[\"${FAKE_HOME}/x *\"]" ]
+}
+
+@test "local: editing only the local file rebuilds with exit 0 and no drift report" {
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  write_local <<<'{"b": 1}'
+  run build
+  [ "${status}" -eq 0 ]
+  write_local <<<'{"b": 2}'
+  MACHINE_SETTINGS_DRIFT_REPORT="${TEST_ROOT}/drift.diff" run build
+  [ "${status}" -eq 0 ]
+  out_json '.b'
+  [ "${output}" = "2" ]
+  [ ! -e "${TEST_ROOT}/drift.diff" ]
+}
+
+@test "local: the build never logs the local file's content" {
+  write_base <<<'{}'
+  write_host <<<'{}'
+  write_local <<<'{"secret": "dummy-internal-value"}'
+  run build
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *"dummy-internal-value"* ]]
 }
 
 # --- the real source files ------------------------------------------------------
