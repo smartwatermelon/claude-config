@@ -121,5 +121,46 @@
 - [ ] **Step 2: Run** them. Expected: fail.
 - [ ] **Step 3: Implement** the install.sh changes listed under Files. Remove section 8 only after confirming nothing else names `filter.iterm-home` (`grep -rn iterm-home`).
 - [ ] **Step 4: Run** the scoped tests: every `tests/test_install_*.bats`, `tests/test_build_machine_settings.bats`, `tests/test_settings_*.bats`, `scripts/tests/test-claude-config-deploy.sh`. Expected: all pass. Full suite runs in CI only.
-- [ ] **Step 5: Commit** with `Closes #842`. Open PR 3.
+- [ ] **Step 5: Commit** with `Advances #842`. Open PR 3.
 - [ ] **Step 6: After merge, verify on each Mac** (bare SSH, no pipes): `test -f ~/.claude/settings.json && ! test -L ~/.claude/settings.json`; the deploy log shows the build; `git -C ~/.local/share/claude-config status --porcelain` is empty. Report per host.
+
+### Task 4: Harvest user-settings drift into a PR automatically (PR 4)
+
+Approved by Andrew 2026-11-09: local changes to `~/.claude/settings.json` become a PR without anyone asking.
+
+**Files:**
+
+- Create: `scripts/harvest-user-settings.sh`
+- Modify: `scripts/claude-config-deploy.sh` (after a successful install, if `${STATE_DIR}/user-settings.drift.diff` exists, run the harvest; a harvest failure is logged and notified, never fails the deploy)
+- Modify: `install.sh` link exclusions only if the new script must not link into `~/.claude` (follow how `build-machine-settings.sh` is handled)
+- Test: `tests/test_harvest_user_settings.bats`
+
+**Interfaces:**
+
+- Consumes: Task 1's `build-machine-settings.sh --src --out --host-optional --dry-run` and `MACHINE_SETTINGS_HOST`; Task 3's `user-settings/` layout and drift report path.
+- Produces: `harvest-user-settings.sh --live <file> --src <user-settings dir> --host <HOST> --repo <owner/name> [--dry-run]`. Exit 0: PR opened or updated, or nothing to do. Exit 3: not harvestable (overlay mismatch, secret found, scanner missing); notified, no push. Exit 1: failed.
+- Injected binaries for tests: `HARVEST_GIT_BIN`, `HARVEST_GH_BIN`, `HARVEST_GITLEAKS_BIN`, `HARVEST_NOTIFY_BIN`.
+
+Algorithm (the parts the tests do not fix):
+
+1. Overlay = the parts of `jq -S` live that differ from `jq -S` `<src>/base.json`. Objects: recurse. Arrays: the overlay holds live items not in the base array (the build appends host arrays). A key that is in base but missing or changed in a way an overlay cannot express shows up in step 2.
+2. Write the overlay as `hosts/<HOST>.json` in a temp copy of `<src>`, build with `--dry-run`, and compare with live (`jq -S` equality). Mismatch → exit 3, with the diff in the notification log.
+3. Scan the overlay file with gitleaks (`gitleaks dir <file>` or the installed version's equivalent; check `gitleaks --help`). A finding, or no gitleaks binary → exit 3. Never put the scanned content in the log or notification.
+4. Scratch clone at `~/.local/state/claude-config/harvest/` (never the deploy clone, never a worktree of it). Branch `claude/harvest-settings-<host-lower>` from `origin/main`. Commit `chore(settings): fold <HOST> local settings`. Push with `--force-with-lease`; hooks off as in the deploy (`NO_HOOKS`), because the content is data and was scanned.
+5. `gh pr list --head <branch>`: none open → `gh pr create` (body: the overlay diff and "Fold into base.json in review if it applies to every Mac"); one open → the push updated it.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_harvest_user_settings.bats` (stub git, gh, gitleaks, notify; all paths under `BATS_TEST_TMPDIR`):
+  - `@test "an added permissions.allow rule becomes a host overlay holding only that rule"`
+  - `@test "a changed scalar (model) becomes a host overlay with the new value"`
+  - `@test "a base key removed locally is not harvestable: exit 3, notified, no push"`
+  - `@test "a gitleaks finding stops the harvest: exit 3, no push, the secret is not in the log"`
+  - `@test "no gitleaks binary: exit 3, no push"`
+  - `@test "an open harvest PR is updated by push, not duplicated"` (`gh pr create` not called)
+  - `@test "no open PR: gh pr create is called once with the branch"`
+  - `@test "--dry-run pushes nothing and creates no PR"`
+  - In `scripts/tests/test-claude-config-deploy.sh`: a drift report present → harvest runs once; a harvest exit 1 or 3 → deploy exit 0, harvest outcome logged.
+- [ ] **Step 2: Run** the bats file and the deploy test script. Expected: the new tests fail.
+- [ ] **Step 3: Implement** `harvest-user-settings.sh` and the deploy hook.
+- [ ] **Step 4: Run** both test files and `shellcheck -S info` on every changed script. Expected: all pass, clean.
+- [ ] **Step 5: Commit** with `Closes #842`. Open PR 4.
+- [ ] **Step 6 (controller, after merge):** check that gitleaks is installed on each Mac (bare `ssh host command -v gitleaks`). Then on ASIAGO, approve one harmless rule in `/permissions` at user scope and wait one deploy cycle (10 minutes). Expected: one PR titled `chore(settings): fold ASIAGO local settings`, opened by the agent App. Close it without merging if the rule is not wanted.
