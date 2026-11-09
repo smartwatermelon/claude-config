@@ -90,6 +90,7 @@
         "*.semgrep.dev",
         "my.1password.com",
         "*.1password.com",
+        "*.1passwordusercontent.com",
         "*.blob.core.windows.net"
       ],
       "allowUnixSockets": ["/private/var/run/mDNSResponder"],
