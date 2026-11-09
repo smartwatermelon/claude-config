@@ -246,8 +246,12 @@ deploy_once() {
       return 1
     fi
     # An edit made after the diff check was just staged: check again and refuse, keeping it.
-    if ! dirty="$(_git diff --no-ext-diff --no-color --name-status HEAD -- 2>&1)" || [[ -n "${dirty}" ]]; then
-      _problem dirty "Refused: the deploy clone changed during the check. Nothing was changed. Inspect: git -C ${CLONE} diff HEAD"
+    if ! dirty="$(_git diff --no-ext-diff --no-color --name-status HEAD -- 2>&1)"; then
+      _problem status-failed "git diff failed in ${CLONE}: ${dirty}"
+      return 1
+    fi
+    if [[ -n "${dirty}" ]]; then
+      _problem dirty "Refused: the deploy clone changed during the check. No deploy ran; the edit is staged. Inspect: git -C ${CLONE} diff HEAD"
       _log "changed in the clone: ${dirty//$'\n'/; }"
       return 2
     fi
