@@ -95,15 +95,12 @@ policy() {
   [[ "${output}" == refuse$'\t'* ]]
 }
 
-@test "nightowlstudiollc stays locked, by its own owner rule" {
-  policy nightowlstudiollc/kebab-tax-netlify twistedmelonman
-  [[ "${output}" == lock$'\t'*$'\t'owner=nightowlstudiollc ]]
-}
-
-@test "nightowlstudiollc/stupid-github-app merges on review, above the NOS lock" {
-  policy nightowlstudiollc/stupid-github-app twistedmelonman
+@test "nightowlstudiollc merges on review, by its own owner rule" {
+  policy nightowlstudiollc/kebab-tax twistedmelonman
   [[ "${status}" -eq 0 ]]
-  [[ "${output}" == review$'\t'*$'\t'repo=nightowlstudiollc/stupid-github-app ]]
+  [[ "${output}" == review$'\t'*$'\t'owner=nightowlstudiollc ]]
+  policy nightowlstudiollc/stupid-github-app twistedmelonman
+  [[ "${output}" == review$'\t'*$'\t'owner=nightowlstudiollc ]]
 }
 
 @test "an andrewmrich-authored PR in an otherwise exempt repo stays locked" {
@@ -367,13 +364,6 @@ EOF
   [[ "${status}" -eq 1 ]]
   [[ "${output}" == *"[gh] Not merged: smartwatermelon/spokane-snow#7 needs Andrew's approval."* ]]
   [[ ! -f "${TMP_HOME}/claude-ran" ]]
-}
-
-@test "locked repo still needs the lock" {
-  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE
-  [[ "${status}" -eq 1 ]]
-  [[ "${output}" == *"[gh] Not merged: nightowlstudiollc/kebab-tax-netlify#7 needs Andrew's approval."* ]]
-  [[ "${output}" != *"authorize"* ]]
 }
 
 # --- review: Andrew's GitHub approval is the lock ----------------------------
@@ -724,14 +714,14 @@ _issue_count() {
 }
 
 @test "locked merge: files once, then a retry in the auth window skips" {
-  local lock="${HOME}/.claude/merge-locks/nightowlstudiollc/kebab-tax-netlify/pr-7.lock"
+  local lock="${HOME}/.claude/merge-locks/smartwatermelon/spokane-snow/pr-7.lock"
   mkdir -p "$(dirname "${lock}")"
   printf 'TIMESTAMP=%s\n' "$(date +%s)" >"${lock}"
-  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge smartwatermelon/spokane-snow andrewmrich SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
-  [[ -s "$(_marker nightowlstudiollc/kebab-tax-netlify)" ]]
-  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
+  [[ -s "$(_marker smartwatermelon/spokane-snow)" ]]
+  _pre_merge smartwatermelon/spokane-snow andrewmrich SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
   [[ "${output}" == *"already filed for PR #7 in this auth window"* ]]
@@ -748,12 +738,12 @@ _marker() {
 }
 
 @test "known-bad: a merge run never modifies the lock file" {
-  local lock="${HOME}/.claude/merge-locks/nightowlstudiollc/kebab-tax-netlify/pr-7.lock"
+  local lock="${HOME}/.claude/merge-locks/smartwatermelon/spokane-snow/pr-7.lock"
   mkdir -p "$(dirname "${lock}")"
   printf 'TIMESTAMP=%s\n' "$(date +%s)" >"${lock}"
   local before
   before=$(cat "${lock}")
-  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge smartwatermelon/spokane-snow andrewmrich SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
   [[ "$(cat "${lock}")" == "${before}" ]]
@@ -761,53 +751,53 @@ _marker() {
 }
 
 @test "the issues-filed marker holds the filing time" {
-  local lock="${HOME}/.claude/merge-locks/nightowlstudiollc/kebab-tax-netlify/pr-7.lock"
+  local lock="${HOME}/.claude/merge-locks/smartwatermelon/spokane-snow/pr-7.lock"
   mkdir -p "$(dirname "${lock}")"
   printf 'TIMESTAMP=%s\n' "$(date +%s)" >"${lock}"
   local t0
   t0=$(date +%s)
-  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge smartwatermelon/spokane-snow andrewmrich SAFE_TO_MERGE findings
   local ts
-  ts=$(head -1 "$(_marker nightowlstudiollc/kebab-tax-netlify)")
+  ts=$(head -1 "$(_marker smartwatermelon/spokane-snow)")
   [[ "${ts}" =~ ^[0-9]+$ ]]
   ((ts >= t0 && ts <= $(date +%s)))
 }
 
 @test "a marker inside the window skips filing" {
-  _valid_lock nightowlstudiollc/kebab-tax-netlify
-  mkdir -p "$(dirname "$(_marker nightowlstudiollc/kebab-tax-netlify)")"
-  printf '%s\n' "$(($(date +%s) - 60))" >"$(_marker nightowlstudiollc/kebab-tax-netlify)"
-  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
+  _valid_lock smartwatermelon/spokane-snow
+  mkdir -p "$(dirname "$(_marker smartwatermelon/spokane-snow)")"
+  printf '%s\n' "$(($(date +%s) - 60))" >"$(_marker smartwatermelon/spokane-snow)"
+  _pre_merge smartwatermelon/spokane-snow andrewmrich SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 0 ]]
   [[ "${output}" == *"already filed for PR #7 in this auth window"* ]]
 }
 
 @test "known-bad: a stale marker from an earlier authorization files again" {
-  _valid_lock nightowlstudiollc/kebab-tax-netlify
-  mkdir -p "$(dirname "$(_marker nightowlstudiollc/kebab-tax-netlify)")"
-  printf '%s\n' "$(($(date +%s) - 7200))" >"$(_marker nightowlstudiollc/kebab-tax-netlify)"
-  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
+  _valid_lock smartwatermelon/spokane-snow
+  mkdir -p "$(dirname "$(_marker smartwatermelon/spokane-snow)")"
+  printf '%s\n' "$(($(date +%s) - 7200))" >"$(_marker smartwatermelon/spokane-snow)"
+  _pre_merge smartwatermelon/spokane-snow andrewmrich SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 1 ]]
   [[ "${output}" != *"already filed"* ]]
   # The new filing refreshes the marker.
-  (($(date +%s) - $(head -1 "$(_marker nightowlstudiollc/kebab-tax-netlify)") < 60))
+  (($(date +%s) - $(head -1 "$(_marker smartwatermelon/spokane-snow)") < 60))
 }
 
 @test "known-bad: a marker for the same PR number in another repo does not skip filing" {
-  _valid_lock nightowlstudiollc/kebab-tax-netlify
+  _valid_lock smartwatermelon/spokane-snow
   mkdir -p "$(dirname "$(_marker nightowlstudiollc/reliquarist)")"
   date +%s >"$(_marker nightowlstudiollc/reliquarist)"
-  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge smartwatermelon/spokane-snow andrewmrich SAFE_TO_MERGE findings
   [[ "$(_issue_count)" -eq 1 ]]
 }
 
 @test "a legacy ISSUES_CREATED=1 in a lock still skips filing" {
-  local lock="${HOME}/.claude/merge-locks/nightowlstudiollc/kebab-tax-netlify/pr-7.lock"
+  local lock="${HOME}/.claude/merge-locks/smartwatermelon/spokane-snow/pr-7.lock"
   mkdir -p "$(dirname "${lock}")"
   printf 'TIMESTAMP=%s\nISSUES_CREATED=1\n' "$(date +%s)" >"${lock}"
-  _pre_merge nightowlstudiollc/kebab-tax-netlify twistedmelonman SAFE_TO_MERGE findings
+  _pre_merge smartwatermelon/spokane-snow andrewmrich SAFE_TO_MERGE findings
   [[ "${status}" -eq 0 ]]
   [[ "$(_issue_count)" -eq 0 ]]
   [[ "${output}" == *"already filed for PR #7 in this auth window"* ]]
