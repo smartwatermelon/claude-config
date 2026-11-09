@@ -161,6 +161,12 @@ lines() {
   n="$(wc -l <"$1")"
   printf '%s' "${n// /}"
 }
+status_says_modified() {
+  local s
+  s="$(git -C "${CLONE}" status --porcelain --untracked-files=no)" || return 1
+  [[ -n "${s}" ]]
+}
+no_value_in_log() { ! grep -q 's3cr3t-value' "${LOG}"; }
 UID_N="$(id -u)"
 head_of() { git -C "$1" rev-parse HEAD; }
 
@@ -191,6 +197,39 @@ check "dirty clone: no last-good stamp" test ! -e "${OKF}"
 run_deploy deploy --scheduled
 check "dirty clone again: still refuses" test "${rc}" -eq 2
 check_eq "dirty clone again: no repeat notification" 1 lines "${STUB_NOTIFY_LOG}"
+
+# A clean filter (iTerm2's) can leave a stale stat: `git status` says " M" while content equals HEAD (#842).
+filter_clone() { # filter_clone <clean command>
+  make_clone
+  printf 'CLAUDE.md filter=strip\n' >"${CLONE}/.git/info/attributes"
+  git -C "${CLONE}" config filter.strip.clean "$1"
+  git -C "${CLONE}" config filter.strip.smudge cat
+  git -C "${CLONE}" config filter.strip.required true
+}
+fresh
+filter_clone 'sed -e s/ZZZ//'
+printf 'v1ZZZ\n' >"${CLONE}/CLAUDE.md"
+new="$(advance_origin v2)"
+check "filtered no-op edit: precondition, git status says modified" status_says_modified
+run_deploy deploy --scheduled
+check "filtered no-op edit: deploys (exit 0)" test "${rc}" -eq 0
+check_eq "filtered no-op edit: clone fast-forwarded" "${new}" head_of "${CLONE}"
+check_eq "filtered no-op edit: install.sh ran" 1 lines "${STUB_INSTALL_LOG}"
+check "filtered no-op edit: the log records the refresh" grep -q 'refreshed stale index entries' "${LOG}"
+
+fresh
+make_clone
+printf 'v1\n  "SECRET_TOKEN": "s3cr3t-value",\n' >"${CLONE}/CLAUDE.md"
+run_deploy deploy --scheduled
+check "real edit: refuses with exit 2" test "${rc}" -eq 2
+check "real edit: the log names the changed key" grep -q '+SECRET_TOKEN' "${LOG}"
+check "real edit: the log never holds the value" no_value_in_log
+fresh
+filter_clone "${T}/no-such-filter"
+printf 'v1ZZZ\n' >"${CLONE}/CLAUDE.md"
+run_deploy deploy --scheduled
+check "broken required filter: fails with exit 1" test "${rc}" -eq 1
+check_eq "broken required filter: install.sh did not run" 0 lines "${STUB_INSTALL_LOG}"
 
 fresh
 make_clone
