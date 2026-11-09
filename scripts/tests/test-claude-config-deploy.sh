@@ -219,11 +219,29 @@ check "filtered no-op edit: the log records the refresh" grep -q 'refreshed stal
 
 fresh
 make_clone
-printf 'v1\n  "SECRET_TOKEN": "s3cr3t-value",\n' >"${CLONE}/CLAUDE.md"
+printf 'v1\n  "SECRET_TOKEN": "s3cr3t-value",\n  "Bash(export T=s3cr3t-value)",\n' >"${CLONE}/CLAUDE.md"
 run_deploy deploy --scheduled
 check "real edit: refuses with exit 2" test "${rc}" -eq 2
 check "real edit: the log names the changed key" grep -q '+SECRET_TOKEN' "${LOG}"
-check "real edit: the log never holds the value" no_value_in_log
+check "real edit: an array item is logged as (other)" grep -q '+(other)' "${LOG}"
+check "real edit: the log never holds a value or an array item" no_value_in_log
+# Race: a real edit lands after the diff check, just before `git add -u` stages it.
+fresh
+filter_clone 'sed -e s/ZZZ//'
+printf 'v1ZZZ\n' >"${CLONE}/CLAUDE.md"
+# No origin advance: otherwise `git merge` refuses on its own and the re-check goes untested.
+real_git="$(command -v git)"
+cat >"${T}/bin/git-race" <<EOF
+#!/usr/bin/env bash
+if [[ " \$* " == *" add -u "* ]]; then printf 'raced edit\n' >"${CLONE}/CLAUDE.md"; fi
+exec "${real_git}" "\$@"
+EOF
+chmod +x "${T}/bin/git-race"
+CLAUDE_CONFIG_GIT_BIN="${T}/bin/git-race" run_deploy deploy --scheduled
+check "edit during the check: refuses with exit 2" test "${rc}" -eq 2
+check "edit during the check: the edit is kept" grep -qx 'raced edit' "${CLONE}/CLAUDE.md"
+check_eq "edit during the check: install.sh did not run" 0 lines "${STUB_INSTALL_LOG}"
+
 fresh
 filter_clone "${T}/no-such-filter"
 printf 'v1ZZZ\n' >"${CLONE}/CLAUDE.md"

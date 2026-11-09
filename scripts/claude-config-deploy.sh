@@ -148,7 +148,7 @@ _release_lock() {
 NO_HOOKS=(-c core.hooksPath=/dev/null -c core.fsmonitor=false)
 _git() { GIT_TERMINAL_PROMPT=0 "${GIT_BIN}" "${NO_HOOKS[@]}" -C "${CLONE}" "$@"; }
 
-# Lists changed lines' leading quoted string ("+KEY", "+Bash(x)") or "(other)", never values; max 20.
+# Lists changed object keys ("+KEY"); array items and other lines print "(other)". Never values; max 20.
 _changed_keys() {
   local line rest sign n=0 keys=""
   while IFS= read -r line; do
@@ -160,7 +160,7 @@ _changed_keys() {
     sign="${line:0:1}"
     rest="${line:1}"
     rest="${rest#"${rest%%[![:space:]]*}"}"
-    if [[ "${rest}" =~ ^\"([^\"]*)\" ]]; then
+    if [[ "${rest}" =~ ^\"([^\"]*)\"[[:space:]]*: ]]; then
       keys+="${sign}${BASH_REMATCH[1]}; "
     else
       keys+="${sign}(other); "
@@ -244,6 +244,12 @@ deploy_once() {
     if ! add_out="$(_git add -u 2>&1)"; then
       _problem status-failed "could not refresh stale index entries in ${CLONE}: ${add_out}"
       return 1
+    fi
+    # An edit made after the diff check was just staged: check again and refuse, keeping it.
+    if ! dirty="$(_git diff --no-ext-diff --no-color --name-status HEAD -- 2>&1)" || [[ -n "${dirty}" ]]; then
+      _problem dirty "Refused: the deploy clone changed during the check. Nothing was changed. Inspect: git -C ${CLONE} diff HEAD"
+      _log "changed in the clone: ${dirty//$'\n'/; }"
+      return 2
     fi
     _log "refreshed stale index entries (content unchanged): ${stale//$'\n'/; }"
   fi
