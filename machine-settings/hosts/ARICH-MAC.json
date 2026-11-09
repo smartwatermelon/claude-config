@@ -1,0 +1,17 @@
+{
+  "autoMode": {
+    "environment": [
+      "**Host containment (arich-mac)**: COMPANY machine. The company rules from this Mac's local machine-settings.local.json take precedence for company repos; the other entries cover Andrew's personal repos and LAN hosts only"
+    ]
+  },
+  "permissions": {
+    "defaultMode": "default"
+  },
+  "sandbox": {
+    "enabled": false
+  },
+  "skillOverrides": {
+    "morning-andrew": "on",
+    "evening-andrew": "on"
+  }
+}
