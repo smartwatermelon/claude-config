@@ -25,6 +25,7 @@
     "personify@synced": true,
     "react-native-3d@smartwatermelon-marketplace": false,
     "sentry@claude-plugins-official": false,
+    "slack-by-salesforce@synced": false,
     "slack@claude-plugins-official": false,
     "superpowers@smartwatermelon-marketplace": true
   },
