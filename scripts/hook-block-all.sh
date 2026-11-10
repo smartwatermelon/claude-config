@@ -48,6 +48,7 @@ REQUIRED_HOOKS=(
   hook-block-pr-approve.sh
   hook-block-api-merge.sh
   hook-block-gh-auth.sh
+  hook-block-personal-github.sh
   hook-block-git-worktree.sh
 )
 
