@@ -38,11 +38,11 @@ make_repo() {
   git -C "${dir}" config user.name "Test"
   git -C "${dir}" config commit.gpgSign false
   cp "${BATS_TEST_DIRNAME}/../install.sh" "${dir}/install.sh"
-  printf '{}\n' >"${dir}/settings.json"
+  mkdir -p "${dir}/user-settings" && printf '{}\n' >"${dir}/user-settings/base.json"
   printf '# test\n' >"${dir}/CLAUDE.md"
   printf '#!/usr/bin/env bash\n' >"${dir}/hooks/run-review.sh"
   chmod +x "${dir}/hooks/run-review.sh"
-  git -C "${dir}" add install.sh settings.json CLAUDE.md hooks/run-review.sh
+  git -C "${dir}" add install.sh user-settings/base.json CLAUDE.md hooks/run-review.sh
   GIT_CONFIG_GLOBAL=/dev/null git -C "${dir}" commit -q -m "initial"
 }
 

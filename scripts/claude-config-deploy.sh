@@ -235,7 +235,7 @@ deploy_once() {
     _log "changed keys (values not logged): ${keys}"
     return 2
   fi
-  # A stale stat still blocks `git merge`. Re-stage the same blob, as install.sh does; safe only because the diff is empty.
+  # A stale stat still blocks `git merge`. Re-stage the same blob; safe only because the diff is empty.
   if ! stale="$(_git status --porcelain --untracked-files=no 2>&1)"; then
     _problem status-failed "git status failed in ${CLONE}: ${stale}"
     return 1

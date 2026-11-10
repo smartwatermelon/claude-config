@@ -64,7 +64,7 @@
 # requestId-deduped entries of 91ef0da0's transcript yields 12,092,622 for
 # the main thread, matching the independent cost-state figure.
 #
-# Called by: SubagentStop and Stop hooks (see settings.json).
+# Called by: SubagentStop and Stop hooks (see machine-settings/base.json).
 
 set -euo pipefail
 unset CDPATH

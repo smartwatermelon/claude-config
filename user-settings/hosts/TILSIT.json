@@ -1,0 +1,7 @@
+{
+  "autoMode": {
+    "environment": [
+      "**Host containment (TILSIT)**: one of Andrew's personal Macs; Claude Code runs in its sandbox; network access is limited to an allowlist, and other hosts need approval per command. Clones live under ~/Developer/"
+    ]
+  }
+}

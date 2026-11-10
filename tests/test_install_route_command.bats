@@ -20,12 +20,12 @@ setup() {
   git -C "${FAKE_REPO}" config user.name "Test"
 
   cp "${BATS_TEST_DIRNAME}/../install.sh" "${FAKE_REPO}/install.sh"
-  printf '{}\n' >"${FAKE_REPO}/settings.json"
+  mkdir -p "${FAKE_REPO}/user-settings" && printf '{}\n' >"${FAKE_REPO}/user-settings/base.json"
   printf '# test\n' >"${FAKE_REPO}/CLAUDE.md"
   printf '#!/usr/bin/env bash\n' >"${FAKE_REPO}/hooks/run-review.sh"
   printf '#!/usr/bin/env bash\n' >"${FAKE_REPO}/scripts/gate-review.sh"
   chmod +x "${FAKE_REPO}/hooks/run-review.sh" "${FAKE_REPO}/scripts/gate-review.sh"
-  git -C "${FAKE_REPO}" add install.sh settings.json CLAUDE.md hooks/run-review.sh \
+  git -C "${FAKE_REPO}" add install.sh user-settings/base.json CLAUDE.md hooks/run-review.sh \
     scripts/gate-review.sh
   GIT_CONFIG_GLOBAL=/dev/null git -C "${FAKE_REPO}" commit -q -m "initial"
 

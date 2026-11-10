@@ -22,12 +22,12 @@ setup() {
   cp "${BATS_TEST_DIRNAME}/../install.sh" "${FAKE_REPO}/install.sh"
   cp "${BATS_TEST_DIRNAME}/../gate-rules.conf" "${FAKE_REPO}/gate-rules.conf"
   cp "${BATS_TEST_DIRNAME}/../copy-paths.conf" "${FAKE_REPO}/copy-paths.conf"
-  printf '{}\n' >"${FAKE_REPO}/settings.json"
+  mkdir -p "${FAKE_REPO}/user-settings" && printf '{}\n' >"${FAKE_REPO}/user-settings/base.json"
   printf '# test\n' >"${FAKE_REPO}/CLAUDE.md"
   mkdir -p "${FAKE_REPO}/hooks"
   printf '#!/usr/bin/env bash\n' >"${FAKE_REPO}/hooks/run-review.sh"
   chmod +x "${FAKE_REPO}/hooks/run-review.sh"
-  git -C "${FAKE_REPO}" add install.sh settings.json CLAUDE.md hooks/run-review.sh \
+  git -C "${FAKE_REPO}" add install.sh user-settings/base.json CLAUDE.md hooks/run-review.sh \
     gate-rules.conf copy-paths.conf
   GIT_CONFIG_GLOBAL=/dev/null git -C "${FAKE_REPO}" commit -q -m "initial"
 }

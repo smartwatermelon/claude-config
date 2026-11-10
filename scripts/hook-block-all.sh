@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Hook: Wrapper that runs all block hooks
-# Keeps settings.json clean by consolidating block checks
+# Keeps the hook config (machine-settings/base.json) short by consolidating block checks
 
 set -euo pipefail
 unset CDPATH

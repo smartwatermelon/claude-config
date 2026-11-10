@@ -1,0 +1,11 @@
+{
+  "autoMode": {
+    "environment": [
+      "**Host containment (ASIAGO)**: one of Andrew's personal Macs; Claude Code runs in its sandbox; network access is limited to an allowlist, and other hosts need approval per command. Clones live flat at ~/Developer/<repo>"
+    ],
+    "allow": [
+      "Running `~/.claude/scripts/gate-review.sh [--dir <abs repo path>] stage ...` or `... open` is allowed: it queues text and opens Andrew's editor for his review. It approves nothing; approval is Andrew typing APPROVED. `approve-hash` stays forbidden.",
+      "Allowed: ssh dsadmin@romano.local for read-only settings and configuration checks. Writing or saving anything is not allowed."
+    ]
+  }
+}

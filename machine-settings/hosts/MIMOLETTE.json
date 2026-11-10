@@ -1,17 +1,4 @@
 {
-  "autoMode": {
-    "environment": [
-      "**Host containment (MIMOLETTE)**: macOS dev server, usually reached over SSH; Claude Code runs in its sandbox; network access is limited to an allowlist, and other hosts need approval per command. Repos live under /Volumes/extra-vieille/Workspaces/ (also reachable via ~/Developer/), except the dotfiles clone, which lives on the internal disk at ~/.dotfiles (also reachable via ~/Developer/dotfiles). Disposable macOS VMs on MIMOLETTE are the place for tests that call real macOS tools"
-    ],
-    "allow": [
-      "Bash(merge-lock check:*) in /Volumes/extra-vieille/Workspaces/kebab-tax",
-      "Bash(op read:*) scoped to .claude/secrets.op in /Volumes/extra-vieille/Workspaces/kebab-tax"
-    ],
-    "soft_deny": [
-      "Cloudflare Workers deploy to valuation-api (production, non-staging) in /Volumes/extra-vieille/Workspaces/kebab-tax",
-      "EAS production build/submit (./production.sh) in /Volumes/extra-vieille/Workspaces/kebab-tax"
-    ]
-  },
   "enabledPlugins": {
     "cloudflare@cloudflare": true,
     "sentry@claude-plugins-official": true

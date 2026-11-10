@@ -9,7 +9,7 @@
 
 #   Fail-closed: every path exits 2, unparseable input too (#796).
 #
-# Called by: settings.json PreToolUse matcher "EnterWorktree"
+# Called by: machine-settings/base.json PreToolUse matcher "EnterWorktree"
 
 set -euo pipefail
 

@@ -180,8 +180,8 @@ if [[ ! -d "${REPO_DIR}/.git" ]]; then
   exit 1
 fi
 
-if [[ ! -f "${REPO_DIR}/settings.json" ]]; then
-  _err "Canary file missing: ${REPO_DIR}/settings.json"
+if [[ ! -f "${REPO_DIR}/user-settings/base.json" ]]; then
+  _err "Canary file missing: ${REPO_DIR}/user-settings/base.json"
   exit 1
 fi
 
@@ -246,6 +246,10 @@ _is_excluded() {
     docs/plans/*) return 0 ;;
     # Built into one file outside ~/.claude by section 7c (dev-env#249)
     machine-settings/*) return 0 ;;
+    # Built into ~/.claude/settings.json by section 7c, a real file: a link
+    # let every local settings write dirty the deploy clone (#842)
+    user-settings/*) return 0 ;;
+    settings.json) return 0 ;;
     # Licensing
     LICENSE*) return 0 ;;
     # Test files
@@ -722,7 +726,7 @@ else
 fi
 
 # ============================================================================
-# 7c. MACHINE SETTINGS (dev-env#249)
+# 7c. MACHINE AND USER SETTINGS (dev-env#249, #842)
 # ============================================================================
 # Deploy clone only: built from an agent-writable --dev checkout, an agent could change its own sandbox.
 _ms_rel="scripts/build-machine-settings.sh"
@@ -735,10 +739,10 @@ for _tf in "${_TRACKED_FILES[@]}"; do
 done
 
 if [[ "${IS_DEPLOY_CLONE}" != true || "${DEV_MODE}" == true ]]; then
-  _skip "Not the deploy clone — machine settings not built"
+  _skip "Not the deploy clone — machine and user settings not built"
 elif ! ${_ms_tracked}; then
   # Not an error: the bats fixture copies only install.sh into a throwaway repo.
-  _skip "No tracked ${_ms_rel} — machine settings not built"
+  _skip "No tracked ${_ms_rel} — machine and user settings not built"
 elif [[ ! -x "${REPO_DIR}/${_ms_rel}" ]]; then
   _warn "Not executable: ${REPO_DIR}/${_ms_rel}"
   failures+=("machine-settings-not-executable")
@@ -753,93 +757,29 @@ else
     _err "Machine settings build failed; the previous file is unchanged"
     failures+=("machine-settings")
   fi
-fi
 
-# ============================================================================
-# 8. GIT CLEAN FILTER (iTerm2 cc-status home directory)
-# ============================================================================
-# iTerm2 rewrites settings.json's cc-status hook paths to this machine's
-# absolute home directory on every launch, which dirties the tracked file
-# differently on each host. .gitattributes maps settings.json to this filter,
-# but filter.*.clean is LOCAL config -- it does not arrive with a clone, so it
-# must be configured per machine here. Without it the filter silently no-ops
-# and the drift returns. See scripts/normalize-iterm-home.sh for the full
-# rationale.
-
-_filter_script="${REPO_DIR}/scripts/normalize-iterm-home.sh"
-
-# Already-correct config is NOT pending work: recording it in installed[] every
-# run would make `--sync --dry-run` permanently claim there are items to create
-# and never report "deployed tree already matches repo" (claude-config#344).
-_filter_current="$(git -C "${REPO_DIR}" config --get filter.iterm-home.clean 2>/dev/null || true)"
-_filter_smudge="$(git -C "${REPO_DIR}" config --get filter.iterm-home.smudge 2>/dev/null || true)"
-_filter_required="$(git -C "${REPO_DIR}" config --get filter.iterm-home.required 2>/dev/null || true)"
-_filter_ok=false
-if [[ "${_filter_current}" == "${_filter_script}" &&
-  "${_filter_smudge}" == "cat" &&
-  "${_filter_required}" == "true" ]]; then
-  _filter_ok=true
-fi
-
-if [[ ! -e "${_filter_script}" ]]; then
-  # Not an error: a checkout without the filter script simply does not use the
-  # iTerm2 normalization. Recording a failure here would make install.sh report
-  # issues on any repo that predates it (and on the bats fixture, which copies
-  # only install.sh into a throwaway repo).
-  _skip "No iTerm2 filter script — skipping git filter setup"
-elif [[ ! -x "${_filter_script}" ]]; then
-  _warn "Not executable: ${_filter_script}"
-  failures+=("filter-script-not-executable")
-elif ${_filter_ok}; then
-  _skip "git filter.iterm-home already configured"
-elif [[ "${DRY_RUN}" == true ]]; then
-  # Deliberately NOT added to would_install[]: that array is the deployed-tree
-  # symlink tally that --sync reports on, and local git config is neither a
-  # symlink nor part of the deployed tree.
-  _dry "Would configure git filter.iterm-home in ${REPO_DIR}"
-else
-  # smudge=cat: the working tree gets the committed content verbatim; iTerm2
-  # rewrites it to an absolute path on its next launch.
-  #
-  # required=true matters more than it looks. Without it a missing or broken
-  # filter script makes git print an error, exit 0 anyway, and stage the
-  # UNFILTERED content -- silently committing this machine's absolute home
-  # directory, which is the exact bug this whole mechanism exists to prevent.
-  # With it, git exits 128 and stages nothing.
-  if git -C "${REPO_DIR}" config filter.iterm-home.clean "${_filter_script}" &&
-    git -C "${REPO_DIR}" config filter.iterm-home.smudge cat &&
-    git -C "${REPO_DIR}" config filter.iterm-home.required true; then
-    _ok "Configured git filter.iterm-home"
-    installed+=("git-filter:iterm-home")
+  # A local edit is drift, kept and reported (#842). --local is explicit: the
+  # default is an unrelated file.
+  _us_out="${DEPLOY_DIR}/settings.json"
+  _us_report="${HOME}/.local/state/claude-config/user-settings.drift.diff"
+  _us_args=(--src "${REPO_DIR}/user-settings" --out "${_us_out}" --report "${_us_report}"
+    --local "${HOME}/.config/claude-code/user-settings.local.json" --host-optional)
+  if [[ "${DRY_RUN}" == true ]]; then
+    _us_args+=(--dry-run)
+  fi
+  _us_rc=0
+  "${REPO_DIR}/${_ms_rel}" "${_us_args[@]}" || _us_rc=$?
+  if [[ "${_us_rc}" -eq 0 ]]; then
+    _ok "User settings step passed"
+  elif [[ "${_us_rc}" -eq 2 ]]; then
+    _warn "Local changes in ${_us_out} kept; fold preference keys into user-settings/ and policy keys into machine-settings/ via a PR. Report: ${_us_report}"
+  elif [[ -e "${_us_out}" ]]; then
+    _err "User settings build failed; the previous ${_us_out} is unchanged"
+    failures+=("user-settings")
   else
-    _err "Failed to configure git filter.iterm-home"
-    failures+=("git-filter:iterm-home")
-  fi
-
-  # Refresh the index stat entry for settings.json. The cleaned content is a
-  # different size than the working-tree file, so git's stat-cache fast path
-  # cannot short-circuit and `git status` reports a phantom " M" with no
-  # content diff. Re-staging the (unchanged) cleaned content updates the
-  # cached stat data and clears it for good.
-  #
-  # Guarded on the phantom signature: `git status` reports the file modified
-  # while `git diff --quiet` (which runs the clean filter) says the content is
-  # unchanged. Staging unconditionally would be a surprising side effect, and
-  # staging a REAL settings.json edit would hide the user's own pending change
-  # behind an already-staged file -- so a genuine edit (diff --quiet exits 1)
-  # is deliberately left alone.
-  _settings_status=""
-  if ! _settings_status="$(git -C "${REPO_DIR}" status --porcelain settings.json 2>/dev/null)"; then
-    _settings_status=""
-  fi
-  if [[ -e "${REPO_DIR}/settings.json" ]] &&
-    [[ -n "${_settings_status}" ]] &&
-    git -C "${REPO_DIR}" diff --quiet settings.json 2>/dev/null; then
-    if git -C "${REPO_DIR}" add settings.json 2>/dev/null; then
-      _ok "Cleared phantom index stat entry for settings.json"
-    else
-      _warn "Could not refresh index stat entry for settings.json"
-    fi
+    # The first deploy's prune removed the old link before this build ran.
+    _err "User settings build failed; ${_us_out} is missing, so Claude Code starts without user settings until a build succeeds"
+    failures+=("user-settings")
   fi
 fi
 
@@ -853,59 +793,22 @@ if [[ "${DRY_RUN}" == true ]]; then
   _dry "Would run smoke tests (skipped in dry-run mode)"
 else
 
-  # Key files must be symlinks
-  for key_file in settings.json CLAUDE.md; do
-    link="${DEPLOY_DIR}/${key_file}"
-    if [[ -L "${link}" ]]; then
-      if [[ -e "${link}" ]]; then
-        _ok "Symlink resolves: ${link}"
-      else
-        _warn "Broken symlink: ${link}"
-        failures+=("broken-symlink:${key_file}")
-      fi
-    elif [[ -e "${link}" ]]; then
-      _warn "Not a symlink (expected symlink): ${link}"
-      failures+=("not-symlink:${key_file}")
+  # The key file must be a symlink. settings.json is not one: section 7c builds it (#842).
+  key_file="CLAUDE.md"
+  link="${DEPLOY_DIR}/${key_file}"
+  if [[ -L "${link}" ]]; then
+    if [[ -e "${link}" ]]; then
+      _ok "Symlink resolves: ${link}"
     else
-      _warn "Missing: ${link}"
-      failures+=("missing:${key_file}")
+      _warn "Broken symlink: ${link}"
+      failures+=("broken-symlink:${key_file}")
     fi
-  done
-
-  # The iTerm2 clean filter must be wired up AND actually normalize. Checking
-  # only that the config key exists would pass even if the script were broken,
-  # so this feeds it a known-bad sample and confirms the home directory is
-  # stripped (Chesterton's fence: a filter that silently no-ops looks exactly
-  # like a working one until settings.json drifts on another machine).
-  if [[ ! -x "${_filter_script}" ]]; then
-    _skip "No iTerm2 filter script — skipping filter behavior check"
-  elif git -C "${REPO_DIR}" config --get filter.iterm-home.clean >/dev/null 2>&1; then
-    # Both serializers must be covered: iTerm2 escapes forward slashes, Claude
-    # Code's settings writer does not. Probing only the escaped form passes
-    # while the filter is blind to everything Claude Code writes.
-    _filter_ok=1
-    for _filter_case in \
-      '"command" : "\/Users\/probeuser\/.config\/iterm2\/cc-status"|"command" : "~\/.config\/iterm2\/cc-status"' \
-      '"command": "/Users/probeuser/.config/iterm2/cc-status"|"command": "~/.config/iterm2/cc-status"'; do
-      _filter_probe="${_filter_case%%|*}"
-      _filter_want="${_filter_case##*|}"
-      _filter_got=""
-      if ! _filter_got="$(printf '%s\n' "${_filter_probe}" | "${_filter_script}")"; then
-        _filter_got="<filter failed>"
-      fi
-      if [[ "${_filter_got}" != "${_filter_want}" ]]; then
-        _filter_ok=0
-      fi
-    done
-    if [[ "${_filter_ok}" -eq 1 ]]; then
-      _ok "Git filter normalizes iTerm2 cc-status paths"
-    else
-      _warn "Git filter did not normalize as expected"
-      failures+=("git-filter-behavior")
-    fi
+  elif [[ -e "${link}" ]]; then
+    _warn "Not a symlink (expected symlink): ${link}"
+    failures+=("not-symlink:${key_file}")
   else
-    _warn "Git filter filter.iterm-home.clean is not configured"
-    failures+=("git-filter-unconfigured")
+    _warn "Missing: ${link}"
+    failures+=("missing:${key_file}")
   fi
 
   # Hook scripts must be symlinks and executable
