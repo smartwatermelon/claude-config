@@ -145,7 +145,12 @@ Algorithm (the parts the tests do not fix):
 
 1. Overlay = the parts of `jq -S` live that differ from `jq -S` `<src>/base.json`. Objects: recurse. Arrays: the overlay holds live items not in the base array (the build appends host arrays). A key that is in base but missing or changed in a way an overlay cannot express shows up in step 2.
 2. Write the overlay as `hosts/<HOST>.json` in a temp copy of `<src>`, build with `--dry-run`, and compare with live (`jq -S` equality). Mismatch → exit 3, with the diff in the notification log.
-3. Scan the overlay file with gitleaks (`gitleaks dir <file>` or the installed version's equivalent; check `gitleaks --help`). A finding, or no gitleaks binary → exit 3. Never put the scanned content in the log or notification.
+3. Check the overlay for secrets in two ways. A failure in either → exit 3: notified, no push. Never put the scanned content in the log or notification; name only the JSON path and the check that failed.
+   1. **Shape check (primary).** Gitleaks alone is not enough. On 2026-11-10, gitleaks 8.30.1 caught 2 of 8 fake secrets in `permissions.allow` rules (a `ghp_` PAT, an `sk-ant-` key). It missed `Authorization: Bearer <token>`, `sk-proj-…`, `mysql -p<password>`, `https://user:<pass>@host`, `postgresql://app:<pass>@host` and `netlify deploy --auth <token>`. "Yes, and don't ask again" saves the whole command text as a rule (Apiiro, 2026-11-05), so a secret typed into a command becomes a rule. Reject the overlay if:
+      - any new or changed `env` value exists (env is where credentials live; Andrew moves those by hand);
+      - any `permissions.allow`, `permissions.ask` or `permissions.deny` entry is neither a bare tool name (`WebFetch`) nor a prefix rule (`Tool(<prefix>:*)` or `Tool(<prefix> *)`), because an exact-command rule is the shape "don't ask again" writes;
+      - any string in the overlay holds a run of 20 or more characters from `[A-Za-z0-9+/=_-]` that is not a path segment, or `://<user>:<pass>@`, `Bearer`, `Authorization:`, `-p<non-space>`, `--auth`, `--token`, `--password`, `--secret`, or `<NAME>=<value>` where `<NAME>` contains `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `CREDENTIAL` or the word `KEY` (the name list in `scripts/hook-block-secret-leak.py`).
+   2. **Gitleaks (second check).** Scan the overlay file with gitleaks (`gitleaks dir <file>` or the installed version's equivalent; check `gitleaks --help`). A finding, or no gitleaks binary → exit 3.
 4. Scratch clone at `~/.local/state/claude-config/harvest/` (never the deploy clone, never a worktree of it). Branch `claude/harvest-settings-<host-lower>` from `origin/main`. Commit `chore(settings): fold <HOST> local settings`. Push with `--force-with-lease`; hooks off as in the deploy (`NO_HOOKS`), because the content is data and was scanned.
 5. `gh pr list --head <branch>`: none open → `gh pr create` (body: the overlay diff and "Fold into base.json in review if it applies to every Mac"); one open → the push updated it.
 
@@ -155,6 +160,9 @@ Algorithm (the parts the tests do not fix):
   - `@test "a base key removed locally is not harvestable: exit 3, notified, no push"`
   - `@test "a gitleaks finding stops the harvest: exit 3, no push, the secret is not in the log"`
   - `@test "no gitleaks binary: exit 3, no push"`
+  - `@test "the shape check stops each secret gitleaks missed: exit 3, no push, the secret is not in the log"` (one case per missed shape in step 3.1, values generated at test time, gitleaks stubbed to report nothing)
+  - `@test "a new env value stops the harvest: exit 3, no push"`
+  - `@test "an exact-command allow rule stops the harvest; a prefix rule passes"`
   - `@test "an open harvest PR is updated by push, not duplicated"` (`gh pr create` not called)
   - `@test "no open PR: gh pr create is called once with the branch"`
   - `@test "--dry-run pushes nothing and creates no PR"`
