@@ -757,19 +757,44 @@ if [[ -n "${BASE_REF}" && -n "${_protection_repo}" ]]; then
     "repos/${_protection_repo}/branches/${BASE_REF}/protection/required_status_checks" \
     2>&1) && _prot_rc=0 || _prot_rc=$?
 
+  # Classic protection never lists ruleset-required checks; read them too. A failed read fails closed.
+  _base_uri=$(jq -rn --arg b "${BASE_REF}" '$b|@uri')
+  _rules_out=$(command gh api "repos/${_protection_repo}/rules/branches/${_base_uri}" \
+    --paginate 2>/dev/null) && _rules_rc=0 || _rules_rc=$?
+  _ruleset_contexts=""
+  if [[ "${_rules_rc}" -eq 0 ]]; then
+    # --paginate prints one JSON array per page; -s gathers them.
+    _ruleset_contexts=$(jq -s -c '[.[][] | select(.type == "required_status_checks")
+      | .parameters.required_status_checks[]?.context] | unique' <<<"${_rules_out}" 2>/dev/null) ||
+      _ruleset_contexts=""
+  fi
+
+  _classic_contexts=""
   if [[ "${_prot_rc}" -eq 0 ]]; then
-    REQUIRED_CONTEXTS=$(jq -c '.contexts // []' <<<"${_prot_out}" 2>/dev/null || echo "[]")
+    _classic_contexts=$(jq -c '.contexts // []' <<<"${_prot_out}" 2>/dev/null || echo "[]")
+  elif [[ "${_prot_out}" == *"HTTP 404"* && -n "${_ruleset_contexts}" && "${_ruleset_contexts}" != "[]" ]]; then
+    # No classic protection, but a ruleset requires checks: the ruleset list is the whole set.
+    _classic_contexts="[]"
+  fi
+
+  if [[ -n "${_classic_contexts}" && -n "${_ruleset_contexts}" ]]; then
+    REQUIRED_CONTEXTS=$(jq -c -n --argjson a "${_classic_contexts}" --argjson b "${_ruleset_contexts}" \
+      '$a + $b | unique')
     REQUIRED_SET_KNOWN=true
     # Assigned separately (rather than inline in log_info) so jq's exit status
     # is not masked by the surrounding command substitution -- the form SC2312
     # asks for.
     _req_list=$(jq -r 'join(", ") | if . == "" then "(none)" else . end' <<<"${REQUIRED_CONTEXTS}")
-    log_info "Required checks on ${BASE_REF}: ${_req_list}"
+    log_info "Required checks on ${BASE_REF} (branch protection + rulesets): ${_req_list}"
+  elif [[ "${_prot_rc}" -eq 0 || "${_prot_out}" == *"HTTP 404"* ]]; then
+    # Classic read or absent: either the rules read failed, or nothing at all is required.
+    if [[ -z "${_ruleset_contexts}" ]]; then
+      log_warn "Could not read the rulesets on ${BASE_REF} — treating ALL checks as blocking"
+    else
+      log_warn "Branch ${BASE_REF} has no required status checks (HTTP 404, no ruleset checks) — treating ALL checks as blocking"
+    fi
   else
     case "${_prot_out}" in
-      *"HTTP 404"*)
-        log_warn "Branch ${BASE_REF} has no required status checks (HTTP 404) — treating ALL checks as blocking"
-        ;;
       *"HTTP 403"*)
         log_warn "No permission to read branch protection (HTTP 403) — treating ALL checks as blocking"
         log_warn "  The token needs Administration:read to distinguish required checks."
