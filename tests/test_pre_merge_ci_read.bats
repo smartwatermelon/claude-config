@@ -66,8 +66,10 @@ teardown() {
 #                      the retry returns PR JSON with no statusCheckRollup key
 #       anything else -> used verbatim as the statusCheckRollup JSON value
 #   $2  body of the required_status_checks protection endpoint, or "404"
+#   $3  body of the rules/branches endpoint (default "[]"), or "fail"
 _mock_gh() {
-  local rollup="$1" protection="$2"
+  local rollup="$1" protection="$2" rules="${3:-[]}"
+  printf '%s\n' "${rules}" >"${MOCK_DIR}/rules.json"
   printf '%s\n' "${FORBIDDEN_STDERR}" >"${MOCK_DIR}/forbidden.err"
   if [[ "${rollup}" == "forbidden" ]]; then
     printf '{%s}\n' "${PR_BASE}" >"${MOCK_DIR}/pr.json"
@@ -104,6 +106,14 @@ if [[ "\$1" == "api" && "\$2" == *"/protection/required_status_checks" ]]; then
     exit 1
   fi
   cat "${MOCK_DIR}/protection.json"
+  exit 0
+fi
+if [[ "\$1" == "api" && "\$2" == *"/rules/branches/"* ]]; then
+  if [[ "\$(cat "${MOCK_DIR}/rules.json")" == "fail" ]]; then
+    echo 'gh: Server Error (HTTP 500)' >&2
+    exit 1
+  fi
+  cat "${MOCK_DIR}/rules.json"
   exit 0
 fi
 echo "[]"
@@ -219,4 +229,50 @@ GREEN_ROLLUP='[{"__typename":"CheckRun","name":"claude-review / run-review","sta
   _mock_gh '[{"__typename":"CheckRun","name":"claude-review / run-review","status":"COMPLETED","conclusion":"SKIPPED"}]' "${REQ_ONE}"
   _run_hook
   [[ "${output}" == *"Required CI checks passed"* ]]
+}
+
+# --- Ruleset-required checks (the classic protection endpoint never lists them) ---
+
+RULES_STD='[{"type":"pull_request","parameters":{}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"standards-check / run-standards-check"}]}}]'
+STD_GREEN='{"__typename":"CheckRun","name":"standards-check / run-standards-check","status":"COMPLETED","conclusion":"SUCCESS"}'
+STD_RED='{"__typename":"CheckRun","name":"standards-check / run-standards-check","status":"COMPLETED","conclusion":"FAILURE"}'
+LINT_RED='{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"FAILURE"}'
+REVIEW_GREEN='{"__typename":"CheckRun","name":"claude-review / run-review","status":"COMPLETED","conclusion":"SUCCESS"}'
+
+@test "no classic protection (404) but a ruleset requires a green check -> CI passed" {
+  _mock_gh "[${STD_GREEN}]" 404 "${RULES_STD}"
+  _run_hook
+  [[ "${output}" == *"Required CI checks passed"* ]]
+  [[ "${output}" == *"(branch protection + rulesets): standards-check / run-standards-check"* ]]
+  grep -q -- "- standards-check / run-standards-check: COMPLETED (SUCCESS)" "${MOCK_DIR}/required.txt"
+}
+
+@test "ruleset-required check red while the classic check is green -> not passed" {
+  # Before the fix the ruleset check was filed as non-required, so this passed.
+  _mock_gh "[${REVIEW_GREEN},${STD_RED}]" "${REQ_ONE}" "${RULES_STD}"
+  _run_hook
+  _assert_not_passed
+  grep -q -- "- standards-check / run-standards-check: COMPLETED (FAILURE)" "${MOCK_DIR}/required.txt"
+}
+
+@test "classic and ruleset lists are merged, each check once" {
+  _mock_gh "[${REVIEW_GREEN},${STD_GREEN}]" '{"contexts":["claude-review / run-review","standards-check / run-standards-check"]}' "${RULES_STD}"
+  _run_hook
+  [[ "${output}" == *"Required CI checks passed"* ]]
+  [[ "$(grep -c -- "- standards-check / run-standards-check:" "${MOCK_DIR}/required.txt")" -eq 1 ]]
+}
+
+@test "rules read fails -> required set unknown, every check blocking" {
+  # lint is not required by the classic list; it blocks only when the set is unknown.
+  _mock_gh "[${REVIEW_GREEN},${LINT_RED}]" "${REQ_ONE}" fail
+  _run_hook
+  [[ "${output}" == *"Could not read the rulesets"* ]]
+  _assert_not_passed
+}
+
+@test "404 and no ruleset checks -> still fails closed, as before" {
+  _mock_gh "[${REVIEW_GREEN},${LINT_RED}]" 404 '[{"type":"deletion"}]'
+  _run_hook
+  [[ "${output}" == *"no required status checks (HTTP 404, no ruleset checks)"* ]]
+  _assert_not_passed
 }
