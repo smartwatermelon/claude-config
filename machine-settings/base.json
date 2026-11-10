@@ -215,7 +215,10 @@
     "BASH_ENV": "~/.config/bash/functions.sh",
     "CLAUDE_CODE_SHELL": "/opt/homebrew/bin/bash",
     "CLAUDE_CODE_THRIFTY_SONIC": "0",
-    "npm_config_cache": "~/.cache/npm"
+    "npm_config_cache": "~/.cache/npm",
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "include.path",
+    "GIT_CONFIG_VALUE_0": "~/.config/git/agent-identity"
   },
   "deniedMcpServers": [
     {
