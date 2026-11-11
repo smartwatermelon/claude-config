@@ -1,0 +1,124 @@
+{
+  "advisorModel": "fable",
+  "agentPushNotifEnabled": true,
+  "alwaysThinkingEnabled": false,
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
+  },
+  "autoCompactWindow": 400000,
+  "autoContinueAtUsageLimit": true,
+  "autoMode": {
+    "environment": [
+      "$defaults",
+      "### Org-wide (shared base for Andrew's machines)",
+      "**Organization**: Andrew Rich, solo developer. Primary use: software development and personal dev-infrastructure automation (git hooks, Claude Code config, CI workflows)",
+      "**GitHub owners**: `smartwatermelon` (org; public OSS by default), `twistedmelonman` (user account; public by default), `nightowlstudiollc` (org; commercial, private by default except website/client work)",
+      "**Source control / trusted repos**: any local git repo whose `origin` is on github.com under `smartwatermelon`, `twistedmelonman`, or `nightowlstudiollc`, plus that remote. These are trusted push and PR destinations. The set of repos varies by machine and over time, so trust follows the remote's owner, not a list. Repos and remotes under any other owner are outside this trust boundary",
+      "**Repository visibility**: varies per repo and changes over time; check the current repo with `gh repo view --json visibility` rather than assuming. If it cannot be checked, use the owner's default above, and treat a `nightowlstudiollc` repo as PRIVATE. A PUBLIC repo means only that repo's own work may be published there; confidential or secret material is never cleared by visibility",
+      "**Trusted internal domains**: the LAN hosts asiago.local, tilsit.local, mimolette.local, parmesan.local (Andrew's personal Macs). arich-mac.local is a COMPANY machine: read-only access only",
+      "**Secrets management**: 1Password CLI (`op read`, service account scoped to the `Automation` vault) and the macOS Keychain (`security find-generic-password`) hold API tokens. Reading a token to pass it directly to its own service (GitHub, Anthropic, ntfy.sh) is normal; writing or deleting entries is not routine. claude-wrapper loads `GH_TOKEN` and per-owner `GH_TOKEN_SWM` / `GH_TOKEN_NOS` / `GH_TOKEN_TWM` at launch. CI secrets are referenced by name only. Never print a token value",
+      "**Merge policy**: every `gh pr merge` goes through a gh wrapper that runs pre-merge-review.sh and requires CI green plus, on repos that keep it, a human-created merge-lock (`merge-lock authorize`, human-only, 30-minute TTL, blocked for agents by a PreToolUse hook). `main` is the default branch and is protected, but branch protection is NOT the review gate on these repos; the wrapper and merge-lock are",
+      "**Key internal services**: GitHub Actions (CI), Netlify (production sites), ntfy.sh (alerts)",
+      "**Internal sharing / snippet hosting**: None configured — treat public paste/gist services as outside the trust boundary",
+      "**Network posture**: None configured",
+      "**Trusted cloud buckets**: None configured",
+      "**Internal package registry**: None configured",
+      "**Data retention / declassification**: None configured",
+      "**Sensitive remote targets**: any namespace, host, or container whose name carries `prod` or `production` as a whole word or name segment",
+      "**Protected deployment namespaces / environments**: None configured — fall back to the Sensitive remote targets heuristic",
+      "**Protected IaC scopes**: IAM, RBAC, networking, quota, and node-pool resources; anything whose name or tag carries `prod` or `production` as a whole word or name segment",
+      "**Sensitive data locations & audiences**: any `.env*`, `credentials.json`, `.claude/secrets.op`, `.secrets.baseline`, `*.p8`/`*.p12`/`*.pem`, and 1Password item contents, in any repo; share only with audiences cleared at the [named+specifics] bar",
+      "### Per-repo specifics (apply only when working in that repo)",
+      "**dev-env** (smartwatermelon, PUBLIC): infrastructure docs, design plans and hook extensions for Andrew's Claude Code setup; not an application. Routine: shellcheck and the test suites under `scripts/org-migration/`, `scripts/dependabot-digest/`, `scripts/site-monitor/`. CI secrets by name only: DIGEST_APP_CLIENT_ID, DIGEST_APP_PRIVATE_KEY, NTFY_TOPIC",
+      "**kebab-tax** (nightowlstudiollc, PRIVATE): React Native/Expo mobile app plus Cloudflare Workers backend; confidential material is fine here. Deploy targets: GitHub Actions, EAS builds for iOS/Android, Cloudflare Workers `valuation-api` (production) and `valuation-api-staging`. Services: valuation-api.andrew-3c6.workers.dev (production), valuation-api-staging.andrew-3c6.workers.dev, RevenueCat, appstoreconnect.apple.com, api.cloudflare.com. Sensitive: `mobile/credentials.json`, `scripts/sync-build-host-secrets.sh`, `workers/valuation-api/tests/test-secret-validation.sh`, `docs/post-mortems/2025-12-18-missing-revenuecat-secret.md`. CI secrets by name only: CHANGELOG_PUBLISHER_PAT, CLAUDE_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, CLOUDFLARE_API_TOKEN. Routine under `.claude/`, `mobile/`, `workers/valuation-api/`: test runs, local builds, Maestro E2E",
+      "### User-specific",
+      "**Org-specific CLIs**: `op` (1Password CLI), `merge-lock` (PR merge-lock authorize/check), `gh` and `git` (both wrapped by dotfiles functions), `claude-config-deploy`"
+    ],
+    "allow": [
+      "$defaults",
+      "Merging with `gh pr merge <N> --squash --delete-branch` on a repo owned by smartwatermelon, nightowlstudiollc or twistedmelonman is allowed: a local wrapper refuses the merge unless CI is green and, where required, Andrew created a merge-lock for that PR. Does NOT cover --admin, --auto, or merges through gh api.",
+      "Commenting on, labeling, or closing GitHub issues and PRs in repos owned by smartwatermelon, nightowlstudiollc or twistedmelonman is allowed when it is part of the task the user gave; a PreToolUse hook gates commit, PR and issue text only for Beacon and third-party destinations, plus public-facing copy files. Text under these three owners is exempt unless the hook blocks.",
+      "pnpm install and pnpm build are allowed when in projects that use that tool"
+    ],
+    "soft_deny": [
+      "$defaults",
+      "Any write over ssh to arich-mac.local (company machine): read-only commands only."
+    ]
+  },
+  "editorMode": "normal",
+  "effortLevel": "medium",
+  "enabledPlugins": {
+    "apple-notes@apple-notes-mcp": false,
+    "asana@claude-plugins-official": false,
+    "cc-plugin-you-should-know@builtin": true,
+    "ci-workflows@smartwatermelon-marketplace": true,
+    "code-critic@smartwatermelon-marketplace": true,
+    "comprehensive-review@smartwatermelon-marketplace": true,
+    "context7@claude-plugins-official": true,
+    "cowork-plugin-management@synced": false,
+    "frontend-design@claude-plugins-official": false,
+    "i-have-adhd@i-have-adhd": true,
+    "personify@synced": true,
+    "react-native-3d@smartwatermelon-marketplace": false,
+    "sentry@claude-plugins-official": false,
+    "slack-by-salesforce@synced": false,
+    "slack@claude-plugins-official": false,
+    "superpowers@smartwatermelon-marketplace": true
+  },
+  "extraKnownMarketplaces": {
+    "apple-notes-mcp": {
+      "source": {
+        "repo": "sweetrb/apple-notes-mcp",
+        "source": "github"
+      }
+    },
+    "claude-plugins-official": {
+      "source": {
+        "repo": "anthropics/claude-plugins-official",
+        "source": "github"
+      }
+    },
+    "i-have-adhd": {
+      "source": {
+        "repo": "ayghri/i-have-adhd",
+        "source": "github"
+      }
+    },
+    "smartwatermelon-marketplace": {
+      "source": {
+        "source": "git",
+        "url": "https://github.com/smartwatermelon/smartwatermelon-marketplace.git"
+      }
+    }
+  },
+  "feedbackDrafts": "off",
+  "gitAttribution": true,
+  "includeCoAuthoredBy": false,
+  "inputNeededNotifEnabled": true,
+  "model": "opus[1m]",
+  "modelSettings": {
+    "claude-opus-5": {
+      "effortLevel": "medium"
+    }
+  },
+  "remoteControlAtStartup": true,
+  "skillOverrides": {
+    "docx": "off",
+    "evening-andrew": "off",
+    "morning-andrew": "off",
+    "pptx": "off",
+    "xlsx": "off"
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "statusLine": {
+    "command": "~/.claude/scripts/status-line.sh",
+    "type": "command"
+  },
+  "theme": "auto",
+  "tui": "fullscreen",
+  "useAutoModeDuringPlan": false,
+  "verbose": false,
+  "workflowKeywordTriggerEnabled": false
+}

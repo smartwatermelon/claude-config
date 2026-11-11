@@ -35,14 +35,14 @@ setup() {
   git -C "${FAKE_REPO}" config user.name "Test"
 
   cp "${BATS_TEST_DIRNAME}/../install.sh" "${FAKE_REPO}/install.sh"
-  printf '{}\n' >"${FAKE_REPO}/settings.json"
+  mkdir -p "${FAKE_REPO}/user-settings" && printf '{}\n' >"${FAKE_REPO}/user-settings/base.json"
   printf '# test\n' >"${FAKE_REPO}/CLAUDE.md"
   mkdir -p "${FAKE_REPO}/hooks"
   printf '#!/usr/bin/env bash\n' >"${FAKE_REPO}/hooks/run-review.sh"
   # Non-dry runs smoke-test hooks for the executable bit; a failure there
   # would mask the prune results as a non-zero exit.
   chmod +x "${FAKE_REPO}/hooks/run-review.sh"
-  git -C "${FAKE_REPO}" add install.sh settings.json CLAUDE.md hooks/run-review.sh
+  git -C "${FAKE_REPO}" add install.sh user-settings/base.json CLAUDE.md hooks/run-review.sh
   GIT_CONFIG_GLOBAL=/dev/null git -C "${FAKE_REPO}" commit -q -m "initial"
 
   # A skill that was deleted from the repo: its deployed directory holds only
@@ -98,7 +98,7 @@ run_install() {
 @test "sync keeps healthy links to tracked files" {
   run run_install --sync
   [ "${status}" -eq 0 ]
-  [[ -L "${DEPLOY}/settings.json" && -e "${DEPLOY}/settings.json" ]]
+  [[ -L "${DEPLOY}/CLAUDE.md" && -e "${DEPLOY}/CLAUDE.md" ]]
 }
 
 @test "sync removes a directory the prune emptied" {

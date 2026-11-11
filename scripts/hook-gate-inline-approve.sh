@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook (settings.json): a prompt `approve <code>...` approves staged gate text. Always exits 0.
+# UserPromptSubmit hook (machine-settings/base.json): a prompt `approve <code>...` approves staged gate text. Always exits 0.
 
 set -uo pipefail
 unset CDPATH

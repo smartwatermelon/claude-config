@@ -38,13 +38,13 @@ setup() {
   git -C "${FAKE_REPO}" config user.name "Test"
 
   # install.sh refuses to run unless these canary files are present, so the
-  # fixture must supply all three (settings.json, CLAUDE.md, hooks/run-review.sh).
+  # fixture must supply all three (user-settings/base.json, CLAUDE.md, hooks/run-review.sh).
   cp "${BATS_TEST_DIRNAME}/../install.sh" "${FAKE_REPO}/install.sh"
-  printf '{}\n' >"${FAKE_REPO}/settings.json"
+  mkdir -p "${FAKE_REPO}/user-settings" && printf '{}\n' >"${FAKE_REPO}/user-settings/base.json"
   printf '# test\n' >"${FAKE_REPO}/CLAUDE.md"
   mkdir -p "${FAKE_REPO}/hooks"
   printf '#!/usr/bin/env bash\n' >"${FAKE_REPO}/hooks/run-review.sh"
-  git -C "${FAKE_REPO}" add install.sh settings.json CLAUDE.md hooks/run-review.sh
+  git -C "${FAKE_REPO}" add install.sh user-settings/base.json CLAUDE.md hooks/run-review.sh
   GIT_CONFIG_GLOBAL=/dev/null git -C "${FAKE_REPO}" commit -q -m "initial"
 }
 
@@ -71,12 +71,12 @@ run_sync_dry_run() {
 @test "dry run lists the items it would create" {
   run run_sync_dry_run
   [[ "${output}" == *"Sync would create:"* ]]
-  [[ "${output}" == *"symlink:${FAKE_HOME}/.claude/settings.json"* ]]
+  [[ "${output}" == *"symlink:${FAKE_HOME}/.claude/CLAUDE.md"* ]]
 }
 
 @test "dry run makes no changes to the deploy dir" {
   run run_sync_dry_run
-  [[ ! -e "${FAKE_HOME}/.claude/settings.json" ]]
+  [[ ! -e "${FAKE_HOME}/.claude/CLAUDE.md" ]]
 }
 
 @test "dry run with nothing pending still reports the tree already matches" {

@@ -33,9 +33,12 @@ symlinks from the checkout it lives in into `~/.claude`. Repo-meta files
 (`.github/`, tests, README, etc.) are excluded.
 
 ```
-~/.local/share/claude-config/settings.json  -->  ~/.claude/settings.json  (symlink)
 ~/.local/share/claude-config/hooks/run-review.sh  -->  ~/.claude/hooks/run-review.sh  (symlink)
+~/.local/share/claude-config/user-settings/  ==>  ~/.claude/settings.json  (built, a regular file)
 ```
+
+`settings.json` is the exception: it is built, not linked (see
+[Shared vs machine settings](#shared-vs-machine-settings)).
 
 ### Deploying
 
@@ -111,7 +114,8 @@ content, so there is no pointer here to bump.
 
 Plugins are sourced from marketplaces registered in
 `~/.claude/plugins/known_marketplaces.json` and managed by Claude Code.
-Enabled state is tracked in `settings.json`.
+Enabled state is tracked in `user-settings/base.json`, which the deploy
+builds into `~/.claude/settings.json`.
 
 ### From smartwatermelon-marketplace
 
@@ -134,17 +138,17 @@ Enabled state is tracked in `settings.json`.
 
 ## Per-Machine Notes
 
-`settings.json` is shared across every machine via the symlink install, so
-plugin choices are global by default. Machines with a narrower purpose
+`user-settings/base.json` is built into `~/.claude/settings.json` on every
+machine, so plugin choices are global by default. Machines with a narrower purpose
 disable what they don't need rather than forking the config.
 
-Some extensions are off in `settings.json` and switched back on only where
+Some extensions are off in `user-settings/base.json` and switched back on only where
 they are used. Each one puts its skill list in context on every session
 (estimated from the descriptions, 2026-11-04):
 
 - `sentry@claude-plugins-official`: 8 skills, about 750 tokens.
 - `cloudflare@cloudflare`: 19 skills, about 1,050 tokens. Not in
-  `settings.json` at all; machines that use it enable it themselves.
+  `user-settings/base.json` at all; machines that use it enable it themselves.
 - `morning-andrew` and `evening-andrew` (`skillOverrides`): Beacon briefs,
   about 300 tokens together.
 
@@ -179,10 +183,33 @@ from the tracked default.
 
 ### Shared vs machine settings
 
-`~/.claude/settings.json` is a symlink into this repo, so every key in it
-ships to every machine. Settings that describe one machine go in
-`~/.config/claude-code/machine-settings.json` instead. That file is in no
-repo. A launcher passes it to Claude Code with `--settings`:
+Two files, two layers. Each build merges `base.json`, `hosts/<HOST>.json`
+and an optional local overlay that stays on the machine. The deploy clone's
+`install.sh --sync` runs both builds with the script
+`scripts/build-machine-settings.sh`.
+
+| Built file | From | Holds | Agent-writable |
+| --- | --- | --- | --- |
+| `~/.config/claude-code/machine-settings.json` | `machine-settings/` | policy: `hooks`, `env`, `deniedMcpServers`, `permissions.deny`, `permissions.ask`, `permissions.defaultMode`, `sandbox` | no |
+| `~/.claude/settings.json` | `user-settings/` | preferences: every other key, including `permissions.allow`, `enabledPlugins`, `statusLine` and `autoMode` | yes |
+
+Not yet moved: `machine-settings/hosts/` still sets per-host `enabledPlugins`
+(TILSIT, MIMOLETTE) and `skillOverrides` (ARICH-MAC).
+
+`~/.claude/settings.json` is a regular file, not a symlink into this repo
+(#842). Claude Code (`/model`, `/config`, `/permissions`) and iTerm2 write
+it. A local change is kept. The next deploy leaves the file alone, logs a
+warning, and writes a report to
+`~/.local/state/claude-config/user-settings.drift.diff`. The deploy doesn't
+fail. Fold a preference key into `user-settings/` with a PR, or a policy key
+into `machine-settings/`. The next deploy then clears the report.
+
+The user build's local overlay is
+`~/.config/claude-code/user-settings.local.json`. It isn't
+`~/.claude/settings.local.json` (see below).
+
+`machine-settings.json` is in no repo. A launcher passes it to Claude Code
+with `--settings`:
 
 - `claude-wrapper` from
   [smartwatermelon/claude-wrapper](https://github.com/smartwatermelon/claude-wrapper)
@@ -193,26 +220,37 @@ repo. A launcher passes it to Claude Code with `--settings`:
   `aliases.sh` prefers it when the full wrapper is absent. See
   `docs/plans/2026-10-20-machine-settings-launcher.md`.
 
-`lib/machine-settings.sh` adds the file only to interactive sessions, only
-when no `--settings` is already on the command line, only when you own the
-file and it is not writable by group or others, and only when `jq` reads it
-as a JSON object. Otherwise the session starts with the shared settings only.
+`lib/machine-settings.sh` adds the file only when all of these hold:
+
+- The session is interactive.
+- No `--settings` is already on the command line.
+- You own the file, and group and others can't write it.
+- `jq` reads it as a JSON object.
+
+Otherwise the session starts with the user settings only.
+
+Both files build from the deploy clone only, never from a `--dev` checkout.
+In dev mode, an edit to `machine-settings/` or `user-settings/` takes effect
+only after it merges and deploys. That includes a `hooks` entry. Edits to
+the hook scripts themselves still apply at once through the dev links.
 
 Two places look right and are not:
 
 - `~/.claude/settings.local.json` is not a user-level file. It is local
   (project) scope for `~`, so it loads only in sessions started in `~` itself.
-- `autoMode` is read only from `~/.claude/settings.json`, managed settings,
-  and `--settings`. Claude Code ignores `autoMode` in any project
-  `.claude/settings*.json`
-  ([docs](https://code.claude.com/docs/en/auto-mode-config)).
+- `autoMode` in a project `.claude/settings*.json` is ignored
+  ([docs](https://code.claude.com/docs/en/auto-mode-config)). The docs list
+  user and managed settings as its scopes, so it lives in `user-settings/`.
+  The table below shows that `--settings` entries do merge into the
+  effective `autoMode`. Whether the classifier acts on them isn't checked
+  (dev-env#236).
 
-`/auto-mode-setup` and the `/permissions` Auto mode tab write `autoMode` into
-`~/.claude/settings.json`, which is this repo. Move that block to
-`machine-settings.json` before you commit. `tests/test_settings_no_automode.bats`
-fails if `settings.json` has a top-level `autoMode`. Also, `/auto-mode-setup`
-writes `environment` without `"$defaults"`. The draft spells out the built-in
-entries as they were at setup time, so that list stops inheriting new
+The `/auto-mode-setup` command and the `/permissions` Auto mode tab write
+`autoMode` into the user file `~/.claude/settings.json` on this Mac. To keep
+the change, fold it into `user-settings/` with a PR, as for any other local
+change. Also, `/auto-mode-setup` writes
+`environment` without `"$defaults"`. The draft spells out the built-in
+entries as they were at setup time. That list then stops inheriting new
 built-in entries from later releases.
 
 How `--settings` merges with `settings.json` (measured on Claude Code
@@ -239,7 +277,7 @@ single object keys. It must be one file.
 │       ├── smartwatermelon-marketplace   # Personal marketplace
 │       ├── personify                     # Plugin marketplace
 │       └── pr-review                     # Plugin marketplace
-├── settings.json                         # enabledPlugins and hook configuration
+├── settings.json                         # built from user-settings/ (enabledPlugins and other preferences)
 │                                          # (notable keys documented in docs/INFRASTRUCTURE.md § Settings Rationale)
 ├── plugins/installed_plugins.json        # Runtime state (not tracked)
 └── plugins/known_marketplaces.json       # Runtime state (not tracked)
@@ -252,7 +290,7 @@ The following files are generated by Claude Code and are NOT tracked in git:
 - `plugins/installed_plugins.json` - Contains absolute install paths
 - `plugins/known_marketplaces.json` - Contains absolute marketplace locations
 
-These files are regenerated based on the marketplace structure and the `enabledPlugins` map in `settings.json`.
+These files are regenerated based on the marketplace structure and the `enabledPlugins` map in `~/.claude/settings.json`.
 
 ## Git Hooks
 

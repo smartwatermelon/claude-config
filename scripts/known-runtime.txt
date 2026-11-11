@@ -56,6 +56,8 @@ stats-cache.json
 blocked-commands.log
 last-review-result.log
 settings.local.json
+settings.json  # built by install.sh section 7c, not linked (#842)
+settings.json.built  # the build record beside it
 .credentials.json
 .last-cleanup
 policy-limits.json

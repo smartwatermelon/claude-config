@@ -753,6 +753,21 @@ JSON
   done
 }
 
+@test "repo sources: user-settings/ builds for every host file and with none, with no private values" {
+  local src="${BATS_TEST_DIRNAME}/../user-settings" f host
+  [[ -f "${src}/base.json" ]]
+  run grep -rqE '@gmail|/var/folders|/Users/' "${src}"
+  [ "${status}" -eq 1 ]
+  for f in "${src}"/hosts/*.json "${src}/hosts/NO-SUCH-HOST.json"; do
+    host="${f##*/}"
+    host="${host%.json}"
+    rm -f "${OUT}" "${OUT}.built"
+    MACHINE_SETTINGS_HOST="${host}" run build --src "${src}" --host-optional --local "${TEST_ROOT}/absent.json"
+    [ "${status}" -eq 0 ]
+    jq -e 'type == "object" and has("autoMode")' "${OUT}" >/dev/null
+  done
+}
+
 # --- install.sh -------------------------------------------------------------------
 
 # A minimal repo install.sh accepts, plus the build script and a source tree.
@@ -766,7 +781,7 @@ make_repo() {
   cp "${BATS_TEST_DIRNAME}/../install.sh" "${dir}/install.sh"
   cp "${SCRIPT}" "${dir}/scripts/build-machine-settings.sh"
   chmod +x "${dir}/scripts/build-machine-settings.sh"
-  printf '{}\n' >"${dir}/settings.json"
+  mkdir -p "${dir}/user-settings" && printf '{}\n' >"${dir}/user-settings/base.json"
   printf '# test\n' >"${dir}/CLAUDE.md"
   printf '#!/usr/bin/env bash\n' >"${dir}/hooks/run-review.sh"
   chmod +x "${dir}/hooks/run-review.sh"
@@ -774,7 +789,7 @@ make_repo() {
   cat >"${dir}/machine-settings/hosts/TESTHOST.json" <<'JSON'
 {"autoMode": {"allow": ["host rule"]}, "hooks": {"c": "${HOME}/h.sh"}}
 JSON
-  git -C "${dir}" add install.sh settings.json CLAUDE.md hooks/run-review.sh \
+  git -C "${dir}" add install.sh user-settings/base.json CLAUDE.md hooks/run-review.sh \
     scripts/build-machine-settings.sh machine-settings/base.json machine-settings/hosts/TESTHOST.json
   GIT_CONFIG_GLOBAL=/dev/null git -C "${dir}" commit -q -m "initial"
 }

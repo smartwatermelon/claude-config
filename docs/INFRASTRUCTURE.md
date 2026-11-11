@@ -131,7 +131,8 @@ clone dirty and stop every deploy). It backs the file up to
 `~/.claude/backups/symlink-migration/`, copies it unstaged into the working
 checkout, and relinks. It skips that copy when the working-checkout file has
 uncommitted changes or is untracked. So a live edit that replaced a link
-(Claude Code writing `settings.json`, for example) is reverted in `~/.claude`.
+(any tracked, linked file) is reverted in `~/.claude`. `settings.json` is not
+linked since #842: section 7c builds it, and keeps a local edit as drift.
 It survives as a working-checkout diff to commit or, when the copy was
 skipped, only in the backup. An edit written through the link
 lands in the clone instead; the next deploy then refuses and notifies until it
@@ -160,7 +161,8 @@ the clone, the link mode and the agent.
 
 ## Claude Code Tool Hooks
 
-Configured in `settings.json` under `hooks`. The status-line `cc-status`
+Configured in `machine-settings/base.json` (and `machine-settings/hosts/`) under
+`hooks`, built into the `--settings` file. The status-line `cc-status`
 entries are omitted here.
 
 | Event / matcher | Script |
@@ -507,7 +509,7 @@ While a reviewer runs, the hook prints one line to stderr if it has not answered
 
 ## Settings Rationale
 
-### `useAutoModeDuringPlan: false` (`settings.json:293`)
+### `useAutoModeDuringPlan: false` (`user-settings/base.json`)
 
 Disables Claude Code's auto-mode permission classifier while in Plan Mode. Auto mode
 normally lets a heuristic classifier silently approve Bash commands it judges
