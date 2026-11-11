@@ -327,6 +327,12 @@ if [[ ! -d "${WORK}/.git" ]]; then
 fi
 origin="$(_git -C "${WORK}" remote get-url origin)" || origin=""
 [[ "${origin}" == "${URL}" ]] || _fail "the scratch clone's origin is '${origin}', not ${URL}"
+# The push URLs too, after any pushurl or pushInsteadOf in the clone's own config (as git-wrapper.sh checks).
+push_urls="$(_git -C "${WORK}" remote get-url --push --all origin)" || push_urls=""
+[[ -n "${push_urls}" ]] || _fail "cannot read the scratch clone's push URL"
+while IFS= read -r u; do
+  [[ "${u}" == "${URL}" ]] || _fail "the scratch clone pushes to '${u}', not ${URL}"
+done <<<"${push_urls}"
 _bounded "${TIMEOUT}" _git -C "${WORK}" fetch --quiet --prune origin || _fail "cannot fetch ${URL}"
 _git -C "${WORK}" checkout --quiet --force -B "${BRANCH}" refs/remotes/origin/main ||
   _fail "cannot check out ${BRANCH} from origin/main"
@@ -352,8 +358,10 @@ if _git -C "${WORK}" rev-parse --verify --quiet "${remote_ref}" >/dev/null &&
   _git -C "${WORK}" diff --cached --quiet "${remote_ref}" -- "${HOST_REL}"; then
   _log "${BRANCH} already has this ${HOST_REL}; not pushed again"
 else
-  _git -C "${WORK}" -c "user.name=${BOT_NAME}" -c "user.email=${BOT_EMAIL}" -c commit.gpgSign=false \
-    commit --quiet -m "${TITLE}" || _fail "cannot commit in ${WORK}"
+  # GIT_AUTHOR_* and GIT_COMMITTER_* outrank user.name, and a caller may have set them: set all four.
+  GIT_AUTHOR_NAME="${BOT_NAME}" GIT_AUTHOR_EMAIL="${BOT_EMAIL}" GIT_COMMITTER_NAME="${BOT_NAME}" \
+    GIT_COMMITTER_EMAIL="${BOT_EMAIL}" _git -C "${WORK}" -c "user.name=${BOT_NAME}" -c "user.email=${BOT_EMAIL}" \
+    -c commit.gpgSign=false commit --quiet -m "${TITLE}" || _fail "cannot commit in ${WORK}"
   # The App credential helper, as git-wrapper.sh sets it: only it can answer for github.com.
   helper="!$(printf '%q' "${BASH}") $(printf '%q' "${TOKEN_BIN}") git-credential $(printf '%q' "${item}")"
   _bounded "${TIMEOUT}" _git -C "${WORK}" -c credential.helper= -c "credential.helper=${helper}" \

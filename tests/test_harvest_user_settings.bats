@@ -82,7 +82,9 @@ make_stubs() {
 #!/usr/bin/env bash
 printf 'git %s\n' "$*" >>"${TEST_ROOT}/git.log"
 printf 'env GIT_CONFIG_GLOBAL=%s GIT_CONFIG_NOSYSTEM=%s\n' "${GIT_CONFIG_GLOBAL:-}" "${GIT_CONFIG_NOSYSTEM:-}" >>"${TEST_ROOT}/git.log"
-sub="" last="" branch_ref=false
+printf 'ident author=%s <%s> committer=%s <%s>\n' "${GIT_AUTHOR_NAME:-}" "${GIT_AUTHOR_EMAIL:-}" \
+  "${GIT_COMMITTER_NAME:-}" "${GIT_COMMITTER_EMAIL:-}" >>"${TEST_ROOT}/git.log"
+all=" $* " sub="" last="" branch_ref=false
 while (($# > 0)); do
   case "$1" in
     -C | -c) shift 2; continue ;;
@@ -95,7 +97,11 @@ while (($# > 0)); do
 done
 case "${sub}" in
   clone) mkdir -p "${last}/.git" "${last}/user-settings/hosts" ;;
-  remote) printf '%s\n' "${STUB_GIT_ORIGIN:-https://github.com/smartwatermelon/claude-config.git}" ;;
+  remote)
+    url="${STUB_GIT_ORIGIN:-https://github.com/smartwatermelon/claude-config.git}"
+    [[ "${all}" == *" --push "* ]] && url="${STUB_GIT_PUSHURL:-${url}}"
+    printf '%s\n' "${url}"
+    ;;
   # The harvest branch on origin: absent unless STUB_GIT_BRANCH_SAME=1, then it has the same host file.
   rev-parse) ${branch_ref} && [[ -z "${STUB_GIT_BRANCH_SAME:-}" ]] && exit 1 ;;
   diff)
@@ -384,11 +390,15 @@ JSON
 
 @test "git runs without global config, as the App bot, over the App credential helper" {
   make_live '.model = "sonnet"'
-  run harvest
+  # A caller's identity env (claude-wrapper sets one) must not reach the commit.
+  GIT_AUTHOR_NAME=Someone GIT_AUTHOR_EMAIL=someone@example.com GIT_COMMITTER_NAME=Someone \
+    GIT_COMMITTER_EMAIL=someone@example.com run harvest
   [ "${status}" -eq 0 ]
   lacks '^env GIT_CONFIG_GLOBAL= ' "${TEST_ROOT}/git.log"
   grep -q '^env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1' "${TEST_ROOT}/git.log"
   grep -q 'user.name=smartwatermelon-agent\[bot\] .*commit' "${TEST_ROOT}/git.log"
+  grep -A2 'commit --quiet' "${TEST_ROOT}/git.log" | grep -q \
+    '^ident author=smartwatermelon-agent\[bot\] <345515361+smartwatermelon-agent\[bot\]@users.noreply.github.com> committer=smartwatermelon-agent\[bot\] <'
   grep -q 'credential.helper=!.* git-credential .*push --force-with-lease' "${TEST_ROOT}/git.log"
   grep -q "push --force-with-lease .*origin HEAD:refs/heads/${BRANCH}" "${TEST_ROOT}/git.log"
   grep -q '^env GH_TOKEN=app' "${TEST_ROOT}/gh.log"
@@ -408,6 +418,23 @@ JSON
   [ "${status}" -eq 1 ]
   not_pushed
   [ "$(gh_calls create)" -eq 0 ]
+}
+
+@test "a push URL that is not the https URL is refused: exit 1, no push" {
+  make_live '.model = "sonnet"'
+  STUB_GIT_PUSHURL="git@github.com:${REPO}.git" run harvest
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *"pushes to"* ]]
+  not_pushed
+}
+
+@test "known limit: with local-file array items, a new rule in that array cannot be harvested" {
+  printf '{"permissions": {"allow": ["Bash(local:*)"]}}\n' >"${LOCAL}"
+  make_live '.permissions.allow += ["Bash(git status:*)"]'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"permissions"* ]]
+  not_pushed
 }
 
 @test "a failed push: exit 1, no PR" {
