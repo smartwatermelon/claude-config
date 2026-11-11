@@ -82,18 +82,26 @@ make_stubs() {
 #!/usr/bin/env bash
 printf 'git %s\n' "$*" >>"${TEST_ROOT}/git.log"
 printf 'env GIT_CONFIG_GLOBAL=%s GIT_CONFIG_NOSYSTEM=%s\n' "${GIT_CONFIG_GLOBAL:-}" "${GIT_CONFIG_NOSYSTEM:-}" >>"${TEST_ROOT}/git.log"
-sub="" last=""
+sub="" last="" branch_ref=false
 while (($# > 0)); do
   case "$1" in
     -C | -c) shift 2; continue ;;
-    *) [[ -z "${sub}" ]] && sub="$1"; last="$1" ;;
+    refs/remotes/origin/claude/*) branch_ref=true ;;
+    *) ;;
   esac
+  [[ -z "${sub}" ]] && sub="$1"
+  last="$1"
   shift
 done
 case "${sub}" in
   clone) mkdir -p "${last}/.git" "${last}/user-settings/hosts" ;;
   remote) printf '%s\n' "${STUB_GIT_ORIGIN:-https://github.com/smartwatermelon/claude-config.git}" ;;
-  diff) exit "${STUB_GIT_DIFF_RC:-1}" ;;
+  # The harvest branch on origin: absent unless STUB_GIT_BRANCH_SAME=1, then it has the same host file.
+  rev-parse) ${branch_ref} && [[ -z "${STUB_GIT_BRANCH_SAME:-}" ]] && exit 1 ;;
+  diff)
+    ${branch_ref} && exit 0
+    exit "${STUB_GIT_DIFF_RC:-1}"
+    ;;
   push) exit "${STUB_GIT_PUSH_RC:-0}" ;;
   *) ;;
 esac
@@ -419,6 +427,23 @@ JSON
   pushed
   [ "$(gh_calls list)" -eq 1 ]
   [ "$(gh_calls create)" -eq 0 ]
+}
+
+@test "the branch already has this host file: no new push; an open PR is left as is" {
+  make_live '.model = "sonnet"'
+  STUB_GIT_BRANCH_SAME=1 STUB_GH_OPEN="https://github.com/${REPO}/pull/5" run harvest
+  [ "${status}" -eq 0 ]
+  not_pushed
+  lacks ' commit ' "${TEST_ROOT}/git.log"
+  [ "$(gh_calls create)" -eq 0 ]
+}
+
+@test "the branch has this host file but no PR is open: a PR is opened, nothing pushed" {
+  make_live '.model = "sonnet"'
+  STUB_GIT_BRANCH_SAME=1 run harvest
+  [ "${status}" -eq 0 ]
+  not_pushed
+  [ "$(gh_calls create)" -eq 1 ]
 }
 
 @test "no open PR: gh pr create is called once with the branch" {

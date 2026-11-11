@@ -346,15 +346,21 @@ if _git -C "${WORK}" diff --cached --quiet; then
   exit 0
 fi
 TITLE="chore(settings): fold ${HOST} local settings"
-_git -C "${WORK}" -c "user.name=${BOT_NAME}" -c "user.email=${BOT_EMAIL}" -c commit.gpgSign=false \
-  commit --quiet -m "${TITLE}" || _fail "cannot commit in ${WORK}"
-
-# The App credential helper, as git-wrapper.sh sets it: only it can answer for github.com.
-helper="!$(printf '%q' "${BASH}") $(printf '%q' "${TOKEN_BIN}") git-credential $(printf '%q' "${item}")"
-_bounded "${TIMEOUT}" _git -C "${WORK}" -c credential.helper= -c "credential.helper=${helper}" \
-  -c credential.useHttpPath=true -c core.askPass= \
-  push --force-with-lease --quiet origin "HEAD:refs/heads/${BRANCH}" || _fail "cannot push ${BRANCH} as the App"
-_log "pushed ${BRANCH} as the agent App"
+# The branch already carries this file: a new push would only re-run CI on the open PR.
+remote_ref="refs/remotes/origin/${BRANCH}"
+if _git -C "${WORK}" rev-parse --verify --quiet "${remote_ref}" >/dev/null &&
+  _git -C "${WORK}" diff --cached --quiet "${remote_ref}" -- "${HOST_REL}"; then
+  _log "${BRANCH} already has this ${HOST_REL}; not pushed again"
+else
+  _git -C "${WORK}" -c "user.name=${BOT_NAME}" -c "user.email=${BOT_EMAIL}" -c commit.gpgSign=false \
+    commit --quiet -m "${TITLE}" || _fail "cannot commit in ${WORK}"
+  # The App credential helper, as git-wrapper.sh sets it: only it can answer for github.com.
+  helper="!$(printf '%q' "${BASH}") $(printf '%q' "${TOKEN_BIN}") git-credential $(printf '%q' "${item}")"
+  _bounded "${TIMEOUT}" _git -C "${WORK}" -c credential.helper= -c "credential.helper=${helper}" \
+    -c credential.useHttpPath=true -c core.askPass= \
+    push --force-with-lease --quiet origin "HEAD:refs/heads/${BRANCH}" || _fail "cannot push ${BRANCH} as the App"
+  _log "pushed ${BRANCH} as the agent App"
+fi
 
 # ── PR: the token goes to gh in the environment only ──
 token="$(_bounded "${TIMEOUT}" bash "${TOKEN_BIN}" --item "${item}" "${REPO%%/*}" 2>/dev/null)" || token=""
