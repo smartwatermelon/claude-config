@@ -10,6 +10,18 @@
         "~/.dotfiles",
         "${GDRIVE_HANDOFF}"
       ]
-    }
+    },
+    "excludedCommands": [
+      "${HOME}/Library/Android/sdk/emulator/emulator *",
+      "adb *",
+      "emulator *",
+      "maestro *",
+      "npm run android:emulator*",
+      "npm run ios:simulator*",
+      "npm run test:e2e:android*",
+      "npm run test:e2e:ios*",
+      "open -a Simulator*",
+      "xcrun simctl *"
+    ]
   }
 }
