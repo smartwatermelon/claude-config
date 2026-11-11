@@ -81,7 +81,8 @@ make_stubs() {
   cat >"${TEST_ROOT}/bin/git" <<'STUB'
 #!/usr/bin/env bash
 printf 'git %s\n' "$*" >>"${TEST_ROOT}/git.log"
-printf 'env GIT_CONFIG_GLOBAL=%s GIT_CONFIG_NOSYSTEM=%s\n' "${GIT_CONFIG_GLOBAL:-}" "${GIT_CONFIG_NOSYSTEM:-}" >>"${TEST_ROOT}/git.log"
+printf 'env GIT_CONFIG_GLOBAL=%s GIT_CONFIG_NOSYSTEM=%s GIT_DIR=%s GIT_WORK_TREE=%s\n' "${GIT_CONFIG_GLOBAL:-}" \
+  "${GIT_CONFIG_NOSYSTEM:-}" "${GIT_DIR:-}" "${GIT_WORK_TREE:-}" >>"${TEST_ROOT}/git.log"
 printf 'ident author=%s <%s> committer=%s <%s>\n' "${GIT_AUTHOR_NAME:-}" "${GIT_AUTHOR_EMAIL:-}" \
   "${GIT_COMMITTER_NAME:-}" "${GIT_COMMITTER_EMAIL:-}" >>"${TEST_ROOT}/git.log"
 all=" $* " sub="" last="" branch_ref=false
@@ -392,10 +393,12 @@ JSON
   make_live '.model = "sonnet"'
   # A caller's identity env (claude-wrapper sets one) must not reach the commit.
   GIT_AUTHOR_NAME=Someone GIT_AUTHOR_EMAIL=someone@example.com GIT_COMMITTER_NAME=Someone \
-    GIT_COMMITTER_EMAIL=someone@example.com run harvest
+    GIT_COMMITTER_EMAIL=someone@example.com GIT_DIR="${TEST_ROOT}/other/.git" \
+    GIT_WORK_TREE="${TEST_ROOT}/other" run harvest
   [ "${status}" -eq 0 ]
   lacks '^env GIT_CONFIG_GLOBAL= ' "${TEST_ROOT}/git.log"
-  grep -q '^env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1' "${TEST_ROOT}/git.log"
+  grep -q '^env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_DIR= GIT_WORK_TREE=$' "${TEST_ROOT}/git.log"
+  lacks 'GIT_DIR=/' "${TEST_ROOT}/git.log"
   grep -q 'user.name=smartwatermelon-agent\[bot\] .*commit' "${TEST_ROOT}/git.log"
   grep -A2 'commit --quiet' "${TEST_ROOT}/git.log" | grep -q \
     '^ident author=smartwatermelon-agent\[bot\] <345515361+smartwatermelon-agent\[bot\]@users.noreply.github.com> committer=smartwatermelon-agent\[bot\] <'

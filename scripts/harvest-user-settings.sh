@@ -2,6 +2,8 @@
 # Folds local edits to ~/.claude/settings.json into a PR as the agent GitHub App (#842). See --help.
 set -euo pipefail
 unset CDPATH
+# An inherited repo location would beat `git -C` and point every git call at another repo.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
