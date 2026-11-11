@@ -175,11 +175,9 @@ expected_user() {
   [ "$(cat "${DEPLOY}/settings.local.json")" = '{"stray": true}' ]
 }
 
-@test "the ~/.claude audit and prune leave settings.json.built and .bak-*-pre-build alone" {
+# The ~/.claude audit is not run here: no suite but the exempt one may (#732, test_ci_tests_scope.bats). It only warns.
+@test "sync, prune and repair leave settings.json.built and .bak-*-pre-build alone" {
   make_repo "${CLONE}"
-  mkdir -p "${CLONE}/scripts"
-  cp "${ROOT}/scripts/known-runtime.txt" "${CLONE}/scripts/known-runtime.txt"
-  commit_all "${CLONE}" "known-runtime"
   printf '{"a": 1}\n' >"${TEST_ROOT}/target.json"
   ln -s "${TEST_ROOT}/target.json" "${OUT}"
   run run_install "${CLONE}" --sync
@@ -191,16 +189,6 @@ expected_user() {
   [ "${status}" -eq 0 ]
   run run_install "${CLONE}" --repair
   [ "${status}" -eq 0 ]
-  HOME="${FAKE_HOME}" run bash "${ROOT}/scripts/update-tools.sh"
-  [ "${status}" -eq 0 ]
-  # The audit lists each unknown entry as "  <path>" at the end of a line.
-  local line
-  while IFS= read -r line; do
-    [[ "${line}" != *"  ${OUT}" && "${line}" != *"  ${OUT}.built" ]] || {
-      echo "audit flags: ${line}" >&2
-      return 1
-    }
-  done <<<"${output}"
   [[ -f "${OUT}" && ! -L "${OUT}" && -f "${OUT}.built" && -f "${bak}" ]]
 }
 
