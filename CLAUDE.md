@@ -393,6 +393,7 @@ A denial from the auto-mode classifier ("Permission for this action was denied b
 ## Project Integration
 
 - Find similar features/components before building new ones
+- **Start every design question with "how does the rest of the world do this?"** Search for proven prior art (a standard tool, a documented pattern, a well-known project) before you invent a new mechanism. Improve on it where needed; say why when you depart from it.
 - Follow existing patterns, libraries, and test conventions
 - Use the project's existing build system, test framework, formatter/linter
 - Don't introduce new tools without strong justification
