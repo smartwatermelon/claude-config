@@ -18,7 +18,7 @@ bt=$(printf '\140')
 sq=$(printf '\047')
 _aval="([^[:space:]\"${sq}]|\"[^\"]*\"|${sq}[^${sq}]*${sq})*"
 _sep="(^|&&|\\|\\||;|\\||&|\\(|\\{|${bt}|[[:space:]]then|[[:space:]]do)"
-_wrap="((env|export|command|sudo)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)*"
+_wrap="((env|export|command|sudo|!)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)*"
 _skip_re="${_sep}[[:space:]]*${_wrap}([A-Za-z_][A-Za-z0-9_]*=${_aval}[[:space:]]+)*SKIP="
 # Same subcommand-position shape as hook-block-main-commit.sh's commit_re.
 _optval="(\"[^\"]*\"[[:space:]]+|${sq}[^${sq}]*${sq}[[:space:]]+|[^-][^|;&${bt}[:space:]]*[[:space:]]+)?"

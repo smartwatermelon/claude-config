@@ -58,6 +58,7 @@ check "empty SKIP value" 2 'SKIP= git commit -m t'
 check "quoted zizmor with a gate" 2 'SKIP="zizmor,length-caps" git commit -m t'
 check "export zizmor, then a gate inline" 2 'export SKIP=zizmor && SKIP=length-caps git commit -m t'
 check "gate hidden behind a quoted SKIP=zizmor" 2 'SKIP=length-caps,"SKIP=zizmor" git commit -m t'
+check "lone ! SKIP= gate" 2 '! SKIP=length-caps git commit -m t'
 check "gate after ! with zizmor first" 2 'SKIP=zizmor git commit -m a && ! SKIP=length-caps git commit -m b'
 check "SKIP= in a message beside zizmor" 2 'SKIP=zizmor git commit -m "about SKIP=x"'
 
