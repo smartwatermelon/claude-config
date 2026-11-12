@@ -381,6 +381,30 @@ JSON
   [ -s "${TEST_ROOT}/notify.log" ]
 }
 
+@test "no Keychain item but a key file: the harvest mints through the helper" {
+  make_live '.model = "sonnet"'
+  mkdir -p "${FAKE_HOME}/.config/gh-app-keys"
+  key="${FAKE_HOME}/.config/gh-app-keys/smartwatermelon-agent app.pem"
+  printf -- '-----BEGIN PRIVATE KEY-----\nstub\n-----END PRIVATE KEY-----\n' >"${key}"
+  chmod 600 "${key}"
+  STUB_KEYCHAIN_RC=44 run harvest
+  [ "${status}" -eq 0 ]
+  grep -q '^token ensure' "${TEST_ROOT}/token.log"
+  pushed
+}
+
+@test "a key file that is a symlink does not count: exit 3, nothing minted" {
+  make_live '.model = "sonnet"'
+  mkdir -p "${FAKE_HOME}/.config/gh-app-keys"
+  printf 'x\n' >"${TEST_ROOT}/elsewhere.pem"
+  ln -s "${TEST_ROOT}/elsewhere.pem" "${FAKE_HOME}/.config/gh-app-keys/smartwatermelon-agent app.pem"
+  STUB_KEYCHAIN_RC=44 run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"no key file"* ]]
+  lacks '^token ensure' "${TEST_ROOT}/token.log"
+  not_pushed
+}
+
 @test "a mint that hangs is stopped by the timeout: exit 3, no push" {
   make_live '.model = "sonnet"'
   STUB_MINT_SLEEP=20 HARVEST_TIMEOUT=1 run harvest
