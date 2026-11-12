@@ -314,7 +314,7 @@ acct="$(id -un)" || _fail "cannot read the user name"
 key_file="${GH_APP_KEY_DIR:-${HOME}/.config/gh-app-keys}/${svc}.pem"
 # Metadata only (no -w): this never decrypts the key, so it cannot prompt.
 if ! _bounded "${TIMEOUT}" "${SECURITY_BIN}" find-generic-password -s "${svc}" -a "${acct}" >/dev/null 2>&1 \
-  && ! [[ -f "${key_file}" && ! -L "${key_file}" ]]; then
+  && ! [[ -f "${key_file}" && -r "${key_file}" && ! -L "${key_file}" ]]; then
   _refuse "no App credential: no login Keychain item '${svc}' and no key file ${key_file} (the 1Password fallback can prompt)"
 fi
 if ! _bounded "${TIMEOUT}" bash "${TOKEN_BIN}" ensure "${item}" >/dev/null 2>&1; then
