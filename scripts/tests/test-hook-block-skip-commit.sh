@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests that hook-block-no-verify.sh blocks pre-commit's SKIP= bypass (#650).
+# Tests that hook-block-no-verify.sh blocks pre-commit's SKIP= bypass (#650),
+# except for allowlisted lint hooks (zizmor).
 # Only the matcher runs; no listed command is ever executed.
 
 set -euo pipefail
@@ -44,6 +45,21 @@ check "quoted other value before SKIP" 2 'FOO="a b" SKIP=x git commit -m t'
 check "SKIP after && separator" 2 'git add f && SKIP=x git commit -m t'
 check "SKIP with pre-commit run" 2 'SKIP=x pre-commit run --all-files'
 check "env SKIP with pre-commit run" 2 'env SKIP=x pre-commit run'
+check "gate hook length-caps" 2 'SKIP=length-caps git commit -m t'
+check "zizmor plus a gate" 2 'SKIP=zizmor,length-caps git commit -m t'
+check "gate plus zizmor" 2 'SKIP=length-caps,zizmor git commit -m t'
+check "zizmor then a gate on a second commit" 2 'SKIP=zizmor git commit -m a && SKIP=length-caps git commit -m b'
+check "later SKIP= overrides zizmor" 2 'SKIP=zizmor SKIP=length-caps git commit -m t'
+check "zizmor prefix match" 2 'SKIP=zizmorx git commit -m t'
+dollar='$'
+check "variable SKIP value" 2 "SKIP=${dollar}HOOKS git commit -m t"
+check "command-substituted SKIP value" 2 "SKIP=\"${dollar}(echo zizmor)\" git commit -m t"
+check "empty SKIP value" 2 'SKIP= git commit -m t'
+check "quoted zizmor with a gate" 2 'SKIP="zizmor,length-caps" git commit -m t'
+check "export zizmor, then a gate inline" 2 'export SKIP=zizmor && SKIP=length-caps git commit -m t'
+check "gate hidden behind a quoted SKIP=zizmor" 2 'SKIP=length-caps,"SKIP=zizmor" git commit -m t'
+check "gate after ! with zizmor first" 2 'SKIP=zizmor git commit -m a && ! SKIP=length-caps git commit -m b'
+check "SKIP= in a message beside zizmor" 2 'SKIP=zizmor git commit -m "about SKIP=x"'
 
 echo "--- MUST NOT BLOCK ---"
 check "plain git commit" 0 'git commit -m t'
@@ -52,6 +68,17 @@ check "message containing SKIP=" 0 'git commit -m "docs: explain SKIP=length-cap
 check "SKIP= with no commit on the line" 0 'SKIP=x echo hi'
 check "SKIP-like variable name" 0 'MYSKIP=x git commit -m t'
 check "pre-commit run without SKIP" 0 'pre-commit run --all-files'
+check "allowlisted SKIP=zizmor" 0 'SKIP=zizmor git commit -m t'
+check "allowlisted, quoted" 0 'SKIP="zizmor" git commit -m t'
+check "allowlisted, single-quoted" 0 "SKIP='zizmor' git commit -m t"
+check "allowlisted with git -C" 0 'SKIP=zizmor git -C /some/dir commit -F /tmp/m'
+check "allowlisted after env" 0 'env SKIP=zizmor git commit -m t'
+check "allowlisted export then commit" 0 'export SKIP=zizmor && git commit -m t'
+check "allowlisted on two commits" 0 'SKIP=zizmor git commit -m a && git add f && SKIP=zizmor git commit -m b'
+check "later zizmor overrides a gate" 0 'SKIP=length-caps SKIP=zizmor git commit -m t'
+check "trailing comma adds no hook" 0 'SKIP=zizmor, git commit -m t'
+check "allowlisted after assignments and ;" 0 "W=/r; A=/a; SKIP=zizmor git -C \"${dollar}W\" commit -F \"${dollar}A/m\" && git -C \"${dollar}W\" add f && SKIP=zizmor git -C \"${dollar}W\" commit -F \"${dollar}A/n\""
+check "allowlisted with pre-commit run" 0 'SKIP=zizmor pre-commit run --all-files'
 
 echo
 echo "Passed: ${pass}  Failed: ${fail}"
