@@ -397,6 +397,7 @@ A denial from the auto-mode classifier ("Permission for this action was denied b
 - Use the project's existing build system, test framework, formatter/linter
 - Don't introduce new tools without strong justification
 - Text files end with newline
+- **Find a local clone by its `origin` URL, not by its path.** Clones are flat at `~/Developer/<dir>`, and `<dir>` is usually the repo name, but not always. The org `.github` repos are `~/Developer/smartwatermelon.github` and `~/Developer/nightowlstudiollc.github`. `~/Developer/.github` is not a clone. Before cloning, run `git -C <dir> remote get-url origin` on each `~/Developer/*` entry. Clone only when no entry matches. Never clone a second copy under a made-up name such as `<owner>-<name>`. Every agent brief that names a clone path states this rule. **Why:** on 2026-11-06 a rollout brief said "use `~/Developer/<name>`; if that is taken, clone to `~/Developer/<owner>-<name>`". For `.github` that rule missed the real clones and created `smartwatermelon-.github` and `nightowlstudiollc-.github`.
 
 ### Repository Layout
 
