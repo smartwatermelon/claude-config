@@ -3,6 +3,8 @@
     "defaultMode": "auto",
     "deny": [
       "Edit(~/.config/claude-code/**)",
+      "Read(~/.config/gh-app-keys/**)",
+      "Edit(~/.config/gh-app-keys/**)",
       "Bash(gh repo delete *)",
       "Bash(gh secret delete *)",
       "Bash(gh auth logout *)",
@@ -44,6 +46,7 @@
       "scp *"
     ],
     "filesystem": {
+      "denyRead": ["~/.config/gh-app-keys"],
       "allowWrite": [
         "~/Developer",
         "~/.local/state",

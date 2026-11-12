@@ -49,9 +49,10 @@ after a deploy that left a user-settings drift report.
      scratch clone (~/.local/state/claude-config/harvest), as the agent
      GitHub App, then open a PR or let the push update the open one.
 
-The App key comes from the login Keychain through
-~/.config/bash/gh-app-token.sh. With no Keychain item the harvest stops:
-the helper's 1Password fallback can prompt, and nobody is there to answer.
+The App key comes from the login Keychain, or from the key file
+~/.config/gh-app-keys/<service>.pem (GH_APP_KEY_DIR moves it), through
+~/.config/bash/gh-app-token.sh. With neither the harvest stops: the
+helper's 1Password fallback can prompt, and nobody is there to answer.
 
   --local <file>  local overlay that stays on this Mac (default:
                   ~/.config/claude-code/user-settings.local.json)
@@ -303,15 +304,18 @@ if ${DRY_RUN}; then
   exit 0
 fi
 
-# ── 5. Credential: the agent App, from the Keychain only ──
+# ── 5. Credential: the agent App, from the Keychain or the helper's key file, never 1Password ──
 item="$(bash "${TOKEN_BIN}" route "${REPO}" 2>/dev/null)" || item=""
 [[ "${item}" == op://* ]] || _refuse "no App credential: ${REPO} has no route in gh-app-routes.conf"
 svc="${item#op://}"
 svc="${svc#*/}"
 acct="$(id -un)" || _fail "cannot read the user name"
+# The helper's key file, for a cron host with no unlocked Keychain. The helper checks it is safe.
+key_file="${GH_APP_KEY_DIR:-${HOME}/.config/gh-app-keys}/${svc}.pem"
 # Metadata only (no -w): this never decrypts the key, so it cannot prompt.
-if ! _bounded "${TIMEOUT}" "${SECURITY_BIN}" find-generic-password -s "${svc}" -a "${acct}" >/dev/null 2>&1; then
-  _refuse "no App credential: no login Keychain item '${svc}' (the 1Password fallback can prompt)"
+if ! _bounded "${TIMEOUT}" "${SECURITY_BIN}" find-generic-password -s "${svc}" -a "${acct}" >/dev/null 2>&1 \
+  && ! [[ -f "${key_file}" && -r "${key_file}" && ! -L "${key_file}" ]]; then
+  _refuse "no App credential: no login Keychain item '${svc}' and no key file ${key_file} (the 1Password fallback can prompt)"
 fi
 if ! _bounded "${TIMEOUT}" bash "${TOKEN_BIN}" ensure "${item}" >/dev/null 2>&1; then
   _refuse "no App credential: the App token could not be minted unattended"
