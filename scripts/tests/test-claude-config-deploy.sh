@@ -108,7 +108,14 @@ EOF
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${STUB_NOTIFY_LOG}"
 EOF
-  chmod +x "${T}/bin/launchctl" "${T}/bin/osascript" "${T}/bin/crontab"
+  # The settings harvest (#842): records its arguments, exits STUB_HARVEST_RC.
+  cat >"${T}/bin/harvest" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${STUB_HARVEST_LOG}"
+echo "harvest: stub ran"
+exit "${STUB_HARVEST_RC:-0}"
+EOF
+  chmod +x "${T}/bin/launchctl" "${T}/bin/osascript" "${T}/bin/crontab" "${T}/bin/harvest"
 
   export STUB_INSTALL_LOG="${T}/install.log" STUB_LAUNCHCTL_LOG="${T}/launchctl.log"
   export STUB_NOTIFY_LOG="${T}/notify.log"
@@ -117,6 +124,9 @@ EOF
   export CLAUDE_CONFIG_LAUNCHCTL_BIN="${T}/bin/launchctl"
   export CLAUDE_CONFIG_OSASCRIPT_BIN="${T}/bin/osascript"
   export CLAUDE_CONFIG_CRONTAB_BIN="${T}/bin/crontab"
+  export STUB_HARVEST_LOG="${T}/harvest.log" CLAUDE_CONFIG_HARVEST_BIN="${T}/bin/harvest"
+  : >"${STUB_HARVEST_LOG}"
+  unset STUB_HARVEST_RC
   unset STUB_INSTALL_RC STUB_LOADED_RC STUB_GUI_RC STUB_BOOTOUT_RC STUB_CRONTAB_L_FAIL CLAUDE_CONFIG_SCHEDULER
   unset CLAUDE_CONFIG_DEV_TTL_HOURS CLAUDE_CONFIG_MV_BIN
   touch "${STUB_INSTALL_LOG}" "${STUB_LAUNCHCTL_LOG}" "${STUB_NOTIFY_LOG}" "${STUB_CRONTAB_LOG}"
@@ -328,6 +338,63 @@ check "stamp mv fails: deploy still exit 0" test "${rc}" -eq 0
 check "stamp mv fails: no stamp" test ! -e "${OKF}"
 check "stamp mv fails: temp file removed" no_stamp_tmp
 check "stamp mv fails: logged" grep -q "could not write" "${LOG}"
+
+# --- settings harvest (#842) ---------------------------------------------------
+drift_report() {
+  local drift="${HOME}/.local/state/claude-config/user-settings.drift.diff"
+  mkdir -p "${drift%/*}"
+  printf '# drift\n' >"${drift}"
+}
+
+fresh
+make_clone
+run_deploy deploy
+check_eq "no drift report: harvest not run" 0 lines "${STUB_HARVEST_LOG}"
+
+fresh
+make_clone
+drift_report
+run_deploy deploy
+check "drift report: deploy exit 0" test "${rc}" -eq 0
+check_eq "drift report: harvest runs once" 1 lines "${STUB_HARVEST_LOG}"
+check "drift report: harvest gets the live file and the clone's user-settings" \
+  grep -qF -- "--live ${HOME}/.claude/settings.json --src ${CLONE}/user-settings" "${STUB_HARVEST_LOG}"
+check "drift report: harvest gets the repo and the local file" \
+  grep -qF -- "--repo smartwatermelon/claude-config --local ${HOME}/.config/claude-code/user-settings.local.json" \
+  "${STUB_HARVEST_LOG}"
+check "drift report: harvest output goes to the log" grep -q "harvest: stub ran" "${LOG}"
+check "drift report: outcome logged" grep -q "settings harvest: done (exit 0)" "${LOG}"
+check "drift report: last-good stamp written" ok_is_epoch
+
+for hrc in 1 3; do
+  fresh
+  make_clone
+  drift_report
+  STUB_HARVEST_RC="${hrc}" run_deploy deploy
+  check "harvest exit ${hrc}: deploy still exit 0" test "${rc}" -eq 0
+  check "harvest exit ${hrc}: outcome logged" grep -q "settings harvest.*exit ${hrc}" "${LOG}"
+  check "harvest exit ${hrc}: last-good stamp written" ok_is_epoch
+done
+check_eq "harvest exit 3: the deploy adds no notification (the harvest sends its own)" 0 lines "${STUB_NOTIFY_LOG}"
+
+fresh
+make_clone
+drift_report
+STUB_HARVEST_RC=1 run_deploy deploy
+check_eq "harvest exit 1: notified" 1 lines "${STUB_NOTIFY_LOG}"
+
+fresh
+make_clone
+drift_report
+STUB_INSTALL_RC=1 run_deploy deploy
+check_eq "install fails: harvest not run" 0 lines "${STUB_HARVEST_LOG}"
+
+fresh
+make_clone
+drift_report
+CLAUDE_CONFIG_HARVEST_BIN="${T}/bin/no-such-harvest" run_deploy deploy
+check "harvest script missing: deploy exit 0" test "${rc}" -eq 0
+check "harvest script missing: logged" grep -q "not harvested" "${LOG}"
 
 # --- lock --------------------------------------------------------------------
 fresh

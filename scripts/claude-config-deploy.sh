@@ -25,6 +25,10 @@ AGENT_LOG="${HOME}/.local/state/${LABEL}.log"
 COMMAND_LINK="${HOME}/.local/bin/claude-config-deploy"
 CLONE_SCRIPT="${CLONE}/scripts/claude-config-deploy.sh"
 INTERVAL=600
+# install.sh writes this when ~/.claude/settings.json has local edits; the harvest folds them into a PR (#842).
+USER_DRIFT="${STATE_DIR}/user-settings.drift.diff"
+HARVEST_BIN="${CLAUDE_CONFIG_HARVEST_BIN:-${CLONE}/scripts/harvest-user-settings.sh}"
+HARVEST_REPO="smartwatermelon/claude-config"
 
 # Every command that deletes, moves, overwrites or changes launchd state is injected; tests stub them.
 GIT_BIN="${CLAUDE_CONFIG_GIT_BIN:-git}"
@@ -203,6 +207,30 @@ _run_install() {
   return "${rc}"
 }
 
+# Never fails the deploy. Exit 3 (not harvestable) is notified by the harvest itself; other failures here.
+_harvest() {
+  local rc=0 host
+  [[ -e "${USER_DRIFT}" ]] || return 0
+  if [[ ! -x "${HARVEST_BIN}" ]]; then
+    _log "user-settings drift found, but ${HARVEST_BIN} is missing; not harvested"
+    return 0
+  fi
+  host="$(hostname -s 2>/dev/null | tr '[:lower:]' '[:upper:]')" || host=""
+  _log "user-settings drift found: running ${HARVEST_BIN}"
+  "${HARVEST_BIN}" --live "${DEPLOY_DIR}/settings.json" --src "${CLONE}/user-settings" --host "${host}" \
+    --repo "${HARVEST_REPO}" --local "${HOME}/.config/claude-code/user-settings.local.json" \
+    >>"${LOG_FILE}" 2>&1 </dev/null || rc=$?
+  case "${rc}" in
+    0) _log "settings harvest: done (exit 0)" ;;
+    3) _log "settings harvest: not harvestable (exit 3); see the harvest lines above" ;;
+    *)
+      _log "settings harvest failed (exit ${rc}); see the harvest lines above"
+      _notify "Settings harvest failed (exit ${rc}). See ${LOG_FILE}"
+      ;;
+  esac
+  return 0
+}
+
 # deploy_once <scheduled: true|false>. Holds the lock for the whole run.
 deploy_once() {
   local scheduled="$1" branch dirty keys stale add_out fetch_out old new merge_out target at_clone=false moved=false
@@ -323,6 +351,7 @@ deploy_once() {
   else
     _log "deployed ${new:0:7}; ~/.claude linked to ${CLONE}"
   fi
+  _harvest
   _clear_problem
   _mark_ok
   return 0
