@@ -728,7 +728,9 @@ JSON
   local rules='["Bash(rm x)", "Bash(sudo rm x)", "Bash(cd x && rm y)", "Bash(xargs rm)", "Bash(git -C /p push)",
     "Bash(ssh-keygen -t ed25519)", "Bash(cat ~/.ssh/config)", "Bash(RM x)", "Bash(gh pr merge 5)",
     "Bash(find . -name x -delete)", "Bash(git branch -D x)", "Bash(npm publish)", "Bash(killall x)",
-    "Bash(defaults write a b c)", "Bash(wrangler deploy)", "Bash(eas build)", "Bash(ls 2>/dev/null)"]'
+    "Bash(defaults write a b c)", "Bash(wrangler deploy)", "Bash(eas build)", "Bash(ls 2>/dev/null)",
+    "Bash(git branch -q -D old)", "Bash(git branch old -D)", "Bash(git branch -dr origin/x)",
+    "Bash(gh pr -R o/r merge 5)", "Bash(gh repo -R o/r delete)"]'
   make_live ".permissions.allow += ${rules}"
   run harvest
   [ "${status}" -eq 0 ]
@@ -742,7 +744,8 @@ JSON
   use_group
   # perform holds rm, add holds dd, release holds eas, stop holds op, gitleaks holds git.
   local rules='["Bash(npm run perform)", "Bash(git add x)", "Bash(npm run release)", "Bash(npm stop)",
-    "Bash(gitleaks version)", "Bash(git log --oneline)", "Bash(bats tests/test_x.bats)"]'
+    "Bash(gitleaks version)", "Bash(git log --oneline)", "Bash(bats tests/test_x.bats)",
+    "Bash(git branch --show-current)", "Bash(gh pr view 5)"]'
   make_live ".permissions.allow += ${rules}"
   run harvest
   [ "${status}" -eq 0 ]

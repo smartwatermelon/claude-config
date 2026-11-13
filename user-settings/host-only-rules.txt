@@ -40,8 +40,9 @@
 
 # ── git and gh that rewrite, discard or publish ──
 (^|[^A-Za-z0-9_])git([^A-Za-z0-9_].*)?[^A-Za-z0-9_](push|reset|clean|checkout|rebase|restore|switch|filter-branch|update-ref|config)([^A-Za-z0-9_]|$)
-(^|[^A-Za-z0-9_])git([^A-Za-z0-9_].*)?[^A-Za-z0-9_]branch[[:space:]]+(-D|-d|--delete|-f|--force|-m|-M)([^A-Za-z0-9_]|$)
-(^|[^A-Za-z0-9_])gh([^A-Za-z0-9_].*)?[^A-Za-z0-9_](pr[[:space:]]+merge|repo[[:space:]]+delete|api|secret|auth)([^A-Za-z0-9_]|$)
+# Flags may come anywhere after branch, and may be bundled (-qD, -dr).
+(^|[^A-Za-z0-9_])git([^A-Za-z0-9_].*)?[^A-Za-z0-9_]branch([^A-Za-z0-9_].*)?[^A-Za-z0-9_](-[A-Za-z]*[dmfc][A-Za-z]*|--delete|--force|--move|--copy)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])gh([^A-Za-z0-9_].*)?[^A-Za-z0-9_](pr([^A-Za-z0-9_].*)?[^A-Za-z0-9_]merge|repo([^A-Za-z0-9_].*)?[^A-Za-z0-9_]delete|api|secret|auth)([^A-Za-z0-9_]|$)
 
 # ── Credentials and secrets ──
 (^|[^A-Za-z0-9_])op([^A-Za-z0-9_]|$)
