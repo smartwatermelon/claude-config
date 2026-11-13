@@ -457,7 +457,10 @@ check_eq "up to date, harvest exit 1 twice: notified once" 1 lines "${STUB_NOTIF
 printf '{"model":"haiku"}\n' >"${HOME}/.claude/settings.json"
 STUB_BUILD_RC=2 STUB_HARVEST_RC=1 run_deploy deploy --scheduled
 check_eq "up to date, harvest exit 1 on a new edit: notified again" 2 lines "${STUB_NOTIFY_LOG}"
+check "up to date, harvest exit 1: the failure is recorded" \
+  test -s "${HOME}/.local/state/claude-config/harvest.failed"
 STUB_BUILD_RC=2 run_deploy deploy --scheduled
+check_eq "up to date, after the failures: the harvest ran a fourth time" 4 lines "${STUB_HARVEST_LOG}"
 check "up to date, harvest succeeds after failing: the failure record is cleared" \
   test ! -e "${HOME}/.local/state/claude-config/harvest.failed"
 
