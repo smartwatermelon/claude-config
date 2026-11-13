@@ -40,9 +40,9 @@ after a deploy that left a user-settings drift report.
      Objects recurse; an array keeps the live items .built lacks.
   2. Removals (a key or array item of .built missing from live): one
      that only this host's file supplies (a build of main's base +
-     local lacks it) is dropped from the host file in step 5. One that
-     base.json or the local file supplies, or a type change, is not
-     harvestable. No delta and no removal: nothing to do.
+     groups + local lacks it) is dropped from the host file in step 5.
+     One that base.json, a group file or the local file supplies, or a
+     type change, is not harvestable. No delta and no removal: nothing to do.
   3. Refuse policy keys (hooks, env, deniedMcpServers, permissions.ask,
      permissions.deny, permissions.defaultMode): they belong in
      machine-settings/ and move by hand.
@@ -252,7 +252,7 @@ _removed_keys() {
   jq --arg k "$1" '[.[] | select($k == "" or .k == $k) | {(.p[0]): 0}] | add // {}' \
     "${TMP_ROOT}/fold/removed.json" | _keys
 }
-REFUSE_REMOVAL="a local change removes something base.json or the local file supplies"
+REFUSE_REMOVAL="a local change removes something base.json, a group file or the local file supplies"
 type_keys="$(_removed_keys type)" || type_keys="?"
 if [[ -n "${type_keys}" ]]; then
   _refuse "a local change removes something by changing its type (keys: ${type_keys}); move it by hand"
@@ -286,7 +286,7 @@ IFS= read -r -d '' DROP_JQ <<'JQ' || true
     elif (at(.; $e.p) | type) == "array" then setpath($e.p; [at(.; $e.p)[] | select(. != $e.i)]) | prune($e.p)
     else . end)
 JQ
-# Removals that a build without the host file (base + local) still holds: those cannot be folded.
+# Removals that a build without the host file (base + groups + local) still holds: those cannot be folded.
 IFS= read -r -d '' SUPPLIED_JQ <<'JQ' || true
   def at($v; $p): if $p == [] then $v elif ($v | type) == "object" then at($v[$p[0]]; $p[1:]) else null end;
   def haspath($v; $p):
@@ -294,10 +294,25 @@ IFS= read -r -d '' SUPPLIED_JQ <<'JQ' || true
   [$r[0][] | select(if .k == "key" then haspath($n[0]; .p)
                     else . as $e | (at($n[0]; $e.p) | type) == "array" and any(at($n[0]; $e.p)[]; . == $e.i) end)]
 JQ
+# _copy_groups <src dir> <dir>: groups.json and every groups/*.json, so builds of <dir> get the group layer.
+_copy_groups() {
+  local g
+  [[ -f "$1/groups.json" ]] || return 0
+  mkdir -p "$2/groups" || _fail "cannot create $2/groups"
+  cp "$1/groups.json" "$2/groups.json" || _fail "cannot copy $1/groups.json"
+  for g in "$1"/groups/*.json; do
+    [[ -f "${g}" ]] || continue
+    cp "${g}" "$2/groups/${g##*/}" || _fail "cannot copy ${g}"
+  done
+}
 _fold() {
-  local src="$1" f="${TMP_ROOT}/fold" need keys supplied rc=0
+  local src="$1" f="${TMP_ROOT}/fold" need keys supplied rc=0 d
   [[ -f "${src}/base.json" ]] || _fail "missing ${src}/base.json"
   mkdir -p "${f}/ref/hosts" "${f}/chk/hosts" "${f}/nohost" || _fail "cannot create ${f}"
+  # A rule a group file supplies is not this host's to drop: one Mac must not revoke it for the group.
+  for d in ref chk nohost; do
+    _copy_groups "${src}" "${f}/${d}"
+  done
   if [[ -f "${src}/hosts/${HOST}.json" ]]; then
     jq . "${src}/hosts/${HOST}.json" >"${f}/main-host.json" || _fail "cannot read ${src}/hosts/${HOST}.json"
   else

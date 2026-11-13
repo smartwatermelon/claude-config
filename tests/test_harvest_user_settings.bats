@@ -333,6 +333,36 @@ JSON
   nowhere 'Bash(ls'
 }
 
+@test "an allow rule only a group file supplies, removed locally, is refused: exit 3, no push" {
+  printf '{"personal": ["TESTHOST"]}\n' >"${SRC}/groups.json"
+  mkdir -p "${SRC}/groups"
+  printf '{"permissions": {"allow": ["Bash(group:*)"]}}\n' >"${SRC}/groups/personal.json"
+  write_host <<'JSON'
+{"permissions": {"allow": ["Bash(host:*)"]}}
+JSON
+  make_live '.permissions.allow -= ["Bash(group:*)"]'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"a group file"*"permissions"* ]]
+  not_pushed
+  # The dry run folds into --src and must refuse the same way.
+  make_stubs
+  run harvest --dry-run
+  [ "${status}" -eq 3 ]
+}
+
+@test "a local rule main's group file already holds is not folded into the host file" {
+  make_live '.permissions.allow += ["Bash(group:*)"]'
+  mkdir -p "${TEST_ROOT}/main/hosts" "${TEST_ROOT}/main/groups"
+  cp "${SRC}/base.json" "${TEST_ROOT}/main/base.json"
+  printf '{"personal": ["TESTHOST"]}\n' >"${TEST_ROOT}/main/groups.json"
+  printf '{"permissions": {"allow": ["Bash(group:*)"]}}\n' >"${TEST_ROOT}/main/groups/personal.json"
+  STUB_MAIN_SRC="${TEST_ROOT}/main" run harvest
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"already holds every local change"* ]]
+  not_pushed
+}
+
 @test "a removal and an addition in one edit are both in the fold" {
   write_host <<'JSON'
 {"permissions": {"allow": ["Bash(host:*)", "Bash(keep:*)"]}}
