@@ -453,6 +453,13 @@ STUB_BUILD_RC=2 STUB_HARVEST_RC=1 run_deploy deploy --scheduled
 check "up to date, harvest exit 1: no hash recorded" test ! -e "${HOME}/.local/state/claude-config/harvest.last"
 STUB_BUILD_RC=2 STUB_HARVEST_RC=1 run_deploy deploy --scheduled
 check_eq "up to date, harvest exit 1: retried on the next run" 2 lines "${STUB_HARVEST_LOG}"
+check_eq "up to date, harvest exit 1 twice: notified once" 1 lines "${STUB_NOTIFY_LOG}"
+printf '{"model":"haiku"}\n' >"${HOME}/.claude/settings.json"
+STUB_BUILD_RC=2 STUB_HARVEST_RC=1 run_deploy deploy --scheduled
+check_eq "up to date, harvest exit 1 on a new edit: notified again" 2 lines "${STUB_NOTIFY_LOG}"
+STUB_BUILD_RC=2 run_deploy deploy --scheduled
+check "up to date, harvest succeeds after failing: the failure record is cleared" \
+  test ! -e "${HOME}/.local/state/claude-config/harvest.failed"
 
 up_to_date
 STUB_BUILD_RC=1 run_deploy deploy --scheduled
