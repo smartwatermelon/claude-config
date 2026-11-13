@@ -255,7 +255,7 @@ _removed_keys() {
 REFUSE_REMOVAL="a local change removes something base.json or the local file supplies"
 type_keys="$(_removed_keys type)" || type_keys="?"
 if [[ -n "${type_keys}" ]]; then
-  _refuse "${REFUSE_REMOVAL} (keys: ${type_keys}); removals move by hand"
+  _refuse "a local change removes something by changing its type (keys: ${type_keys}); move it by hand"
 fi
 if jq -e 'length == 0' >/dev/null <<<"${overlay}" && jq -e 'length == 0' "${TMP_ROOT}/fold/removed.json" >/dev/null; then
   _log "the live file holds no change from the last build; nothing to harvest"
