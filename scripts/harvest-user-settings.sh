@@ -28,27 +28,31 @@ BOT_EMAIL="${HARVEST_AUTHOR_EMAIL:-345515361+smartwatermelon-agent[bot]@users.no
 usage() {
   cat <<'USAGE'
 Usage: harvest-user-settings.sh --live <file> --src <user-settings dir> --host <HOST>
-                                --repo <owner/name> [--local <file>] [--dry-run]
+                                --repo <owner/name> [--local <file>] [--built <file>]
+                                [--dry-run]
 
 Turns local edits to the live settings file into a PR that sets
 user-settings/hosts/<HOST>.json (#842). claude-config-deploy.sh runs it
 after a deploy that left a user-settings drift report.
 
-  1. Overlay: the parts of the live file that differ from base.json plus
-     the local file (built as install.sh builds it). Objects recurse;
-     an array keeps the live items that the reference lacks.
-  2. Check: build base + overlay + local and compare with live (jq -S).
-     A mismatch (a base key removed, an order the build cannot make) is
-     not harvestable.
+  1. Local delta D: the parts of the live file that differ from
+     <live>.built, the last build (a three-way merge, as git does).
+     Objects recurse; an array keeps the live items .built lacks.
+  2. A removal (a key or array item of .built missing from live) is
+     not harvestable. No delta: nothing to do.
   3. Refuse policy keys (hooks, env, deniedMcpServers, permissions.ask,
      permissions.deny, permissions.defaultMode): they belong in
      machine-settings/ and move by hand.
-  4. Secret checks, both must pass: a shape check (env values,
+  4. Secret checks on D, both must pass: a shape check (env values,
      secret-shaped strings), then gitleaks.
      Only JSON paths and check names are printed, never values.
-  5. Push branch claude/harvest-settings-<host> from origin/main in a
-     scratch clone (~/.local/share/claude-config-harvest), as the agent
-     GitHub App, then open a PR or let the push update the open one.
+  5. In a scratch clone (~/.local/share/claude-config-harvest) at
+     origin/main: merge the part of D that main lacks into
+     hosts/<HOST>.json (arrays add items, scalars replace). Check, by
+     the build's own three-way rule, that a build of the result holds
+     D; main may hold other hosts' changes, so it need not equal live.
+  6. Push branch claude/harvest-settings-<host> as the agent GitHub
+     App, then open a PR or let the push update the open one.
 
 The App key comes from the login Keychain, or from the key file
 ~/.config/gh-app-keys/<service>.pem (GH_APP_KEY_DIR moves it), through
@@ -57,7 +61,9 @@ helper's 1Password fallback can prompt, and nobody is there to answer.
 
   --local <file>  local overlay that stays on this Mac (default:
                   ~/.config/claude-code/user-settings.local.json)
-  --dry-run       run every check; push nothing, open no PR
+  --built <file>  the last build (default: <live>.built)
+  --dry-run       run every check, folding into --src instead of
+                  origin/main (nothing is fetched); push nothing
 
 Exit: 0 PR opened or updated, or nothing to do; 1 failed;
       3 not harvestable (notified, nothing pushed); 64 usage.
@@ -114,10 +120,11 @@ SRC=""
 HOST=""
 REPO=""
 LOCAL="${HOME}/.config/claude-code/user-settings.local.json"
+BUILT=""
 DRY_RUN=false
 while (($# > 0)); do
   case "$1" in
-    --live | --src | --host | --repo | --local)
+    --live | --src | --host | --repo | --local | --built)
       if [[ $# -lt 2 ]]; then
         echo "harvest: $1 needs a value" >&2
         exit 64
@@ -127,6 +134,7 @@ while (($# > 0)); do
         --src) SRC="$2" ;;
         --host) HOST="$2" ;;
         --repo) REPO="$2" ;;
+        --built) BUILT="$2" ;;
         *) LOCAL="$2" ;;
       esac
       shift 2
@@ -151,6 +159,7 @@ if [[ -z "${LIVE}" || -z "${SRC}" || -z "${HOST}" || -z "${REPO}" ]]; then
   exit 64
 fi
 HOST="$(printf '%s' "${HOST}" | tr '[:lower:]' '[:upper:]')"
+[[ -n "${BUILT}" ]] || BUILT="${LIVE}.built"
 [[ "${HOST}" =~ ^[A-Z0-9][A-Z0-9-]*$ ]] || _fail "unexpected host name: ${HOST}"
 [[ "${REPO}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || _fail "unexpected repo: ${REPO}"
 command -v jq >/dev/null 2>&1 || _fail "jq not found on PATH (${PATH})"
@@ -190,11 +199,15 @@ _build() {
     --report "${2%.json}.drift.diff" --local "${LOCAL}" --host-optional >/dev/null
 }
 
-# ── 1. Overlay ──
-mkdir -p "${TMP_ROOT}/ref" "${TMP_ROOT}/chk/hosts" "${TMP_ROOT}/scan"
-cp "${SRC}/base.json" "${TMP_ROOT}/ref/base.json"
-cp "${SRC}/base.json" "${TMP_ROOT}/chk/base.json"
-_build "${TMP_ROOT}/ref" "${TMP_ROOT}/out/ref.json" || _fail "cannot build the reference from ${SRC}/base.json"
+# Top-level keys of the JSON on stdin, names only: the values are not scanned yet.
+_keys() {
+  jq -r '[keys[] | if test("^[A-Za-z_.@-][A-Za-z_.@-]{0,31}$") then . else "<key>" end] | join(", ")' ||
+    printf '?\n'
+}
+
+# ── 1. Local delta D: live against the last build ──
+jq -e 'type == "object"' "${BUILT}" >/dev/null 2>&1 || _fail "${BUILT} is not a JSON object (no record of the last build)"
+mkdir -p "${TMP_ROOT}/fold" "${TMP_ROOT}/scan"
 
 IFS= read -r -d '' OVERLAY_JQ <<'JQ' || true
   def overlay($l; $r):
@@ -203,8 +216,8 @@ IFS= read -r -d '' OVERLAY_JQ <<'JQ' || true
         if ($r | has($k)) | not then .[$k] = $l[$k]
         elif $l[$k] == $r[$k] then .
         else (overlay($l[$k]; $r[$k])) as $o
-          | if ($o | type) == "object" and ($o | length) == 0
-              and ($l[$k] | type) == "object" then . else .[$k] = $o end
+          | if (["object", "array"] | index([$o | type])) and ($o | length) == 0
+              and ($l[$k] | type) == ($o | type) and ($r[$k] | type) == ($o | type) then . else .[$k] = $o end
         end)
     elif ($l | type) == "array" and ($r | type) == "array" then
       [$l[] | select(. as $i | $r | index([$i]) | not)]
@@ -212,34 +225,72 @@ IFS= read -r -d '' OVERLAY_JQ <<'JQ' || true
     end;
   overlay($a[0]; $b[0])
 JQ
-overlay="$(jq -n -S --slurpfile a "${LIVE}" --slurpfile b "${TMP_ROOT}/out/ref.json" "${OVERLAY_JQ}")" ||
-  _fail "cannot compute the overlay"
+overlay="$(jq -n -S --slurpfile a "${LIVE}" --slurpfile b "${BUILT}" "${OVERLAY_JQ}")" ||
+  _fail "cannot compute the local delta"
+printf '%s\n' "${overlay}" >"${TMP_ROOT}/fold/delta.json"
 
-# ── 2. The overlay must rebuild the live file exactly ──
-printf '%s\n' "${overlay}" >"${TMP_ROOT}/chk/hosts/${HOST}.json"
-_build "${TMP_ROOT}/chk" "${TMP_ROOT}/out/chk.json" || _refuse "the overlay does not build (a type clash?)"
-live_s="$(jq -S . "${LIVE}")" || _fail "cannot read ${LIVE}"
-chk_s="$(jq -S . "${TMP_ROOT}/out/chk.json")" || _fail "cannot read the check build"
-if [[ "${live_s}" != "${chk_s}" ]]; then
-  # Top-level keys only: the values are not scanned yet.
-  keys="$(jq -rn --slurpfile a "${LIVE}" --slurpfile b "${TMP_ROOT}/out/chk.json" '
-    ($a[0]) as $l | ($b[0]) as $c
-    | [($l + $c) | keys[] | select($l[.] != $c[.])
-       | if test("^[A-Za-z_.@-][A-Za-z_.@-]{0,31}$") then . else "<key>" end] | join(", ")')" || keys="?"
-  _refuse "an overlay cannot reproduce the live file (keys: ${keys}); a base key removed or reordered locally"
+# ── 2. Removals are not harvestable. Prints the top-level keys they sit under. ──
+removed="$(jq -n --slurpfile b "${BUILT}" --slurpfile l "${LIVE}" '
+  def gone($b; $l):
+    if ($b | type) == "object" and ($l | type) == "object" then
+      ($b | keys_unsorted[]) as $k | if ($l | has($k)) then (gone($b[$k]; $l[$k]) | [$k] + .) else [$k] end
+    elif ($b | type) == "array" and ($l | type) == "array" then
+      if any($b[]; . as $i | any($l[]; . == $i) | not) then [] else empty end
+    else empty end;
+  [gone($b[0]; $l[0]) | .[0]] | unique | map({(.): 0}) | add // {}' | _keys)" || removed="?"
+if [[ -n "${removed}" ]]; then
+  _refuse "a local change removes something the last build had (keys: ${removed}); removals move by hand"
 fi
-
-# Existing host file content counts: the overlay replaces it. Same content: nothing to do.
-existing="{}"
-if [[ -f "${SRC}/hosts/${HOST}.json" ]]; then
-  existing="$(jq -S . "${SRC}/hosts/${HOST}.json")" || _fail "cannot read ${SRC}/hosts/${HOST}.json"
-fi
-overlay_s="$(jq -S . <<<"${overlay}")" || _fail "cannot read the overlay"
-existing_s="$(jq -S . <<<"${existing}")" || _fail "cannot read the host file"
-if [[ "${overlay_s}" == "${existing_s}" ]]; then
-  _log "the live file matches ${HOST_REL}; nothing to harvest"
+if jq -e 'length == 0' >/dev/null <<<"${overlay}"; then
+  _log "the live file holds no change from the last build; nothing to harvest"
   exit 0
 fi
+
+# _fold <dir>: merges the part of D that <dir> lacks into its host file; sets FOLD_NEEDED. Help step 5.
+IFS= read -r -d '' APPLY_JQ <<'JQ' || true
+  def apply($h; $d):
+    if ($h | type) == "object" and ($d | type) == "object" then
+      reduce ($d | keys_unsorted[]) as $k ($h; .[$k] = (if has($k) then apply(.[$k]; $d[$k]) else $d[$k] end))
+    elif ($h | type) == "array" and ($d | type) == "array" then
+      $h + [$d[] | select(. as $i | any($h[]; . == $i) | not)]
+    else $d end;
+  apply($h[0]; $d[0])
+JQ
+_fold() {
+  local src="$1" f="${TMP_ROOT}/fold" need keys rc=0
+  [[ -f "${src}/base.json" ]] || _fail "missing ${src}/base.json"
+  mkdir -p "${f}/ref/hosts" "${f}/chk/hosts" || _fail "cannot create ${f}"
+  if [[ -f "${src}/hosts/${HOST}.json" ]]; then
+    jq . "${src}/hosts/${HOST}.json" >"${f}/main-host.json" || _fail "cannot read ${src}/hosts/${HOST}.json"
+  else
+    printf '{}\n' >"${f}/main-host.json"
+  fi
+  cp "${src}/base.json" "${f}/ref/base.json" || _fail "cannot copy ${src}/base.json"
+  cp "${src}/base.json" "${f}/chk/base.json" || _fail "cannot copy ${src}/base.json"
+  cp "${f}/main-host.json" "${f}/ref/hosts/${HOST}.json" || _fail "cannot copy the host file"
+  _build "${f}/ref" "${f}/out/ref.json" || _fail "cannot build ${src} for ${HOST}"
+  need="$(jq -n -S --slurpfile a "${f}/delta.json" --slurpfile b "${f}/out/ref.json" "${OVERLAY_JQ}")" ||
+    _fail "cannot compare the local delta with ${src}"
+  FOLD_NEEDED=true
+  if jq -e 'length == 0' >/dev/null <<<"${need}"; then
+    FOLD_NEEDED=false
+    return 0
+  fi
+  jq -n --slurpfile h "${f}/main-host.json" --slurpfile d <(printf '%s\n' "${need}") "${APPLY_JQ}" \
+    >"${f}/new-host.json" || _fail "cannot merge the local delta into the host file"
+  cp "${f}/new-host.json" "${f}/chk/hosts/${HOST}.json" || _fail "cannot copy the new host file"
+  # The live file and its .built, copied: the build's dry run then classifies the result.
+  cp "${LIVE}" "${f}/live.json" || _fail "cannot copy ${LIVE}"
+  cp "${BUILT}" "${f}/live.json.built" || _fail "cannot copy ${BUILT}"
+  MACHINE_SETTINGS_HOST="${HOST}" bash "${BUILD_BIN}" --src "${f}/chk" --out "${f}/live.json" \
+    --report "${f}/chk.drift.diff" --local "${LOCAL}" --host-optional --dry-run >/dev/null 2>&1 || rc=$?
+  keys="$(_keys <<<"${need}")"
+  case "${rc}" in
+    0) ;;
+    2) _refuse "the folded host file does not hold every local change (keys: ${keys}); an order or type the build cannot make" ;;
+    *) _refuse "the folded host file does not build (exit ${rc}; a type clash?)" ;;
+  esac
+}
 
 # ── 3 and 4. Policy keys and the shape check. Prints "<path>\t<check>"; paths only, never values. ──
 IFS= read -r -d '' SHAPE_JQ <<'JQ' || true
@@ -297,8 +348,14 @@ case "${gl_rc}" in
   *) _refuse "gitleaks failed (exit ${gl_rc}), so the overlay is not proven clean" ;;
 esac
 
+# A dry run fetches nothing: it folds into --src, not origin/main.
 if ${DRY_RUN}; then
-  _log "dry run: would set ${HOST_REL} on ${BRANCH} and push it as the agent App; nothing pushed"
+  _fold "${SRC}"
+  if ! ${FOLD_NEEDED}; then
+    _log "dry run: ${SRC} already holds every local change; nothing to harvest"
+  else
+    _log "dry run: would set ${HOST_REL} on ${BRANCH} and push it as the agent App; nothing pushed"
+  fi
   exit 0
 fi
 
@@ -341,14 +398,13 @@ _bounded "${TIMEOUT}" _git -C "${WORK}" fetch --quiet --prune origin || _fail "c
 _git -C "${WORK}" checkout --quiet --force -B "${BRANCH}" refs/remotes/origin/main ||
   _fail "cannot check out ${BRANCH} from origin/main"
 
-main_host="{}"
-if [[ -f "${WORK}/${HOST_REL}" ]]; then
-  main_host="$(jq -S . "${WORK}/${HOST_REL}")" || main_host="{}"
+_fold "${WORK}/user-settings"
+if ! ${FOLD_NEEDED}; then
+  _log "origin/main already holds every local change; nothing to push"
+  exit 0
 fi
-printf '%s\n' "${main_host}" >"${TMP_ROOT}/main-host.json"
 mkdir -p "${WORK}/${HOST_REL%/*}"
-jq . <<<"${overlay}" >"${TMP_ROOT}/new-host.json"
-cp "${TMP_ROOT}/new-host.json" "${TMP_ROOT}/stage.json"
+cp "${TMP_ROOT}/fold/new-host.json" "${TMP_ROOT}/stage.json"
 "${MV_BIN}" -f "${TMP_ROOT}/stage.json" "${WORK}/${HOST_REL}" || _fail "cannot write ${WORK}/${HOST_REL}"
 _git -C "${WORK}" add -- "${HOST_REL}" || _fail "cannot stage ${HOST_REL}"
 if _git -C "${WORK}" diff --cached --quiet; then
@@ -390,7 +446,7 @@ body="${TMP_ROOT}/body.md"
   printf 'Fold into base.json in review if it applies to every Mac.\n\n'
   printf 'Both secret checks passed (shape check, gitleaks).\n\n```diff\n'
   diff -u --label "main:${HOST_REL}" --label "harvest:${HOST_REL}" \
-    "${TMP_ROOT}/main-host.json" "${TMP_ROOT}/new-host.json" || true
+    "${TMP_ROOT}/fold/main-host.json" "${TMP_ROOT}/fold/new-host.json" || true
   printf '```\n'
 } >"${body}"
 url="$(GH_TOKEN="${token}" _bounded "${TIMEOUT}" "${GH_BIN}" pr create -R "${REPO}" --head "${BRANCH}" \

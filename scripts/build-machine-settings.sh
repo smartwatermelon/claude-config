@@ -51,7 +51,13 @@ let an agent change its own sandbox.
        - live equals the new build: write nothing, record .built. A hand
          edit that has since landed in the repo resolves this way.
        - live equals .built: write the new build if it differs.
-       - live differs from both: DRIFT, a hand edit the repo lacks.
+       - live differs from both, but the new build holds every local
+         change (live against .built): RESOLVED, a three-way merge.
+         Write the new build, as above. A local change is held when
+         the new build has an added or changed value at its path, has
+         each added array item, and also lacks each removed key or
+         item. Every array counts as a set: order does not matter.
+       - otherwise: DRIFT, a hand edit the repo lacks.
          Write nothing, save a report, exit 2. Fold the change into
          machine-settings/ via a PR; the next deploy clears it.
      A write is a temp file beside the output, chmod 600, mv. After it,
@@ -76,7 +82,8 @@ Environment (tests and one-off checks):
                            read-only for people, never read by the build)
   MACHINE_SETTINGS_MV_BIN, MACHINE_SETTINGS_RM_BIN  injected mv and rm
 
-Exit: 0 built, unchanged or no host file; 1 failed; 2 drift; 64 usage.
+Exit: 0 built, unchanged, resolved or no host file; 1 failed; 2 drift;
+      64 usage.
 USAGE
 }
 
@@ -285,7 +292,34 @@ _same() {
   [[ "${a}" == "${b}" ]]
 }
 
-# Sets CASE to new, same, first, normal or drift; --help explains each.
+# held(base; live; new): new holds every change from base to live (--help, step 5). Arrays are sets.
+IFS= read -r -d '' HELD_JQ <<'JQ' || true
+  def has_item($a; $i): any($a[]; . == $i);
+  def added($l; $n):
+    if ($l | type) == "object" then ($n | type) == "object"
+      and all($l | keys_unsorted[]; . as $k | ($n | has($k)) and added($l[$k]; $n[$k]))
+    elif ($l | type) == "array" then ($n | type) == "array" and all($l[]; has_item($n; .))
+    else $l == $n end;
+  def held($b; $l; $n):
+    if $l == $b then true
+    elif ($l | type) == "object" and ($b | type) == "object" then ($n | type) == "object"
+      and all($l | keys_unsorted[]; . as $k
+        | if ($b | has($k)) then $l[$k] == $b[$k] or (($n | has($k)) and held($b[$k]; $l[$k]; $n[$k]))
+          else ($n | has($k)) and added($l[$k]; $n[$k]) end)
+      and all($b | keys_unsorted[]; . as $k | ($l | has($k)) or ($n | has($k) | not))
+    elif ($l | type) == "array" and ($b | type) == "array" then ($n | type) == "array"
+      and all($l[]; . as $i | has_item($b; $i) or has_item($n; $i))
+      and all($b[]; . as $i | has_item($l; $i) or (has_item($n; $i) | not))
+    else $l == $n end;
+  held($b[0]; $l[0]; $n[0])
+JQ
+
+# The new build $1 holds every local change. Bad JSON or a jq error is never held.
+_held() {
+  jq -n -e --slurpfile b "${BUILT}" --slurpfile l "${OUT}" --slurpfile n "$1" "${HELD_JQ}" >/dev/null 2>&1
+}
+
+# Sets CASE to new, same, first, normal, resolved or drift; --help explains each.
 _classify() {
   if [[ ! -f "${OUT}" ]]; then
     CASE=new
@@ -297,6 +331,8 @@ _classify() {
     CASE=first
   elif _same "${OUT}" "${BUILT}"; then
     CASE=normal
+  elif _held "$1"; then
+    CASE=resolved
   else
     CASE=drift
   fi
@@ -368,6 +404,10 @@ fi
 if [[ -e "${REPORT}" ]]; then
   "${RM_BIN}" -f "${REPORT}" "${REPORT%.diff}.built.json" "${REPORT%.diff}.live.json" ||
     _log "could not remove the stale drift report ${REPORT}"
+fi
+
+if [[ "${CASE}" == resolved ]]; then
+  _log "drift resolved: the new build holds every local change in ${OUT}; writing it"
 fi
 
 if [[ "${CASE}" == same ]]; then
