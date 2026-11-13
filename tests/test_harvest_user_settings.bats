@@ -355,18 +355,23 @@ JSON
   nowhere '"bar"'
 }
 
-@test "an exact-command allow rule stops the harvest; a prefix rule passes" {
-  make_live '.permissions.allow += ["Bash(npm run build)"]'
-  run harvest
-  [ "${status}" -eq 3 ]
-  [[ "${output}" == *"rule-shape"* ]]
-  not_pushed
-
-  make_stubs
-  make_live '.permissions.allow += ["Bash(npm run build:*)", "Bash(npm test *)", "WebFetch"]'
+@test "exact-command, prefix and bare-tool allow rules are all harvested" {
+  make_live '.permissions.allow += ["Bash(gitleaks version)", "Bash(npm run build:*)", "Bash(npm test *)", "WebFetch"]'
   run harvest
   [ "${status}" -eq 0 ]
+  [[ "${output}" != *"rule-shape"* ]]
   pushed
+}
+
+@test "an exact-command allow rule holding a secret still stops the harvest" {
+  local pw
+  pw="$(rand_hex 6)"
+  make_live ".permissions.allow += [\"Bash(mysql -u app -p${pw} db)\"]"
+  run harvest
+  [ "${status}" -eq 3 ]
+  not_pushed
+  [[ "${output}" == *"permissions.allow.0: secret-shaped-string"* ]]
+  nowhere "${pw}"
 }
 
 # --- credentials -------------------------------------------------------------
