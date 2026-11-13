@@ -1,0 +1,89 @@
+# Host-only rules: a permissions.allow rule that matches any line here stays
+# in hosts/<HOST>.json, the Mac that approved it. Every other exact
+# Bash(...) rule goes to the host's group file (scripts/harvest-user-settings.sh).
+#
+# One POSIX ERE per line; blank lines and lines starting with # are ignored.
+# Each line is matched, ignoring case, anywhere in the full rule text, so
+# "Bash(sudo rm x)", "Bash(cd x && rm y)" and "Bash(xargs rm)" all match rm.
+# A false positive only keeps a rule on one Mac; a false negative grants it to
+# every Mac in the group. When unsure, add a line.
+#
+# Word edges use [^A-Za-z0-9_] (no \b: BSD and GNU grep differ), so rm does
+# not match "perform". A "-" counts as an edge, so ssh matches ssh-keygen.
+# Use [[:space:]], not \s.
+#
+# The harvest also keeps these on the host in code, whatever this file says:
+# any rule that is not Bash(...), and any Bash rule holding a *. A missing,
+# unreadable or invalid file keeps every rule on the host.
+
+# ── Delete, move, overwrite ──
+(^|[^A-Za-z0-9_])rm([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])rmdir([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])unlink([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])shred([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])truncate([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])mv([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])cp([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])dd([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])ln([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])tee([^A-Za-z0-9_]|$)
+# A shell redirect overwrites or appends; this also keeps "2>&1" rules local.
+>
+(^|[^A-Za-z0-9_])find([^A-Za-z0-9_].*)?[^A-Za-z0-9_]-(delete|exec|execdir|ok|okdir)([^A-Za-z0-9_]|$)
+
+# ── Permissions and file flags ──
+(^|[^A-Za-z0-9_])chmod([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])chown([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])chgrp([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])chflags([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])xattr([^A-Za-z0-9_]|$)
+
+# ── git and gh that rewrite, discard or publish ──
+(^|[^A-Za-z0-9_])git([^A-Za-z0-9_].*)?[^A-Za-z0-9_](push|reset|clean|checkout|rebase|restore|switch|filter-branch|update-ref|config)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])git([^A-Za-z0-9_].*)?[^A-Za-z0-9_]branch[[:space:]]+(-D|-d|--delete|-f|--force|-m|-M)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])gh([^A-Za-z0-9_].*)?[^A-Za-z0-9_](pr[[:space:]]+merge|repo[[:space:]]+delete|api|secret|auth)([^A-Za-z0-9_]|$)
+
+# ── Credentials and secrets ──
+(^|[^A-Za-z0-9_])op([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])security([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])gpg([^A-Za-z0-9_]|$)
+\.ssh([^A-Za-z0-9_]|$)
+\.gnupg([^A-Za-z0-9_]|$)
+\.aws([^A-Za-z0-9_]|$)
+\.netrc([^A-Za-z0-9_]|$)
+\.env([^A-Za-z0-9_]|$)
+gh-app-keys
+id_(rsa|ed25519|ecdsa|dsa)
+\.pem([^A-Za-z0-9_]|$)
+keychain
+
+# ── Network and remote shells ──
+(^|[^A-Za-z0-9_])ssh([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])scp([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])sftp([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])rsync([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])curl([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])wget([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])(nc|ncat|socat|telnet|ftp)([^A-Za-z0-9_]|$)
+
+# ── System state ──
+(^|[^A-Za-z0-9_])launchctl([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])tmutil([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])diskutil([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])defaults([^A-Za-z0-9_].*)?[^A-Za-z0-9_](write|delete|import|rename)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])(sudo|su|doas)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])(kill|pkill|killall)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])(osascript|crontab|csrutil|spctl|pmset|nvram|systemsetup|networksetup|scutil)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])(shutdown|reboot|halt)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])(eval|exec)([^A-Za-z0-9_]|$)
+
+# ── Deploys and publishing ──
+(^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun)([^A-Za-z0-9_].*)?[^A-Za-z0-9_](publish|unpublish|deprecate)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])wrangler([^A-Za-z0-9_].*)?[^A-Za-z0-9_](deploy|publish|secret|delete|rollback)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])netlify([^A-Za-z0-9_].*)?[^A-Za-z0-9_](deploy|env)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])(eas|vercel)([^A-Za-z0-9_]|$)
+
+# ── Rules broader than one command (the harvest enforces these in code too) ──
+^Bash$
+^Bash\(\*?\)$
+\*

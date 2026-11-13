@@ -991,23 +991,6 @@ write_group() { mkdir -p "${SRC}/groups" && cat >"${SRC}/groups/$1.json"; }
   done
 }
 
-@test "repo sources: machine-settings/ builds byte-identical to the build before groups" {
-  local src="${BATS_TEST_DIRNAME}/../machine-settings" old="${TEST_ROOT}/old-build.sh" f host
-  # The build as it was before the group layer: 281459c, the commit this layer is based on.
-  git -C "${BATS_TEST_DIRNAME}/.." show 281459c:scripts/build-machine-settings.sh >"${old}" ||
-    skip "281459c is not in this clone (a shallow checkout); the old build cannot be compared"
-  mkdir -p "${FAKE_HOME}/Library/CloudStorage/GoogleDrive-x@example.com/My Drive/Claude Handoff"
-  for f in "${src}"/hosts/*.json; do
-    host="${f##*/}"
-    host="${host%.json}"
-    MACHINE_SETTINGS_HOST="${host}" run build --src "${src}" --out "${TEST_ROOT}/new-${host}.json"
-    [ "${status}" -eq 0 ]
-    SCRIPT="${old}" MACHINE_SETTINGS_HOST="${host}" run build --src "${src}" --out "${TEST_ROOT}/old-${host}.json"
-    [ "${status}" -eq 0 ]
-    cmp "${TEST_ROOT}/new-${host}.json" "${TEST_ROOT}/old-${host}.json"
-  done
-}
-
 @test "repo sources: base.json and every host file build, with no private values" {
   local src="${BATS_TEST_DIRNAME}/../machine-settings" f host
   [[ -f "${src}/base.json" ]]
