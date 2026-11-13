@@ -17,7 +17,8 @@ BUILD_BIN="${HARVEST_BUILD_BIN:-${SCRIPT_DIR}/build-machine-settings.sh}"
 MV_BIN="${HARVEST_MV_BIN:-mv}"
 RM_BIN="${HARVEST_RM_BIN:-rm}"
 STATE_DIR="${HOME}/.local/state/claude-config"
-WORK="${HARVEST_WORK_DIR:-${STATE_DIR}/harvest}"
+# Not sandbox-writable: an agent could plant a filter driver in a writable clone's .git/config.
+WORK="${HARVEST_WORK_DIR:-${HOME}/.local/share/claude-config-harvest}"
 NOTICE_FILE="${STATE_DIR}/harvest.notice"
 # Seconds allowed for each credential or network step: the deploy holds its lock while this runs.
 TIMEOUT="${HARVEST_TIMEOUT:-120}"
@@ -46,7 +47,7 @@ after a deploy that left a user-settings drift report.
      secret-shaped strings), then gitleaks.
      Only JSON paths and check names are printed, never values.
   5. Push branch claude/harvest-settings-<host> from origin/main in a
-     scratch clone (~/.local/state/claude-config/harvest), as the agent
+     scratch clone (~/.local/share/claude-config-harvest), as the agent
      GitHub App, then open a PR or let the push update the open one.
 
 The App key comes from the login Keychain, or from the key file
