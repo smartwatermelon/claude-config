@@ -85,10 +85,11 @@ printf 'env GIT_CONFIG_GLOBAL=%s GIT_CONFIG_NOSYSTEM=%s GIT_DIR=%s GIT_WORK_TREE
   "${GIT_CONFIG_NOSYSTEM:-}" "${GIT_DIR:-}" "${GIT_WORK_TREE:-}" >>"${TEST_ROOT}/git.log"
 printf 'ident author=%s <%s> committer=%s <%s>\n' "${GIT_AUTHOR_NAME:-}" "${GIT_AUTHOR_EMAIL:-}" \
   "${GIT_COMMITTER_NAME:-}" "${GIT_COMMITTER_EMAIL:-}" >>"${TEST_ROOT}/git.log"
-all=" $* " sub="" last="" branch_ref=false
+all=" $* " sub="" last="" branch_ref=false dir=""
 while (($# > 0)); do
   case "$1" in
-    -C | -c) shift 2; continue ;;
+    -C) dir="$2"; shift 2; continue ;;
+    -c) shift 2; continue ;;
     refs/remotes/origin/claude/*) branch_ref=true ;;
     *) ;;
   esac
@@ -98,6 +99,8 @@ while (($# > 0)); do
 done
 case "${sub}" in
   clone) mkdir -p "${last}/.git" "${last}/user-settings/hosts" ;;
+  # origin/main's user-settings/: STUB_MAIN_SRC, default the test's --src.
+  checkout) cp -R "${STUB_MAIN_SRC:-${TEST_ROOT}/src}/." "${dir}/user-settings/" ;;
   remote)
     url="${STUB_GIT_ORIGIN:-https://github.com/smartwatermelon/claude-config.git}"
     [[ "${all}" == *" --push "* ]] && url="${STUB_GIT_PUSHURL:-${url}}"
@@ -174,6 +177,7 @@ make_live() {
   HOME="${FAKE_HOME}" TMPDIR="${TEST_ROOT}/tmp" MACHINE_SETTINGS_HOST=TESTHOST bash "${BUILD}" \
     --src "${SRC}" --out "${built}" --report "${TEST_ROOT}/built.diff" --local "${LOCAL}" --host-optional >/dev/null
   jq "$1" "${built}" >"${LIVE}"
+  cp "${built}" "${LIVE}.built"
 }
 
 harvest() {
@@ -240,6 +244,145 @@ host_json() { jq -cS . "${HOSTFILE}"; }
   [ "${status}" -eq 0 ]
   [ "$(host_json)" = '{"permissions":{"allow":["Bash(git status:*)"]}}' ]
   pushed
+}
+
+@test "gap 4: main gained an allow rule the live file lacks; the new local rule is still harvested alone" {
+  make_live '.permissions.allow += ["Bash(git status:*)"]'
+  # After the last build, main's base gains a rule this Mac has not built yet.
+  write_base <<'JSON'
+{"model": "opus", "theme": "dark", "permissions": {"allow": ["Bash(ls:*)", "Bash(pwd)"]}, "enabledPlugins": {"a@m": true}}
+JSON
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_json)" = '{"permissions":{"allow":["Bash(git status:*)"]}}' ]
+  pushed
+}
+
+@test "main's newer host file content is kept, and only the part of D main lacks is folded" {
+  make_live '.model = "sonnet" | .permissions.allow += ["Bash(git status:*)"]'
+  # origin/main moved on: this host file gained a key, and base gained the local rule.
+  mkdir -p "${TEST_ROOT}/main/hosts"
+  jq '.permissions.allow += ["Bash(git status:*)"]' "${SRC}/base.json" >"${TEST_ROOT}/main/base.json"
+  printf '{"autoMode": {"environment": ["from main"]}}\n' >"${TEST_ROOT}/main/hosts/TESTHOST.json"
+  STUB_MAIN_SRC="${TEST_ROOT}/main" run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_json)" = '{"autoMode":{"environment":["from main"]},"model":"sonnet"}' ]
+  pushed
+}
+
+@test "origin/main already holds every local change: exit 0, nothing pushed" {
+  make_live '.permissions.allow += ["Bash(git status:*)"]'
+  mkdir -p "${TEST_ROOT}/main/hosts"
+  jq '.permissions.allow += ["Bash(git status:*)"]' "${SRC}/base.json" >"${TEST_ROOT}/main/base.json"
+  STUB_MAIN_SRC="${TEST_ROOT}/main" run harvest
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"already holds every local change"* ]]
+  not_pushed
+  [ "$(gh_calls create)" -eq 0 ]
+}
+
+@test "a fold the build cannot make hold the change is refused: exit 3, no push" {
+  make_live '.extra = {"a": 1}'
+  # Main's base made extra a string: the folded object clashes with it.
+  mkdir -p "${TEST_ROOT}/main/hosts"
+  jq '.extra = "s"' "${SRC}/base.json" >"${TEST_ROOT}/main/base.json"
+  STUB_MAIN_SRC="${TEST_ROOT}/main" run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"folded host file"* ]]
+  not_pushed
+}
+
+@test "a change the local file overrides cannot be held by a host fold: exit 3, no push" {
+  printf '{"model": "haiku"}\n' >"${LOCAL}"
+  make_live '.model = "sonnet"'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"does not hold every local change (keys: model)"* ]]
+  not_pushed
+}
+
+@test "a removed array item is not harvestable: exit 3, only the key is named" {
+  make_live '.permissions.allow -= ["Bash(ls:*)"] | .model = "sonnet"'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"removes something"*"permissions"* ]]
+  not_pushed
+  nowhere 'Bash(ls'
+}
+
+@test "an allow rule only this host's file supplies, removed locally, is dropped from the host file" {
+  write_host <<'JSON'
+{"permissions": {"allow": ["Bash(host:*)"]}}
+JSON
+  make_live '.permissions.allow -= ["Bash(host:*)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_json)" = '{}' ]
+  pushed
+}
+
+@test "an allow rule base.json supplies, removed locally, is refused: exit 3, no push" {
+  write_host <<'JSON'
+{"permissions": {"allow": ["Bash(host:*)"]}}
+JSON
+  make_live '.permissions.allow -= ["Bash(ls:*)"]'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"removes something"*"permissions"* ]]
+  not_pushed
+  nowhere 'Bash(ls'
+}
+
+@test "a removal and an addition in one edit are both in the fold" {
+  write_host <<'JSON'
+{"permissions": {"allow": ["Bash(host:*)", "Bash(keep:*)"]}}
+JSON
+  make_live '.permissions.allow -= ["Bash(host:*)"] | .permissions.allow += ["Bash(git status:*)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_json)" = '{"permissions":{"allow":["Bash(keep:*)","Bash(git status:*)"]}}' ]
+  pushed
+}
+
+@test "a key only the host file supplies is dropped; one base.json also has is refused" {
+  write_host <<'JSON'
+{"hostOnly": "x", "model": "sonnet"}
+JSON
+  make_live 'del(.hostOnly)'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_json)" = '{"model":"sonnet"}' ]
+  make_stubs
+  make_live 'del(.model)'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"removes something"*"model"* ]]
+  not_pushed
+}
+
+@test "an object replaced by a scalar counts as a removal: exit 3, no push" {
+  make_live '.enabledPlugins = false'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"removes something"*"enabledPlugins"* ]]
+  not_pushed
+}
+
+@test "no record of the last build: exit 1, nothing pushed" {
+  make_live '.model = "sonnet"'
+  printf 'not json\n' >"${LIVE}.built"
+  run harvest
+  [ "${status}" -eq 1 ]
+  not_pushed
+}
+
+@test "--built names the record of the last build" {
+  make_live '.model = "sonnet"'
+  cp "${LIVE}.built" "${TEST_ROOT}/elsewhere.built"
+  printf 'not json\n' >"${LIVE}.built"
+  run harvest --built "${TEST_ROOT}/elsewhere.built"
+  [ "${status}" -eq 0 ]
+  [ "$(host_json)" = '{"model":"sonnet"}' ]
 }
 
 @test "a changed scalar (model) becomes a host overlay with the new value" {
@@ -484,13 +627,13 @@ JSON
   not_pushed
 }
 
-@test "known limit: with local-file array items, a new rule in that array cannot be harvested" {
+@test "with local-file array items, a new rule in that array is harvested alone" {
   printf '{"permissions": {"allow": ["Bash(local:*)"]}}\n' >"${LOCAL}"
   make_live '.permissions.allow += ["Bash(git status:*)"]'
   run harvest
-  [ "${status}" -eq 3 ]
-  [[ "${output}" == *"permissions"* ]]
-  not_pushed
+  [ "${status}" -eq 0 ]
+  [ "$(host_json)" = '{"permissions":{"allow":["Bash(git status:*)"]}}' ]
+  pushed
 }
 
 @test "a failed push: exit 1, no PR" {
@@ -542,6 +685,7 @@ JSON
   make_live '.model = "sonnet"'
   run harvest --dry-run
   [ "${status}" -eq 0 ]
+  [[ "${output}" == *"would set"* ]]
   [ ! -s "${TEST_ROOT}/git.log" ]
   [ ! -s "${TEST_ROOT}/gh.log" ]
   [ ! -s "${TEST_ROOT}/token.log" ]

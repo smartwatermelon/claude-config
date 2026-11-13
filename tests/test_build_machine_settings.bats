@@ -611,6 +611,131 @@ REPORT_REL=".local/state/claude-config/machine-settings.drift.diff"
   [ "${status}" -eq 0 ]
 }
 
+# --- three-way merge (resolved) ---------------------------------------------------
+
+# The live file gets the jq edit $1.
+live_edit() {
+  jq -c "$1" "${OUT}" >"${TEST_ROOT}/edit.json"
+  cat "${TEST_ROOT}/edit.json" >"${OUT}"
+}
+
+@test "resolved: a local edit the new build already holds is written over, exit 0, report cleared" {
+  write_base <<<'{"a": 1, "allow": ["x"]}'
+  write_host <<<'{}'
+  run build
+  live_edit '.allow += ["mine"]'
+  # Drift first, so a report exists for the resolved run to clear.
+  run build
+  [ "${status}" -eq 2 ]
+  [[ -f "${FAKE_HOME}/${REPORT_REL}" ]]
+  # Main gains the local rule and another change.
+  write_base <<<'{"a": 2, "allow": ["x", "other", "mine"]}'
+  run build
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"drift resolved"* ]]
+  out_json '.'
+  [ "${output}" = '{"a":2,"allow":["x","other","mine"]}' ]
+  cmp -s "${OUT}" "${OUT}.built"
+  [[ ! -e "${FAKE_HOME}/${REPORT_REL}" ]]
+  [[ ! -e "${FAKE_HOME}/.local/state/claude-config/machine-settings.drift.live.json" ]]
+}
+
+@test "resolved: a local edit the new build lacks is still drift, exit 2, nothing written" {
+  write_base <<<'{"a": 1, "allow": ["x"]}'
+  write_host <<<'{}'
+  run build
+  live_edit '.allow += ["mine"]'
+  cp "${OUT}" "${TEST_ROOT}/edited"
+  write_base <<<'{"a": 2, "allow": ["x", "other"]}'
+  run build
+  [ "${status}" -eq 2 ]
+  cmp -s "${OUT}" "${TEST_ROOT}/edited"
+}
+
+@test "resolved: a changed scalar must match the new build's value" {
+  write_base <<<'{"a": 1, "b": 1}'
+  write_host <<<'{}'
+  run build
+  live_edit '.a = 5'
+  write_base <<<'{"a": 6, "b": 2}'
+  run build
+  [ "${status}" -eq 2 ]
+  write_base <<<'{"a": 5, "b": 2}'
+  run build
+  [ "${status}" -eq 0 ]
+  out_json '.'
+  [ "${output}" = '{"a":5,"b":2}' ]
+}
+
+@test "resolved: a local removal the new build also lacks resolves; one it keeps is drift" {
+  write_base <<<'{"a": 1, "gone": true, "allow": ["x", "y"]}'
+  write_host <<<'{}'
+  run build
+  live_edit 'del(.gone) | .allow -= ["y"]'
+  write_base <<<'{"a": 2, "gone": true, "allow": ["x"]}'
+  run build
+  [ "${status}" -eq 2 ]
+  write_base <<<'{"a": 2, "allow": ["x"]}'
+  run build
+  [ "${status}" -eq 0 ]
+  out_json '.'
+  [ "${output}" = '{"a":2,"allow":["x"]}' ]
+}
+
+@test "resolved: array order does not matter" {
+  write_base <<<'{"allow": ["x", "y"]}'
+  write_host <<<'{}'
+  run build
+  live_edit '.allow = ["y", "x", "z"]'
+  write_base <<<'{"allow": ["z", "x", "y"]}'
+  run build
+  [ "${status}" -eq 0 ]
+  out_json '.allow'
+  [ "${output}" = '["z","x","y"]' ]
+}
+
+@test "resolved: an added object must be held whole" {
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  run build
+  live_edit '.o = {"p": 1, "q": [1]}'
+  write_base <<<'{"a": 1, "o": {"p": 1}}'
+  run build
+  [ "${status}" -eq 2 ]
+  write_base <<<'{"a": 1, "o": {"p": 1, "q": [1], "r": 2}}'
+  run build
+  [ "${status}" -eq 0 ]
+}
+
+@test "resolved: an unreadable .built is drift, not a failure" {
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  run build
+  live_edit '.b = 1'
+  printf 'not json\n' >"${OUT}.built"
+  write_base <<<'{"a": 1, "b": 1, "c": 1}'
+  run build
+  [ "${status}" -eq 2 ]
+}
+
+@test "resolved: a dry run says it would write, exits 0, and writes nothing" {
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  run build
+  live_edit '.b = 1'
+  cp "${OUT}" "${TEST_ROOT}/edited"
+  cp "${OUT}.built" "${TEST_ROOT}/built-before"
+  write_base <<<'{"a": 2, "b": 1}'
+  : >"${STUB_LOG}"
+  run build --dry-run
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"(resolved)"* ]]
+  cmp -s "${OUT}" "${TEST_ROOT}/edited"
+  cmp -s "${OUT}.built" "${TEST_ROOT}/built-before"
+  run grep -c '^mv ' "${STUB_LOG}"
+  [ "${output}" = "0" ]
+}
+
 # --- local overlay ------------------------------------------------------------
 
 @test "local: merged last, arrays append in base, host, local order and a local scalar wins" {
