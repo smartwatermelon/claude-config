@@ -115,7 +115,13 @@ printf '%s\n' "$*" >>"${STUB_HARVEST_LOG}"
 echo "harvest: stub ran"
 exit "${STUB_HARVEST_RC:-0}"
 EOF
-  chmod +x "${T}/bin/launchctl" "${T}/bin/osascript" "${T}/bin/crontab" "${T}/bin/harvest"
+  # The user-settings build an up-to-date run calls: records its arguments, exits STUB_BUILD_RC (2 = drift).
+  cat >"${T}/bin/user-build" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${STUB_BUILD_LOG}"
+exit "${STUB_BUILD_RC:-0}"
+EOF
+  chmod +x "${T}/bin/launchctl" "${T}/bin/osascript" "${T}/bin/crontab" "${T}/bin/harvest" "${T}/bin/user-build"
 
   export STUB_INSTALL_LOG="${T}/install.log" STUB_LAUNCHCTL_LOG="${T}/launchctl.log"
   export STUB_NOTIFY_LOG="${T}/notify.log"
@@ -127,6 +133,9 @@ EOF
   export STUB_HARVEST_LOG="${T}/harvest.log" CLAUDE_CONFIG_HARVEST_BIN="${T}/bin/harvest"
   : >"${STUB_HARVEST_LOG}"
   unset STUB_HARVEST_RC
+  export STUB_BUILD_LOG="${T}/user-build.log" CLAUDE_CONFIG_USER_BUILD_BIN="${T}/bin/user-build"
+  : >"${STUB_BUILD_LOG}"
+  unset STUB_BUILD_RC
   unset STUB_INSTALL_RC STUB_LOADED_RC STUB_GUI_RC STUB_BOOTOUT_RC STUB_CRONTAB_L_FAIL CLAUDE_CONFIG_SCHEDULER
   unset CLAUDE_CONFIG_DEV_TTL_HOURS CLAUDE_CONFIG_MV_BIN
   touch "${STUB_INSTALL_LOG}" "${STUB_LAUNCHCTL_LOG}" "${STUB_NOTIFY_LOG}" "${STUB_CRONTAB_LOG}"
@@ -395,6 +404,70 @@ drift_report
 CLAUDE_CONFIG_HARVEST_BIN="${T}/bin/no-such-harvest" run_deploy deploy
 check "harvest script missing: deploy exit 0" test "${rc}" -eq 0
 check "harvest script missing: logged" grep -q "not harvested" "${LOG}"
+
+# --- harvest when main has not moved (#862 trigger gap) ----------------------
+# Up to date: a new local edit is harvested once.
+up_to_date() { # a linked clone, a live settings.json, the harvest log cleared
+  fresh
+  make_clone
+  run_deploy deploy
+  mkdir -p "${HOME}/.claude"
+  printf '{"model":"sonnet"}\n' >"${HOME}/.claude/settings.json"
+  rm -f "${HOME}/.local/state/claude-config/harvest.last"
+  : >"${STUB_HARVEST_LOG}"
+  : >"${STUB_BUILD_LOG}"
+}
+
+up_to_date
+run_deploy deploy --scheduled
+check "up to date, no drift: deploy exit 0" test "${rc}" -eq 0
+check_eq "up to date, no drift: the user build runs once" 1 lines "${STUB_BUILD_LOG}"
+check "up to date: the user build gets install.sh's arguments" grep -qF -- \
+  "--src ${CLONE}/user-settings --out ${HOME}/.claude/settings.json --report ${HOME}/.local/state/claude-config/user-settings.drift.diff --local ${HOME}/.config/claude-code/user-settings.local.json --host-optional" \
+  "${STUB_BUILD_LOG}"
+check_eq "up to date, no drift: harvest not run" 0 lines "${STUB_HARVEST_LOG}"
+check_eq "up to date, no drift: install.sh not run" 1 lines "${STUB_INSTALL_LOG}"
+
+up_to_date
+drift_report
+STUB_BUILD_RC=2 run_deploy deploy --scheduled
+check "up to date, drift: deploy exit 0" test "${rc}" -eq 0
+check_eq "up to date, drift: harvest runs once" 1 lines "${STUB_HARVEST_LOG}"
+check "up to date, drift: the live file's hash is recorded" \
+  grep -qxE '[0-9a-f]{64}' "${HOME}/.local/state/claude-config/harvest.last"
+STUB_BUILD_RC=2 run_deploy deploy --scheduled
+check_eq "up to date, same drift again: harvest not run again" 1 lines "${STUB_HARVEST_LOG}"
+printf '{"model":"opus"}\n' >"${HOME}/.claude/settings.json"
+STUB_BUILD_RC=2 run_deploy deploy --scheduled
+check_eq "up to date, a new local edit: harvest runs again" 2 lines "${STUB_HARVEST_LOG}"
+
+up_to_date
+drift_report
+STUB_BUILD_RC=2 STUB_HARVEST_RC=3 run_deploy deploy --scheduled
+STUB_BUILD_RC=2 STUB_HARVEST_RC=3 run_deploy deploy --scheduled
+check_eq "up to date, harvest exit 3: not repeated for the same edit" 1 lines "${STUB_HARVEST_LOG}"
+
+up_to_date
+drift_report
+STUB_BUILD_RC=2 STUB_HARVEST_RC=1 run_deploy deploy --scheduled
+check "up to date, harvest exit 1: no hash recorded" test ! -e "${HOME}/.local/state/claude-config/harvest.last"
+STUB_BUILD_RC=2 STUB_HARVEST_RC=1 run_deploy deploy --scheduled
+check_eq "up to date, harvest exit 1: retried on the next run" 2 lines "${STUB_HARVEST_LOG}"
+
+up_to_date
+STUB_BUILD_RC=1 run_deploy deploy --scheduled
+check "up to date, user build fails: deploy exit 0" test "${rc}" -eq 0
+check "up to date, user build fails: logged" grep -q "user-settings check failed (exit 1)" "${LOG}"
+check_eq "up to date, user build fails: harvest not run" 0 lines "${STUB_HARVEST_LOG}"
+
+# A harvest after a merge records the hash too, so the next up-to-date run does not repeat it.
+up_to_date
+drift_report
+advance_origin v9 >/dev/null
+run_deploy deploy --scheduled
+check_eq "origin moved, drift: harvest runs once" 1 lines "${STUB_HARVEST_LOG}"
+STUB_BUILD_RC=2 run_deploy deploy --scheduled
+check_eq "then up to date, same drift: harvest not run again" 1 lines "${STUB_HARVEST_LOG}"
 
 # --- lock --------------------------------------------------------------------
 fresh

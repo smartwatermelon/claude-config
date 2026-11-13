@@ -29,6 +29,10 @@ INTERVAL=600
 USER_DRIFT="${STATE_DIR}/user-settings.drift.diff"
 HARVEST_BIN="${CLAUDE_CONFIG_HARVEST_BIN:-${CLONE}/scripts/harvest-user-settings.sh}"
 HARVEST_REPO="smartwatermelon/claude-config"
+# The user-settings build, run by an up-to-date scheduled deploy so a local edit is harvested without a merge to main.
+USER_BUILD_BIN="${CLAUDE_CONFIG_USER_BUILD_BIN:-${CLONE}/scripts/build-machine-settings.sh}"
+# sha256 of the live settings.json at the last harvest that finished (exit 0 or 3).
+HARVEST_STAMP="${STATE_DIR}/harvest.last"
 
 # Every command that deletes, moves, overwrites or changes launchd state is injected; tests stub them.
 GIT_BIN="${CLAUDE_CONFIG_GIT_BIN:-git}"
@@ -228,7 +232,38 @@ _harvest() {
       _notify "Settings harvest failed (exit ${rc}). See ${LOG_FILE}"
       ;;
   esac
+  # A finished outcome is recorded, so an up-to-date run does not repeat it; a failure (exit 1) is retried.
+  if [[ "${rc}" == 0 || "${rc}" == 3 ]]; then
+    _live_sum >"${HARVEST_STAMP}" 2>/dev/null || _log "could not write ${HARVEST_STAMP}"
+  fi
   return 0
+}
+
+# sha256 of the live settings.json, or nothing.
+_live_sum() {
+  local sum
+  sum="$(shasum -a 256 <"${DEPLOY_DIR}/settings.json")" || return 1
+  printf '%s\n' "${sum%% *}"
+}
+
+# Main did not move: rebuild user settings as install.sh 7c does; harvest an edit not yet harvested.
+_harvest_check() {
+  local rc=0 sum last=""
+  [[ -x "${USER_BUILD_BIN}" ]] || return 0
+  "${USER_BUILD_BIN}" --src "${CLONE}/user-settings" --out "${DEPLOY_DIR}/settings.json" --report "${USER_DRIFT}" \
+    --local "${HOME}/.config/claude-code/user-settings.local.json" --host-optional >/dev/null 2>&1 </dev/null || rc=$?
+  case "${rc}" in
+    0) return 0 ;;
+    2) ;;
+    *)
+      _log "user-settings check failed (exit ${rc}); not harvested"
+      return 0
+      ;;
+  esac
+  sum="$(_live_sum)" || return 0
+  [[ -f "${HARVEST_STAMP}" ]] && last="$(<"${HARVEST_STAMP}")"
+  [[ "${sum}" == "${last}" ]] && return 0
+  _harvest
 }
 
 # deploy_once <scheduled: true|false>. Holds the lock for the whole run.
@@ -335,6 +370,7 @@ deploy_once() {
       _log "${DEPLOY_DIR} is not linked to the deploy clone (${CANARY} -> ${target:-missing}); relinking"
     elif ! ${moved} && [[ -z "${DEV_PATH}" ]]; then
       _log "up to date at ${new:0:7}"
+      _harvest_check
       _clear_problem
       _mark_ok
       return 0
