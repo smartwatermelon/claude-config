@@ -310,6 +310,56 @@ JSON
   nowhere 'Bash(ls'
 }
 
+@test "an allow rule only this host's file supplies, removed locally, is dropped from the host file" {
+  write_host <<'JSON'
+{"permissions": {"allow": ["Bash(host:*)"]}}
+JSON
+  make_live '.permissions.allow -= ["Bash(host:*)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_json)" = '{}' ]
+  pushed
+}
+
+@test "an allow rule base.json supplies, removed locally, is refused: exit 3, no push" {
+  write_host <<'JSON'
+{"permissions": {"allow": ["Bash(host:*)"]}}
+JSON
+  make_live '.permissions.allow -= ["Bash(ls:*)"]'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"removes something"*"permissions"* ]]
+  not_pushed
+  nowhere 'Bash(ls'
+}
+
+@test "a removal and an addition in one edit are both in the fold" {
+  write_host <<'JSON'
+{"permissions": {"allow": ["Bash(host:*)", "Bash(keep:*)"]}}
+JSON
+  make_live '.permissions.allow -= ["Bash(host:*)"] | .permissions.allow += ["Bash(git status:*)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_json)" = '{"permissions":{"allow":["Bash(keep:*)","Bash(git status:*)"]}}' ]
+  pushed
+}
+
+@test "a key only the host file supplies is dropped; one base.json also has is refused" {
+  write_host <<'JSON'
+{"hostOnly": "x", "model": "sonnet"}
+JSON
+  make_live 'del(.hostOnly)'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_json)" = '{"model":"sonnet"}' ]
+  make_stubs
+  make_live 'del(.model)'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"removes something"*"model"* ]]
+  not_pushed
+}
+
 @test "an object replaced by a scalar counts as a removal: exit 3, no push" {
   make_live '.enabledPlugins = false'
   run harvest

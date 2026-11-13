@@ -38,8 +38,11 @@ after a deploy that left a user-settings drift report.
   1. Local delta D: the parts of the live file that differ from
      <live>.built, the last build (a three-way merge, as git does).
      Objects recurse; an array keeps the live items .built lacks.
-  2. A removal (a key or array item of .built missing from live) is
-     not harvestable. No delta: nothing to do.
+  2. Removals (a key or array item of .built missing from live): one
+     that only this host's file supplies (a build of main's base +
+     local lacks it) is dropped from the host file in step 5. One that
+     base.json or the local file supplies, or a type change, is not
+     harvestable. No delta and no removal: nothing to do.
   3. Refuse policy keys (hooks, env, deniedMcpServers, permissions.ask,
      permissions.deny, permissions.defaultMode): they belong in
      machine-settings/ and move by hand.
@@ -48,7 +51,8 @@ after a deploy that left a user-settings drift report.
      Only JSON paths and check names are printed, never values.
   5. In a scratch clone (~/.local/share/claude-config-harvest) at
      origin/main: merge the part of D that main lacks into
-     hosts/<HOST>.json (arrays add items, scalars replace). Check, by
+     hosts/<HOST>.json (arrays add items, scalars replace), and drop
+     the host-only removals. Check, by
      the build's own three-way rule, that a build of the result holds
      D; main may hold other hosts' changes, so it need not equal live.
   6. Push branch claude/harvest-settings-<host> as the agent GitHub
@@ -229,25 +233,36 @@ overlay="$(jq -n -S --slurpfile a "${LIVE}" --slurpfile b "${BUILT}" "${OVERLAY_
   _fail "cannot compute the local delta"
 printf '%s\n' "${overlay}" >"${TMP_ROOT}/fold/delta.json"
 
-# ── 2. Removals are not harvestable. Prints the top-level keys they sit under. ──
-removed="$(jq -n --slurpfile b "${BUILT}" --slurpfile l "${LIVE}" '
-  def gone($b; $l):
+# ── 2. Removals: [{k: key|item|type, p: path, i: item}]. A type change is refused here. ──
+IFS= read -r -d '' GONE_JQ <<'JQ' || true
+  def gone($b; $l; $p):
     if ($b | type) == "object" and ($l | type) == "object" then
-      ($b | keys_unsorted[]) as $k | if ($l | has($k)) then (gone($b[$k]; $l[$k]) | [$k] + .) else [$k] end
+      ($b | keys_unsorted[]) as $k
+      | if ($l | has($k)) then gone($b[$k]; $l[$k]; $p + [$k]) else {k: "key", p: ($p + [$k])} end
     elif ($b | type) == "array" and ($l | type) == "array" then
-      if any($b[]; . as $i | any($l[]; . == $i) | not) then [] else empty end
-    elif (["object", "array"] | index([$b | type])) then []
+      $b[] | . as $i | select(any($l[]; . == $i) | not) | {k: "item", p: $p, i: $i}
+    elif (["object", "array"] | index([$b | type])) then {k: "type", p: $p}
     else empty end;
-  [gone($b[0]; $l[0]) | .[0]] | unique | map({(.): 0}) | add // {}' | _keys)" || removed="?"
-if [[ -n "${removed}" ]]; then
-  _refuse "a local change removes something the last build had (keys: ${removed}); removals move by hand"
+  [gone($b[0]; $l[0]; [])]
+JQ
+jq -n --slurpfile b "${BUILT}" --slurpfile l "${LIVE}" "${GONE_JQ}" >"${TMP_ROOT}/fold/removed.json" ||
+  _fail "cannot list the local removals"
+# Top-level keys under removals of kind $1 (all kinds if empty).
+_removed_keys() {
+  jq --arg k "$1" '[.[] | select($k == "" or .k == $k) | {(.p[0]): 0}] | add // {}' \
+    "${TMP_ROOT}/fold/removed.json" | _keys
+}
+REFUSE_REMOVAL="a local change removes something base.json or the local file supplies"
+type_keys="$(_removed_keys type)" || type_keys="?"
+if [[ -n "${type_keys}" ]]; then
+  _refuse "${REFUSE_REMOVAL} (keys: ${type_keys}); removals move by hand"
 fi
-if jq -e 'length == 0' >/dev/null <<<"${overlay}"; then
+if jq -e 'length == 0' >/dev/null <<<"${overlay}" && jq -e 'length == 0' "${TMP_ROOT}/fold/removed.json" >/dev/null; then
   _log "the live file holds no change from the last build; nothing to harvest"
   exit 0
 fi
 
-# _fold <dir>: merges the part of D that <dir> lacks into its host file; sets FOLD_NEEDED. Help step 5.
+# _fold <dir>: folds D and host-only removals into <dir>'s host file; sets FOLD_NEEDED. Help step 5.
 IFS= read -r -d '' APPLY_JQ <<'JQ' || true
   def apply($h; $d):
     if ($h | type) == "object" and ($d | type) == "object" then
@@ -257,10 +272,32 @@ IFS= read -r -d '' APPLY_JQ <<'JQ' || true
     else $d end;
   apply($h[0]; $d[0])
 JQ
+# Drops each removal from the host file, then any container that left empty.
+IFS= read -r -d '' DROP_JQ <<'JQ' || true
+  def at($v; $p): if $p == [] then $v elif ($v | type) == "object" then at($v[$p[0]]; $p[1:]) else null end;
+  def haspath($v; $p):
+    $p == [] or (($v | type) == "object" and ($v | has($p[0])) and haspath($v[$p[0]]; $p[1:]));
+  def prune($p):
+    at(.; $p) as $v
+    | if $p != [] and (["object", "array"] | index([$v | type])) and ($v | length) == 0
+      then delpaths([$p]) | prune($p[:-1]) else . end;
+  reduce $r[0][] as $e ($h[0];
+    if $e.k == "key" then (if haspath(.; $e.p) then delpaths([$e.p]) | prune($e.p[:-1]) else . end)
+    elif (at(.; $e.p) | type) == "array" then setpath($e.p; [at(.; $e.p)[] | select(. != $e.i)]) | prune($e.p)
+    else . end)
+JQ
+# Removals that a build without the host file (base + local) still holds: those cannot be folded.
+IFS= read -r -d '' SUPPLIED_JQ <<'JQ' || true
+  def at($v; $p): if $p == [] then $v elif ($v | type) == "object" then at($v[$p[0]]; $p[1:]) else null end;
+  def haspath($v; $p):
+    $p == [] or (($v | type) == "object" and ($v | has($p[0])) and haspath($v[$p[0]]; $p[1:]));
+  [$r[0][] | select(if .k == "key" then haspath($n[0]; .p)
+                    else . as $e | (at($n[0]; $e.p) | type) == "array" and any(at($n[0]; $e.p)[]; . == $e.i) end)]
+JQ
 _fold() {
-  local src="$1" f="${TMP_ROOT}/fold" need keys rc=0
+  local src="$1" f="${TMP_ROOT}/fold" need keys supplied rc=0
   [[ -f "${src}/base.json" ]] || _fail "missing ${src}/base.json"
-  mkdir -p "${f}/ref/hosts" "${f}/chk/hosts" || _fail "cannot create ${f}"
+  mkdir -p "${f}/ref/hosts" "${f}/chk/hosts" "${f}/nohost" || _fail "cannot create ${f}"
   if [[ -f "${src}/hosts/${HOST}.json" ]]; then
     jq . "${src}/hosts/${HOST}.json" >"${f}/main-host.json" || _fail "cannot read ${src}/hosts/${HOST}.json"
   else
@@ -270,15 +307,25 @@ _fold() {
   cp "${src}/base.json" "${f}/chk/base.json" || _fail "cannot copy ${src}/base.json"
   cp "${f}/main-host.json" "${f}/ref/hosts/${HOST}.json" || _fail "cannot copy the host file"
   _build "${f}/ref" "${f}/out/ref.json" || _fail "cannot build ${src} for ${HOST}"
+  cp "${src}/base.json" "${f}/nohost/base.json" || _fail "cannot copy ${src}/base.json"
+  _build "${f}/nohost" "${f}/out/nohost.json" || _fail "cannot build ${src} without the host file"
+  jq -n --slurpfile r "${f}/removed.json" --slurpfile n "${f}/out/nohost.json" "${SUPPLIED_JQ}" \
+    >"${f}/supplied.json" || _fail "cannot check the local removals against ${src}"
+  supplied="$(jq '[.[] | {(.p[0]): 0}] | add // {}' "${f}/supplied.json" | _keys)" || supplied="?"
+  if [[ -n "${supplied}" ]]; then
+    _refuse "${REFUSE_REMOVAL} (keys: ${supplied}); removals move by hand"
+  fi
   need="$(jq -n -S --slurpfile a "${f}/delta.json" --slurpfile b "${f}/out/ref.json" "${OVERLAY_JQ}")" ||
     _fail "cannot compare the local delta with ${src}"
+  jq -n --slurpfile h "${f}/main-host.json" --slurpfile d <(printf '%s\n' "${need}") "${APPLY_JQ}" \
+    >"${f}/added-host.json" || _fail "cannot merge the local delta into the host file"
+  jq -n --slurpfile h "${f}/added-host.json" --slurpfile r "${f}/removed.json" "${DROP_JQ}" \
+    >"${f}/new-host.json" || _fail "cannot drop the local removals from the host file"
   FOLD_NEEDED=true
-  if jq -e 'length == 0' >/dev/null <<<"${need}"; then
+  if jq -n -e --slurpfile a "${f}/main-host.json" --slurpfile b "${f}/new-host.json" '$a == $b' >/dev/null; then
     FOLD_NEEDED=false
     return 0
   fi
-  jq -n --slurpfile h "${f}/main-host.json" --slurpfile d <(printf '%s\n' "${need}") "${APPLY_JQ}" \
-    >"${f}/new-host.json" || _fail "cannot merge the local delta into the host file"
   cp "${f}/new-host.json" "${f}/chk/hosts/${HOST}.json" || _fail "cannot copy the new host file"
   # The live file and its .built, copied: the build's dry run then classifies the result.
   cp "${LIVE}" "${f}/live.json" || _fail "cannot copy ${LIVE}"
