@@ -124,14 +124,15 @@ printf 'gh %s\n' "$*" >>"${TEST_ROOT}/gh.log"
 if [[ "${GH_TOKEN:-}" == "${STUB_TOKEN}" ]]; then echo "env GH_TOKEN=app" >>"${TEST_ROOT}/gh.log"; fi
 case "$1 $2" in
   "pr list") [[ -z "${STUB_GH_OPEN:-}" ]] || printf '%s\n' "${STUB_GH_OPEN}" ;;
-  "pr create")
+  "pr create" | "pr edit")
     # The body file is in the harvest's temp dir, gone after it exits: keep a copy.
     prev=""
     for a in "$@"; do
       [[ "${prev}" != --body-file ]] || cp "${a}" "${TEST_ROOT}/body.md"
       prev="${a}"
     done
-    echo "https://github.com/smartwatermelon/claude-config/pull/999"
+    [[ "$2" != create ]] || echo "https://github.com/smartwatermelon/claude-config/pull/999"
+    [[ "$2" != edit ]] || exit "${STUB_GH_EDIT_RC:-0}"
     ;;
   *) ;;
 esac
@@ -756,15 +757,41 @@ JSON
 
 @test "fan-out: a non-Bash rule, a wildcard Bash rule and bare Bash stay on the host with an empty risk list" {
   use_group
-  printf '# no patterns\n\n' >"${SRC}/host-only-rules.txt"
+  # One pattern no rule here matches, so only the built-in checks act.
+  printf '# one unrelated pattern\n^never-matches$\n' >"${SRC}/host-only-rules.txt"
   make_live '.permissions.allow += ["WebFetch", "Read(~/x)", "mcp__srv__tool", "Bash", "Bash(*)",
     "Bash(npm test *)", "Bash(git status:*)", "Bash(git status)"]'
   run harvest
   [ "${status}" -eq 0 ]
   [ "$(host_rules)" = '["WebFetch","Read(~/x)","mcp__srv__tool","Bash","Bash(*)","Bash(npm test *)","Bash(git status:*)"]' ]
-  # The empty list is in effect: the one exact rule fans out.
+  # The list is in effect: the one exact rule fans out.
   [ "$(group_rules)" = '["Bash(git status)"]' ]
-  [[ "${output}" == *"holds no patterns"* ]]
+}
+
+@test "fan-out: in-place edits, interpreter one-liners, gh release and credential files stay on the host" {
+  use_group
+  local risky='["Bash(sed -i s/a/b/ f)", "Bash(perl -i x.pl f)", "Bash(bash -c x)", "Bash(python3 -c 1)",
+    "Bash(node -e 1)", "Bash(node -p 1)", "Bash(node --print 1)", "Bash(gsed -i s/a/b/ f)",
+    "Bash(gh release create v1)", "Bash(gh repo create x)", "Bash(git worktree remove x)",
+    "Bash(cat ~/.npmrc)", "Bash(cat ~/.config/gh/hosts.yml)"]'
+  # The "Bash(" wrapper is not the bash interpreter: a -C or -e flag alone keeps nothing local.
+  local safe='["Bash(git -C /p log)", "Bash(grep -e foo x)", "Bash(sed -n 1p f)", "Bash(git worktree list)"]'
+  make_live ".permissions.allow += ${risky} + ${safe}"
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_rules)" = "$(jq -c . <<<"${risky}")" ]
+  [ "$(group_rules)" = "$(jq -c . <<<"${safe}")" ]
+}
+
+@test "fan-out: a risk list with no patterns keeps every rule in the host file, logged as an error" {
+  use_group
+  printf '# no patterns\n\n' >"${SRC}/host-only-rules.txt"
+  make_live '.permissions.allow += ["Bash(git status)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_rules)" = '["Bash(git status)"]' ]
+  [ "$(group_rules)" = '[]' ]
+  [[ "${output}" == *"ERROR: the risk list holds no patterns"* ]]
 }
 
 @test "fan-out: a mixed delta stages both files, and the PR body lists each rule under its heading" {
@@ -940,13 +967,34 @@ JSON
   [ "$(gh_calls create)" -eq 0 ]
 }
 
-@test "the branch already has this host file: no new push; an open PR is left as is" {
+@test "an open harvest PR gets a new body that lists the rules its branch now holds" {
+  use_group
+  make_live '.permissions.allow += ["Bash(git status)", "Bash(rm -f x)"]'
+  STUB_GH_OPEN="https://github.com/${REPO}/pull/5" run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(gh_calls edit)" -eq 1 ]
+  [ "$(gh_calls create)" -eq 0 ]
+  grep -q 'pr edit https://github.com/.*/pull/5 ' "${TEST_ROOT}/gh.log"
+  grep -qF 'Bash(git status)' "${TEST_ROOT}/body.md"
+  grep -qF 'Bash(rm -f x)' "${TEST_ROOT}/body.md"
+  [[ "${output}" == *"updated the open PR"*"and its body"* ]]
+}
+
+@test "a failed body update on an open PR fails loudly" {
+  make_live '.model = "sonnet"'
+  STUB_GH_EDIT_RC=1 STUB_GH_OPEN="https://github.com/${REPO}/pull/5" run harvest
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"gh pr edit failed"* ]]
+}
+
+@test "the branch already has this host file: no new push; an open PR gets only a body update" {
   make_live '.model = "sonnet"'
   STUB_GIT_BRANCH_SAME=1 STUB_GH_OPEN="https://github.com/${REPO}/pull/5" run harvest
   [ "${status}" -eq 0 ]
   not_pushed
   lacks ' commit ' "${TEST_ROOT}/git.log"
   [ "$(gh_calls create)" -eq 0 ]
+  [ "$(gh_calls edit)" -eq 1 ]
 }
 
 @test "the branch has this host file but no PR is open: a PR is opened, nothing pushed" {

@@ -27,6 +27,8 @@
 (^|[^A-Za-z0-9_])dd([^A-Za-z0-9_]|$)
 (^|[^A-Za-z0-9_])ln([^A-Za-z0-9_]|$)
 (^|[^A-Za-z0-9_])tee([^A-Za-z0-9_]|$)
+# In-place edits overwrite the file.
+(^|[^A-Za-z0-9_])(g?sed|perl)([^A-Za-z0-9_].*)?[^A-Za-z0-9_]-[A-Za-z]*i
 # A shell redirect overwrites or appends; this also keeps "2>&1" rules local.
 >
 (^|[^A-Za-z0-9_])find([^A-Za-z0-9_].*)?[^A-Za-z0-9_]-(delete|exec|execdir|ok|okdir)([^A-Za-z0-9_]|$)
@@ -42,7 +44,8 @@
 (^|[^A-Za-z0-9_])git([^A-Za-z0-9_].*)?[^A-Za-z0-9_](push|reset|clean|checkout|rebase|restore|switch|filter-branch|update-ref|config)([^A-Za-z0-9_]|$)
 # Flags may come anywhere after branch, and may be bundled (-qD, -dr).
 (^|[^A-Za-z0-9_])git([^A-Za-z0-9_].*)?[^A-Za-z0-9_]branch([^A-Za-z0-9_].*)?[^A-Za-z0-9_](-[A-Za-z]*[dmfc][A-Za-z]*|--delete|--force|--move|--copy)([^A-Za-z0-9_]|$)
-(^|[^A-Za-z0-9_])gh([^A-Za-z0-9_].*)?[^A-Za-z0-9_](pr([^A-Za-z0-9_].*)?[^A-Za-z0-9_]merge|repo([^A-Za-z0-9_].*)?[^A-Za-z0-9_]delete|api|secret|auth)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])gh([^A-Za-z0-9_].*)?[^A-Za-z0-9_](pr([^A-Za-z0-9_].*)?[^A-Za-z0-9_]merge|repo([^A-Za-z0-9_].*)?[^A-Za-z0-9_](delete|create|edit|rename|archive)|api|secret|auth|release)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])git([^A-Za-z0-9_].*)?[^A-Za-z0-9_]worktree([^A-Za-z0-9_].*)?[^A-Za-z0-9_](remove|prune)([^A-Za-z0-9_]|$)
 
 # ── Credentials and secrets ──
 (^|[^A-Za-z0-9_])op([^A-Za-z0-9_]|$)
@@ -53,6 +56,9 @@
 \.aws([^A-Za-z0-9_]|$)
 \.netrc([^A-Za-z0-9_]|$)
 \.env([^A-Za-z0-9_]|$)
+\.(npmrc|pypirc|git-credentials)([^A-Za-z0-9_]|$)
+\.kube([^A-Za-z0-9_]|$)
+\.config/gh([^A-Za-z0-9_]|$)
 gh-app-keys
 id_(rsa|ed25519|ecdsa|dsa)
 \.pem([^A-Za-z0-9_]|$)
@@ -77,6 +83,9 @@ keychain
 (^|[^A-Za-z0-9_])(osascript|crontab|csrutil|spctl|pmset|nvram|systemsetup|networksetup|scutil)([^A-Za-z0-9_]|$)
 (^|[^A-Za-z0-9_])(shutdown|reboot|halt)([^A-Za-z0-9_]|$)
 (^|[^A-Za-z0-9_])(eval|exec)([^A-Za-z0-9_]|$)
+# Interpreter one-liners run any code. A space after the name, so the "Bash(" wrapper is not a match.
+(^|[^A-Za-z0-9_])(python[0-9.]*|node|perl|ruby|bash|zsh|sh)[[:space:]](.*[[:space:]])?-[A-Za-z]*[cep]([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])(python[0-9.]*|node|perl|ruby|bash|zsh|sh)[[:space:]](.*[[:space:]])?--(eval|print|command)([^A-Za-z0-9_]|$)
 
 # ── Deploys and publishing ──
 (^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun)([^A-Za-z0-9_].*)?[^A-Za-z0-9_](publish|unpublish|deprecate)([^A-Za-z0-9_]|$)

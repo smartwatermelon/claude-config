@@ -374,7 +374,8 @@ _risk_load() {
       grep -Eiq -f "${pats}" </dev/null || rc=$?
       ((rc <= 1)) || RISK_NOTE="the risk list holds an invalid pattern (grep exit ${rc})"
     else
-      _log "the risk list holds no patterns; only the built-in checks keep rules on ${HOST}"
+      # An emptied list is more likely a bad edit than a choice to fan out every exact rule.
+      RISK_NOTE="the risk list holds no patterns"
     fi
   fi
   [[ -z "${RISK_NOTE}" ]] && return 0
@@ -684,10 +685,6 @@ token="$(_bounded "${TIMEOUT}" bash "${TOKEN_BIN}" --item "${item}" "${REPO%%/*}
 [[ -n "${token}" ]] || _fail "pushed ${BRANCH}, but no App token for gh; open the PR by hand"
 open="$(GH_TOKEN="${token}" _bounded "${TIMEOUT}" "${GH_BIN}" pr list -R "${REPO}" --head "${BRANCH}" \
   --state open --json url --jq '.[].url')" || _fail "pushed ${BRANCH}, but gh pr list failed"
-if [[ -n "${open}" ]]; then
-  _log "updated the open PR ${open}"
-  exit 0
-fi
 
 # _rule_list <JSON array file>: one rule per line in a fence, or "None." for an empty list.
 _rule_list() {
@@ -738,6 +735,13 @@ body="${TMP_ROOT}/body.md"
   fi
   printf '```\n'
 } >"${body}"
+# The rule lists are grants: an open PR's body must list what its branch now holds.
+if [[ -n "${open}" ]]; then
+  GH_TOKEN="${token}" _bounded "${TIMEOUT}" "${GH_BIN}" pr edit "${open}" -R "${REPO}" --body-file "${body}" \
+    >/dev/null || _fail "pushed ${BRANCH}, but gh pr edit failed; the body of ${open} may be stale"
+  _log "updated the open PR ${open} and its body"
+  exit 0
+fi
 url="$(GH_TOKEN="${token}" _bounded "${TIMEOUT}" "${GH_BIN}" pr create -R "${REPO}" --head "${BRANCH}" \
   --base main --title "${TITLE}" --body-file "${body}")" || _fail "pushed ${BRANCH}, but gh pr create failed"
 _log "opened ${url}"
