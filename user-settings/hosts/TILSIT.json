@@ -6,7 +6,8 @@
   },
   "permissions": {
     "allow": [
-      "Bash(gitleaks version)"
+      "Bash(gitleaks version)",
+      "Bash(rm -f /tmp/claude-proof-none)"
     ]
   }
 }
