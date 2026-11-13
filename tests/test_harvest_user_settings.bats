@@ -253,7 +253,6 @@ host_json() { jq -cS . "${HOSTFILE}"; }
 {"model": "opus", "theme": "dark", "permissions": {"allow": ["Bash(ls:*)", "Bash(pwd)"]}, "enabledPlugins": {"a@m": true}}
 JSON
   run harvest
-  echo "${output}"
   [ "${status}" -eq 0 ]
   [ "$(host_json)" = '{"permissions":{"allow":["Bash(git status:*)"]}}' ]
   pushed
@@ -266,7 +265,6 @@ JSON
   jq '.permissions.allow += ["Bash(git status:*)"]' "${SRC}/base.json" >"${TEST_ROOT}/main/base.json"
   printf '{"autoMode": {"environment": ["from main"]}}\n' >"${TEST_ROOT}/main/hosts/TESTHOST.json"
   STUB_MAIN_SRC="${TEST_ROOT}/main" run harvest
-  echo "${output}"
   [ "${status}" -eq 0 ]
   [ "$(host_json)" = '{"autoMode":{"environment":["from main"]},"model":"sonnet"}' ]
   pushed
@@ -289,7 +287,6 @@ JSON
   mkdir -p "${TEST_ROOT}/main/hosts"
   jq '.extra = "s"' "${SRC}/base.json" >"${TEST_ROOT}/main/base.json"
   STUB_MAIN_SRC="${TEST_ROOT}/main" run harvest
-  echo "${output}"
   [ "${status}" -eq 3 ]
   [[ "${output}" == *"folded host file"* ]]
   not_pushed
@@ -299,7 +296,6 @@ JSON
   printf '{"model": "haiku"}\n' >"${LOCAL}"
   make_live '.model = "sonnet"'
   run harvest
-  echo "${output}"
   [ "${status}" -eq 3 ]
   [[ "${output}" == *"does not hold every local change (keys: model)"* ]]
   not_pushed
@@ -312,6 +308,14 @@ JSON
   [[ "${output}" == *"removes something"*"permissions"* ]]
   not_pushed
   nowhere 'Bash(ls'
+}
+
+@test "an object replaced by a scalar counts as a removal: exit 3, no push" {
+  make_live '.enabledPlugins = false'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"removes something"*"enabledPlugins"* ]]
+  not_pushed
 }
 
 @test "no record of the last build: exit 1, nothing pushed" {

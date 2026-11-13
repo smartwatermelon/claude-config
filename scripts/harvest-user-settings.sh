@@ -236,6 +236,7 @@ removed="$(jq -n --slurpfile b "${BUILT}" --slurpfile l "${LIVE}" '
       ($b | keys_unsorted[]) as $k | if ($l | has($k)) then (gone($b[$k]; $l[$k]) | [$k] + .) else [$k] end
     elif ($b | type) == "array" and ($l | type) == "array" then
       if any($b[]; . as $i | any($l[]; . == $i) | not) then [] else empty end
+    elif (["object", "array"] | index([$b | type])) then []
     else empty end;
   [gone($b[0]; $l[0]) | .[0]] | unique | map({(.): 0}) | add // {}' | _keys)" || removed="?"
 if [[ -n "${removed}" ]]; then
