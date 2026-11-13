@@ -32,7 +32,8 @@ Usage: harvest-user-settings.sh --live <file> --src <user-settings dir> --host <
                                 [--dry-run]
 
 Turns local edits to the live settings file into a PR that sets
-user-settings/hosts/<HOST>.json (#842). claude-config-deploy.sh runs it
+user-settings/hosts/<HOST>.json and, for approved rules, the host's
+group file (#842). claude-config-deploy.sh runs it
 after a deploy that left a user-settings drift report.
 
   1. Local delta D: the parts of the live file that differ from
@@ -40,9 +41,9 @@ after a deploy that left a user-settings drift report.
      Objects recurse; an array keeps the live items .built lacks.
   2. Removals (a key or array item of .built missing from live): one
      that only this host's file supplies (a build of main's base +
-     local lacks it) is dropped from the host file in step 5. One that
-     base.json or the local file supplies, or a type change, is not
-     harvestable. No delta and no removal: nothing to do.
+     groups + local lacks it) is dropped from the host file in step 5.
+     One that base.json, a group file or the local file supplies, or a
+     type change, is not harvestable. No delta and no removal: nothing to do.
   3. Refuse policy keys (hooks, env, deniedMcpServers, permissions.ask,
      permissions.deny, permissions.defaultMode): they belong in
      machine-settings/ and move by hand.
@@ -55,6 +56,13 @@ after a deploy that left a user-settings drift report.
      the host-only removals. Check, by
      the build's own three-way rule, that a build of the result holds
      D; main may hold other hosts' changes, so it need not equal live.
+     Fan-out: a new permissions.allow rule goes to groups/<group>.json
+     instead when groups.json puts this host in exactly one group, the
+     rule is an exact Bash(...) command (no *), and it matches no line
+     of user-settings/host-only-rules.txt. Any doubt (no group or
+     several, a missing or invalid list, a failed check) keeps it in
+     the host file. If the split build fails the check, every rule
+     goes back to the host file and the PR body says so.
   6. Push branch claude/harvest-settings-<host> as the agent GitHub
      App, then open a PR or let the push update the open one.
 
@@ -252,7 +260,7 @@ _removed_keys() {
   jq --arg k "$1" '[.[] | select($k == "" or .k == $k) | {(.p[0]): 0}] | add // {}' \
     "${TMP_ROOT}/fold/removed.json" | _keys
 }
-REFUSE_REMOVAL="a local change removes something base.json or the local file supplies"
+REFUSE_REMOVAL="a local change removes something base.json, a group file or the local file supplies"
 type_keys="$(_removed_keys type)" || type_keys="?"
 if [[ -n "${type_keys}" ]]; then
   _refuse "a local change removes something by changing its type (keys: ${type_keys}); move it by hand"
@@ -286,7 +294,7 @@ IFS= read -r -d '' DROP_JQ <<'JQ' || true
     elif (at(.; $e.p) | type) == "array" then setpath($e.p; [at(.; $e.p)[] | select(. != $e.i)]) | prune($e.p)
     else . end)
 JQ
-# Removals that a build without the host file (base + local) still holds: those cannot be folded.
+# Removals that a build without the host file (base + groups + local) still holds: those cannot be folded.
 IFS= read -r -d '' SUPPLIED_JQ <<'JQ' || true
   def at($v; $p): if $p == [] then $v elif ($v | type) == "object" then at($v[$p[0]]; $p[1:]) else null end;
   def haspath($v; $p):
@@ -294,10 +302,177 @@ IFS= read -r -d '' SUPPLIED_JQ <<'JQ' || true
   [$r[0][] | select(if .k == "key" then haspath($n[0]; .p)
                     else . as $e | (at($n[0]; $e.p) | type) == "array" and any(at($n[0]; $e.p)[]; . == $e.i) end)]
 JQ
+# _copy_groups <src dir> <dir>: groups.json and every groups/*.json, so builds of <dir> get the group layer.
+_copy_groups() {
+  local g
+  [[ -f "$1/groups.json" ]] || return 0
+  mkdir -p "$2/groups" || _fail "cannot create $2/groups"
+  cp "$1/groups.json" "$2/groups.json" || _fail "cannot copy $1/groups.json"
+  for g in "$1"/groups/*.json; do
+    [[ -f "${g}" ]] || continue
+    cp "${g}" "$2/groups/${g##*/}" || _fail "cannot copy ${g}"
+  done
+}
+# ── Fan-out (help step 5) ──
+# A rule starts on the host; only grep exit 1 (no risk match) moves it.
+GROUP=""
+GROUP_REL=""
+GROUP_NOTE=""
+RISK_NOTE=""
+SPLIT_FALLBACK=false
+HOST_CHANGED=false
+GROUP_CHANGED=false
+# _host_group <src dir> <log: true|false>: sets GROUP to the one group groups.json puts HOST in; else GROUP="".
+_host_group() {
+  local src="$1" say="$2" names n loud=false
+  GROUP=""
+  GROUP_REL=""
+  GROUP_NOTE=""
+  if [[ ! -f "${src}/groups.json" ]]; then
+    GROUP_NOTE="${HOST} is in no group (no groups.json)"
+  elif ! names="$(jq -r --arg h "${HOST}" \
+    'to_entries[] | select((.value | type) == "array" and any(.value[]; . == $h)) | .key' "${src}/groups.json")"; then
+    GROUP_NOTE="groups.json cannot be read"
+    loud=true
+  else
+    n="$(grep -c . <<<"${names}" || true)"
+    if [[ "${n}" == 0 ]]; then
+      GROUP_NOTE="${HOST} is in no group"
+    elif [[ "${n}" != 1 ]]; then
+      GROUP_NOTE="${HOST} is in ${n} groups, not one"
+    elif [[ ! "${names}" =~ ^[A-Za-z0-9_-]+$ || ! -f "${src}/groups/${names}.json" ]]; then
+      GROUP_NOTE="the group of ${HOST} has a bad name or no file"
+      loud=true
+    fi
+  fi
+  if [[ -n "${GROUP_NOTE}" ]]; then
+    if ${say} && ${loud}; then
+      _log "ERROR: ${GROUP_NOTE}; every new rule stays in ${HOST_REL}" >&2
+    elif ${say}; then
+      _log "${GROUP_NOTE}; every new rule stays in ${HOST_REL}"
+    fi
+    return 0
+  fi
+  GROUP="${names}"
+  GROUP_REL="user-settings/groups/${GROUP}.json"
+}
+# _risk_load <list>: strips the list's comments and blank lines into risk.ere. Missing, unreadable or invalid: 1.
+_risk_load() {
+  local list="$1" pats="${TMP_ROOT}/fold/risk.ere" rc=0
+  if [[ ! -f "${list}" || ! -r "${list}" ]]; then
+    RISK_NOTE="the risk list ${list##*/user-settings/} is missing or unreadable"
+  elif ! tr -d '\r' <"${list}" >"${pats}.raw"; then
+    RISK_NOTE="the risk list cannot be read"
+  else
+    # A blank line would match every rule, and a comment is not a pattern: both go.
+    grep -vE '^[[:space:]]*(#|$)' "${pats}.raw" >"${pats}" || rc=$?
+    if ((rc > 1)); then
+      RISK_NOTE="the risk list cannot be read (grep exit ${rc})"
+    elif [[ -s "${pats}" ]]; then
+      # grep exits 2 on an invalid ERE; that is a broken list, never "no match".
+      rc=0
+      grep -Eiq -f "${pats}" </dev/null || rc=$?
+      ((rc <= 1)) || RISK_NOTE="the risk list holds an invalid pattern (grep exit ${rc})"
+    else
+      # An emptied list is more likely a bad edit than a choice to fan out every exact rule.
+      RISK_NOTE="the risk list holds no patterns"
+    fi
+  fi
+  [[ -z "${RISK_NOTE}" ]] && return 0
+  _log "ERROR: ${RISK_NOTE}; every new rule stays in ${HOST_REL}" >&2
+  return 1
+}
+# Exact Bash(...) rules only: any other tool, a * wildcard, bare Bash or a control character stays on the host.
+IFS= read -r -d '' CANDIDATE_JQ <<'JQ' || true
+  (.permissions.allow // [])[]
+  | select(type == "string" and (test("[[:cntrl:]]") | not) and (contains("*") | not) and test("^Bash\\(.+\\)$"))
+JQ
+# _split_rules <src dir>: writes group-rules.json, the need.json allow rules that go to GROUP ([] on any doubt).
+_split_rules() {
+  local src="$1" f="${TMP_ROOT}/fold" rule rc out
+  printf '[]\n' >"${f}/group-rules.json"
+  [[ -n "${GROUP}" ]] || return 0
+  _risk_load "${src}/host-only-rules.txt" || return 0
+  if ! jq -r "${CANDIDATE_JQ}" "${f}/need.json" >"${f}/candidates.txt"; then
+    _log "ERROR: cannot list the new allow rules; every new rule stays in ${HOST_REL}" >&2
+    return 0
+  fi
+  : >"${f}/group-rules.txt"
+  while IFS= read -r rule || [[ -n "${rule}" ]]; do
+    rc=1
+    if [[ -s "${f}/risk.ere" ]]; then
+      rc=0
+      printf '%s\n' "${rule}" | grep -Eiq -f "${f}/risk.ere" || rc=$?
+    fi
+    case "${rc}" in
+      0) ;;
+      1) printf '%s\n' "${rule}" >>"${f}/group-rules.txt" ;;
+      *) _log "ERROR: the risk check failed (grep exit ${rc}); that rule stays in ${HOST_REL}" >&2 ;;
+    esac
+  done <"${f}/candidates.txt"
+  # Only rules need.json holds, so a parsing slip can never grant something new.
+  if ! out="$(jq -R . "${f}/group-rules.txt" | jq -s -c --slurpfile n "${f}/need.json" \
+    '[.[] | select(. as $r | ($n[0].permissions.allow // []) | index([$r]))]')"; then
+    _log "ERROR: cannot list the group rules; every new rule stays in ${HOST_REL}" >&2
+    return 0
+  fi
+  printf '%s\n' "${out}" >"${f}/group-rules.json"
+}
+# need.json without the group rules $g, pruning a permissions or allow it leaves empty.
+IFS= read -r -d '' HOSTNEED_JQ <<'JQ' || true
+  $n[0] as $n | $g[0] as $g
+  | if ($g | length) == 0 then $n
+    else $n | .permissions.allow -= $g
+      | if (.permissions.allow | length) == 0 then del(.permissions.allow) else . end
+      | if (.permissions | length) == 0 then del(.permissions) else . end
+    end
+JQ
+# _place <mode>: new-host.json, and new-group.json with a group, from need.json; mode split or host.
+_place() {
+  local f="${TMP_ROOT}/fold"
+  [[ "$1" == split ]] || printf '[]\n' >"${f}/group-rules.json"
+  jq -n --slurpfile n "${f}/need.json" --slurpfile g "${f}/group-rules.json" "${HOSTNEED_JQ}" \
+    >"${f}/host-need.json" || _fail "cannot split the local delta"
+  jq -n --slurpfile h "${f}/main-host.json" --slurpfile d "${f}/host-need.json" "${APPLY_JQ}" \
+    >"${f}/added-host.json" || _fail "cannot merge the local delta into the host file"
+  jq -n --slurpfile h "${f}/added-host.json" --slurpfile r "${f}/removed.json" "${DROP_JQ}" \
+    >"${f}/new-host.json" || _fail "cannot drop the local removals from the host file"
+  HOST_CHANGED=true
+  if jq -n -e --slurpfile a "${f}/main-host.json" --slurpfile b "${f}/new-host.json" '$a == $b' >/dev/null; then
+    HOST_CHANGED=false
+  fi
+  GROUP_CHANGED=false
+  [[ -n "${GROUP}" ]] || return 0
+  jq 'if length == 0 then {} else {permissions: {allow: .}} end' "${f}/group-rules.json" >"${f}/group-need.json" ||
+    _fail "cannot list the group rules"
+  jq -n --slurpfile h "${f}/main-group.json" --slurpfile d "${f}/group-need.json" "${APPLY_JQ}" \
+    >"${f}/new-group.json" || _fail "cannot merge the group rules into ${GROUP_REL}"
+  if ! jq -n -e --slurpfile a "${f}/main-group.json" --slurpfile b "${f}/new-group.json" '$a == $b' >/dev/null; then
+    GROUP_CHANGED=true
+  fi
+}
+# _check <src dir>: the build's dry run on the folded files; prints its exit code.
+_check() {
+  local f="${TMP_ROOT}/fold" rc=0
+  cp "${f}/new-host.json" "${f}/chk/hosts/${HOST}.json" || _fail "cannot copy the new host file"
+  if [[ -n "${GROUP}" ]]; then
+    cp "${f}/new-group.json" "${f}/chk/groups/${GROUP}.json" || _fail "cannot copy the new group file"
+  fi
+  # The live file and its .built, copied: the build's dry run then classifies the result.
+  cp "${LIVE}" "${f}/live.json" || _fail "cannot copy ${LIVE}"
+  cp "${BUILT}" "${f}/live.json.built" || _fail "cannot copy ${BUILT}"
+  MACHINE_SETTINGS_HOST="${HOST}" bash "${BUILD_BIN}" --src "${f}/chk" --out "${f}/live.json" \
+    --report "${f}/chk.drift.diff" --local "${LOCAL}" --host-optional --dry-run >/dev/null 2>&1 || rc=$?
+  printf '%s\n' "${rc}"
+}
 _fold() {
-  local src="$1" f="${TMP_ROOT}/fold" need keys supplied rc=0
+  local src="$1" f="${TMP_ROOT}/fold" need keys supplied rc=0 d has_allow n_group n_host
   [[ -f "${src}/base.json" ]] || _fail "missing ${src}/base.json"
   mkdir -p "${f}/ref/hosts" "${f}/chk/hosts" "${f}/nohost" || _fail "cannot create ${f}"
+  # A rule a group file supplies is not this host's to drop: one Mac must not revoke it for the group.
+  for d in ref chk nohost; do
+    _copy_groups "${src}" "${f}/${d}"
+  done
   if [[ -f "${src}/hosts/${HOST}.json" ]]; then
     jq . "${src}/hosts/${HOST}.json" >"${f}/main-host.json" || _fail "cannot read ${src}/hosts/${HOST}.json"
   else
@@ -317,21 +492,37 @@ _fold() {
   fi
   need="$(jq -n -S --slurpfile a "${f}/delta.json" --slurpfile b "${f}/out/ref.json" "${OVERLAY_JQ}")" ||
     _fail "cannot compare the local delta with ${src}"
-  jq -n --slurpfile h "${f}/main-host.json" --slurpfile d <(printf '%s\n' "${need}") "${APPLY_JQ}" \
-    >"${f}/added-host.json" || _fail "cannot merge the local delta into the host file"
-  jq -n --slurpfile h "${f}/added-host.json" --slurpfile r "${f}/removed.json" "${DROP_JQ}" \
-    >"${f}/new-host.json" || _fail "cannot drop the local removals from the host file"
+  printf '%s\n' "${need}" >"${f}/need.json"
+  printf '[]\n' >"${f}/group-rules.json"
+  # The split runs only for new allow rules; any other key stays in the host file.
+  has_allow=false
+  if jq -e '(.permissions.allow // []) | length > 0' "${f}/need.json" >/dev/null; then
+    has_allow=true
+  fi
+  _host_group "${src}" "${has_allow}"
+  if [[ -n "${GROUP}" ]]; then
+    jq . "${src}/groups/${GROUP}.json" >"${f}/main-group.json" || _fail "cannot read ${src}/groups/${GROUP}.json"
+    ! ${has_allow} || _split_rules "${src}"
+  fi
+  _place split
   FOLD_NEEDED=true
-  if jq -n -e --slurpfile a "${f}/main-host.json" --slurpfile b "${f}/new-host.json" '$a == $b' >/dev/null; then
+  if ! ${HOST_CHANGED} && ! ${GROUP_CHANGED}; then
     FOLD_NEEDED=false
     return 0
   fi
-  cp "${f}/new-host.json" "${f}/chk/hosts/${HOST}.json" || _fail "cannot copy the new host file"
-  # The live file and its .built, copied: the build's dry run then classifies the result.
-  cp "${LIVE}" "${f}/live.json" || _fail "cannot copy ${LIVE}"
-  cp "${BUILT}" "${f}/live.json.built" || _fail "cannot copy ${BUILT}"
-  MACHINE_SETTINGS_HOST="${HOST}" bash "${BUILD_BIN}" --src "${f}/chk" --out "${f}/live.json" \
-    --report "${f}/chk.drift.diff" --local "${LOCAL}" --host-optional --dry-run >/dev/null 2>&1 || rc=$?
+  rc="$(_check)"
+  if [[ "${rc}" != 0 ]] && jq -e 'length > 0' "${f}/group-rules.json" >/dev/null; then
+    # The split must never cost a fold: put every rule back in the host file and check that.
+    SPLIT_FALLBACK=true
+    _log "the build check failed (exit ${rc}) with rules in ${GROUP_REL}; every new rule stays in ${HOST_REL}"
+    _place host
+    rc="$(_check)"
+  fi
+  if ${has_allow}; then
+    n_group="$(jq 'length' "${f}/group-rules.json")" || n_group="?"
+    n_host="$(jq '(.permissions.allow // []) | length' "${f}/host-need.json")" || n_host="?"
+    _log "new allow rules: ${n_group} to ${GROUP_REL:-no group file}, ${n_host} to ${HOST_REL}"
+  fi
   keys="$(_keys <<<"${need}")"
   case "${rc}" in
     0) ;;
@@ -402,7 +593,10 @@ if ${DRY_RUN}; then
   if ! ${FOLD_NEEDED}; then
     _log "dry run: ${SRC} already holds every local change; nothing to harvest"
   else
-    _log "dry run: would set ${HOST_REL} on ${BRANCH} and push it as the agent App; nothing pushed"
+    paths=""
+    ! ${HOST_CHANGED} || paths="${HOST_REL}"
+    ! ${GROUP_CHANGED} || paths="${paths:+${paths} and }${GROUP_REL}"
+    _log "dry run: would set ${paths} on ${BRANCH} and push it as the agent App; nothing pushed"
   fi
   exit 0
 fi
@@ -451,20 +645,28 @@ if ! ${FOLD_NEEDED}; then
   _log "origin/main already holds every local change; nothing to push"
   exit 0
 fi
-mkdir -p "${WORK}/${HOST_REL%/*}"
-cp "${TMP_ROOT}/fold/new-host.json" "${TMP_ROOT}/stage.json"
-"${MV_BIN}" -f "${TMP_ROOT}/stage.json" "${WORK}/${HOST_REL}" || _fail "cannot write ${WORK}/${HOST_REL}"
-_git -C "${WORK}" add -- "${HOST_REL}" || _fail "cannot stage ${HOST_REL}"
+# _stage <folded file> <repo path>: writes the file into the scratch clone and stages it.
+_stage() {
+  mkdir -p "${WORK}/${2%/*}"
+  cp "$1" "${TMP_ROOT}/stage.json" || _fail "cannot copy $1"
+  "${MV_BIN}" -f "${TMP_ROOT}/stage.json" "${WORK}/$2" || _fail "cannot write ${WORK}/$2"
+  _git -C "${WORK}" add -- "$2" || _fail "cannot stage $2"
+}
+! ${HOST_CHANGED} || _stage "${TMP_ROOT}/fold/new-host.json" "${HOST_REL}"
+! ${GROUP_CHANGED} || _stage "${TMP_ROOT}/fold/new-group.json" "${GROUP_REL}"
+# The branch check compares every file a fold can set, changed or not, so a stale group change is seen.
+FOLD_PATHS=("${HOST_REL}")
+[[ -z "${GROUP_REL}" ]] || FOLD_PATHS+=("${GROUP_REL}")
 if _git -C "${WORK}" diff --cached --quiet; then
-  _log "origin/main already has this ${HOST_REL}; nothing to push"
+  _log "origin/main already has these files (${FOLD_PATHS[*]}); nothing to push"
   exit 0
 fi
 TITLE="chore(settings): fold ${HOST} local settings"
 # The branch already carries this file: a new push would only re-run CI on the open PR.
 remote_ref="refs/remotes/origin/${BRANCH}"
 if _git -C "${WORK}" rev-parse --verify --quiet "${remote_ref}" >/dev/null &&
-  _git -C "${WORK}" diff --cached --quiet "${remote_ref}" -- "${HOST_REL}"; then
-  _log "${BRANCH} already has this ${HOST_REL}; not pushed again"
+  _git -C "${WORK}" diff --cached --quiet "${remote_ref}" -- "${FOLD_PATHS[@]}"; then
+  _log "${BRANCH} already has these files (${FOLD_PATHS[*]}); not pushed again"
 else
   # GIT_AUTHOR_* and GIT_COMMITTER_* outrank user.name, and a caller may have set them: set all four.
   GIT_AUTHOR_NAME="${BOT_NAME}" GIT_AUTHOR_EMAIL="${BOT_EMAIL}" GIT_COMMITTER_NAME="${BOT_NAME}" \
@@ -483,20 +685,63 @@ token="$(_bounded "${TIMEOUT}" bash "${TOKEN_BIN}" --item "${item}" "${REPO%%/*}
 [[ -n "${token}" ]] || _fail "pushed ${BRANCH}, but no App token for gh; open the PR by hand"
 open="$(GH_TOKEN="${token}" _bounded "${TIMEOUT}" "${GH_BIN}" pr list -R "${REPO}" --head "${BRANCH}" \
   --state open --json url --jq '.[].url')" || _fail "pushed ${BRANCH}, but gh pr list failed"
-if [[ -n "${open}" ]]; then
-  _log "updated the open PR ${open}"
-  exit 0
-fi
 
+# _rule_list <JSON array file>: one rule per line in a fence, or "None." for an empty list.
+_rule_list() {
+  if jq -e 'length > 0' "$1" >/dev/null 2>&1; then
+    printf '~~~text\n'
+    jq -r '.[]' "$1" || printf '(cannot list the rules; see the diff)\n'
+    printf '~~~\n\n'
+  else
+    printf 'None.\n\n'
+  fi
+}
+fold="${TMP_ROOT}/fold"
+jq '.permissions.allow // []' "${fold}/host-need.json" >"${fold}/host-rules.json" || printf '[]\n' >"${fold}/host-rules.json"
+if [[ "${GROUP}" == personal ]]; then
+  group_title="Personal Macs (${GROUP_REL#user-settings/})"
+elif [[ -n "${GROUP}" ]]; then
+  group_title="Macs in group ${GROUP} (${GROUP_REL#user-settings/})"
+else
+  group_title="Personal Macs"
+fi
 body="${TMP_ROOT}/body.md"
 {
-  printf '%s\n\n' "Local edits to \`~/.claude/settings.json\` on ${HOST}, folded into \`${HOST_REL}\` by the deploy job (#842)."
+  printf '%s\n\n' "Local edits to \`~/.claude/settings.json\` on ${HOST}, folded by the deploy job (#842)."
+  printf 'Each rule below is a grant: merging this PR allows it on the Macs its heading names.\n\n'
+  printf '### %s\n\n' "${group_title}"
+  if [[ -z "${GROUP}" ]]; then
+    printf 'None: %s, so every new rule stays on this Mac.\n\n' "${GROUP_NOTE:-${HOST} is in no group}"
+  else
+    _rule_list "${fold}/group-rules.json"
+  fi
+  printf '### This Mac only (%s)\n\n' "${HOST_REL#user-settings/}"
+  _rule_list "${fold}/host-rules.json"
+  if ${SPLIT_FALLBACK}; then
+    printf 'The build check failed with the rules split across files, so every new rule stays in %s.\n\n' "\`${HOST_REL}\`"
+  fi
+  if [[ -n "${RISK_NOTE}" ]]; then
+    printf 'Every new rule stays on this Mac: %s.\n\n' "${RISK_NOTE}"
+  fi
   printf 'Fold into base.json in review if it applies to every Mac.\n\n'
   printf 'Both secret checks passed (shape check, gitleaks).\n\n```diff\n'
-  diff -u --label "main:${HOST_REL}" --label "harvest:${HOST_REL}" \
-    "${TMP_ROOT}/fold/main-host.json" "${TMP_ROOT}/fold/new-host.json" || true
+  if ${GROUP_CHANGED}; then
+    diff -u --label "main:${GROUP_REL}" --label "harvest:${GROUP_REL}" \
+      "${fold}/main-group.json" "${fold}/new-group.json" || true
+  fi
+  if ${HOST_CHANGED}; then
+    diff -u --label "main:${HOST_REL}" --label "harvest:${HOST_REL}" \
+      "${fold}/main-host.json" "${fold}/new-host.json" || true
+  fi
   printf '```\n'
 } >"${body}"
+# The rule lists are grants: an open PR's body must list what its branch now holds.
+if [[ -n "${open}" ]]; then
+  GH_TOKEN="${token}" _bounded "${TIMEOUT}" "${GH_BIN}" pr edit "${open}" -R "${REPO}" --body-file "${body}" \
+    >/dev/null || _fail "pushed ${BRANCH}, but gh pr edit failed; the body of ${open} may be stale"
+  _log "updated the open PR ${open} and its body"
+  exit 0
+fi
 url="$(GH_TOKEN="${token}" _bounded "${TIMEOUT}" "${GH_BIN}" pr create -R "${REPO}" --head "${BRANCH}" \
   --base main --title "${TITLE}" --body-file "${body}")" || _fail "pushed ${BRANCH}, but gh pr create failed"
 _log "opened ${url}"

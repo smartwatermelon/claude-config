@@ -124,7 +124,16 @@ printf 'gh %s\n' "$*" >>"${TEST_ROOT}/gh.log"
 if [[ "${GH_TOKEN:-}" == "${STUB_TOKEN}" ]]; then echo "env GH_TOKEN=app" >>"${TEST_ROOT}/gh.log"; fi
 case "$1 $2" in
   "pr list") [[ -z "${STUB_GH_OPEN:-}" ]] || printf '%s\n' "${STUB_GH_OPEN}" ;;
-  "pr create") echo "https://github.com/smartwatermelon/claude-config/pull/999" ;;
+  "pr create" | "pr edit")
+    # The body file is in the harvest's temp dir, gone after it exits: keep a copy.
+    prev=""
+    for a in "$@"; do
+      [[ "${prev}" != --body-file ]] || cp "${a}" "${TEST_ROOT}/body.md"
+      prev="${a}"
+    done
+    [[ "$2" != create ]] || echo "https://github.com/smartwatermelon/claude-config/pull/999"
+    [[ "$2" != edit ]] || exit "${STUB_GH_EDIT_RC:-0}"
+    ;;
   *) ;;
 esac
 exit 0
@@ -204,6 +213,28 @@ nowhere() {
 }
 
 host_json() { jq -cS . "${HOSTFILE}"; }
+
+# --- fan-out helpers -----------------------------------------------------------
+
+GROUPFILE_REL="user-settings/groups/personal.json"
+HOSTFILE_REL="user-settings/hosts/TESTHOST.json"
+RISK_LIST="${BATS_TEST_DIRNAME:?}/../user-settings/host-only-rules.txt"
+
+# TESTHOST in the personal group (empty layer), with the repo's own risk list.
+use_group() {
+  mkdir -p "${SRC}/groups"
+  printf '{"personal": ["TESTHOST"]}\n' >"${SRC}/groups.json"
+  printf '{}\n' >"${SRC}/groups/personal.json"
+  cp "${RISK_LIST}" "${SRC}/host-only-rules.txt"
+}
+group_json() { jq -c . "${WORK}/${GROUPFILE_REL}"; }
+# The folded allow rules of the group file and of the host file, as compact JSON arrays.
+group_rules() { jq -c '.permissions.allow // []' "${WORK}/${GROUPFILE_REL}"; }
+host_rules() { jq -c '.permissions.allow // []' "${HOSTFILE}"; }
+staged() { grep -qE "^git (.* )?add -- $1\$" "${TEST_ROOT}/git.log"; }
+not_staged() { if staged "$1"; then return 1; fi; }
+# The rules listed under a PR-body heading: the lines from "### $1" to the next heading.
+body_section() { awk -v h="### $1" 'index($0, h) == 1 { on = 1; next } /^### |^Fold into/ { on = 0 } on' "${TEST_ROOT}/body.md"; }
 
 # --- test helpers ----------------------------------------------------------------
 
@@ -331,6 +362,36 @@ JSON
   [[ "${output}" == *"removes something"*"permissions"* ]]
   not_pushed
   nowhere 'Bash(ls'
+}
+
+@test "an allow rule only a group file supplies, removed locally, is refused: exit 3, no push" {
+  printf '{"personal": ["TESTHOST"]}\n' >"${SRC}/groups.json"
+  mkdir -p "${SRC}/groups"
+  printf '{"permissions": {"allow": ["Bash(group:*)"]}}\n' >"${SRC}/groups/personal.json"
+  write_host <<'JSON'
+{"permissions": {"allow": ["Bash(host:*)"]}}
+JSON
+  make_live '.permissions.allow -= ["Bash(group:*)"]'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"a group file"*"permissions"* ]]
+  not_pushed
+  # The dry run folds into --src and must refuse the same way.
+  make_stubs
+  run harvest --dry-run
+  [ "${status}" -eq 3 ]
+}
+
+@test "a local rule main's group file already holds is not folded into the host file" {
+  make_live '.permissions.allow += ["Bash(group:*)"]'
+  mkdir -p "${TEST_ROOT}/main/hosts" "${TEST_ROOT}/main/groups"
+  cp "${SRC}/base.json" "${TEST_ROOT}/main/base.json"
+  printf '{"personal": ["TESTHOST"]}\n' >"${TEST_ROOT}/main/groups.json"
+  printf '{"permissions": {"allow": ["Bash(group:*)"]}}\n' >"${TEST_ROOT}/main/groups/personal.json"
+  STUB_MAIN_SRC="${TEST_ROOT}/main" run harvest
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"already holds every local change"* ]]
+  not_pushed
 }
 
 @test "a removal and an addition in one edit are both in the fold" {
@@ -644,6 +705,258 @@ JSON
   [ "$(gh_calls create)" -eq 0 ]
 }
 
+# --- fan-out: group file or host file ----------------------------------------
+
+@test "fan-out: a low-risk exact rule goes to groups/personal.json; the host file is unchanged" {
+  use_group
+  write_host <<'JSON'
+{"model": "sonnet"}
+JSON
+  cp "${SRC}/hosts/TESTHOST.json" "${TEST_ROOT}/host-before.json"
+  make_live '.permissions.allow += ["Bash(git status)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(group_json)" = '{"permissions":{"allow":["Bash(git status)"]}}' ]
+  cmp "${HOSTFILE}" "${TEST_ROOT}/host-before.json"
+  staged "${GROUPFILE_REL}"
+  not_staged "${HOSTFILE_REL}"
+  [[ "${output}" == *"new allow rules: 1 to ${GROUPFILE_REL}, 0 to ${HOSTFILE_REL}"* ]]
+  pushed
+}
+
+@test "fan-out: risk-list rules stay in the host file, prefixed forms too" {
+  use_group
+  local rules='["Bash(rm x)", "Bash(sudo rm x)", "Bash(cd x && rm y)", "Bash(xargs rm)", "Bash(git -C /p push)",
+    "Bash(ssh-keygen -t ed25519)", "Bash(cat ~/.ssh/config)", "Bash(RM x)", "Bash(gh pr merge 5)",
+    "Bash(find . -name x -delete)", "Bash(git branch -D x)", "Bash(npm publish)", "Bash(killall x)",
+    "Bash(defaults write a b c)", "Bash(wrangler deploy)", "Bash(eas build)", "Bash(ls 2>/dev/null)",
+    "Bash(git branch -q -D old)", "Bash(git branch old -D)", "Bash(git branch -dr origin/x)",
+    "Bash(gh pr -R o/r merge 5)", "Bash(gh repo -R o/r delete)"]'
+  make_live ".permissions.allow += ${rules}"
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_rules)" = "$(jq -c . <<<"${rules}")" ]
+  [ "$(group_json)" = '{}' ]
+  staged "${HOSTFILE_REL}"
+  not_staged "${GROUPFILE_REL}"
+}
+
+@test "fan-out: words that only contain a risky command are not caught by it" {
+  use_group
+  # perform holds rm, add holds dd, release holds eas, stop holds op, gitleaks holds git.
+  local rules='["Bash(npm run perform)", "Bash(git add x)", "Bash(npm run release)", "Bash(npm stop)",
+    "Bash(gitleaks version)", "Bash(git log --oneline)", "Bash(bats tests/test_x.bats)",
+    "Bash(git branch --show-current)", "Bash(gh pr view 5)"]'
+  make_live ".permissions.allow += ${rules}"
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(group_rules)" = "$(jq -c . <<<"${rules}")" ]
+  [ ! -e "${HOSTFILE}" ]
+  not_staged "${HOSTFILE_REL}"
+}
+
+@test "fan-out: a non-Bash rule, a wildcard Bash rule and bare Bash stay on the host with an empty risk list" {
+  use_group
+  # One pattern no rule here matches, so only the built-in checks act.
+  printf '# one unrelated pattern\n^never-matches$\n' >"${SRC}/host-only-rules.txt"
+  make_live '.permissions.allow += ["WebFetch", "Read(~/x)", "mcp__srv__tool", "Bash", "Bash(*)",
+    "Bash(npm test *)", "Bash(git status:*)", "Bash(git status)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_rules)" = '["WebFetch","Read(~/x)","mcp__srv__tool","Bash","Bash(*)","Bash(npm test *)","Bash(git status:*)"]' ]
+  # The list is in effect: the one exact rule fans out.
+  [ "$(group_rules)" = '["Bash(git status)"]' ]
+}
+
+@test "fan-out: in-place edits, interpreter one-liners, gh release and credential files stay on the host" {
+  use_group
+  local risky='["Bash(sed -i s/a/b/ f)", "Bash(perl -i x.pl f)", "Bash(bash -c x)", "Bash(python3 -c 1)",
+    "Bash(node -e 1)", "Bash(node -p 1)", "Bash(node --print 1)", "Bash(gsed -i s/a/b/ f)", "Bash(python3 -cprint(1))",
+    "Bash(php -r x)", "Bash(deno eval x)", "Bash(bun -e x)", "Bash(awk {print} f)",
+    "Bash(gh release create v1)", "Bash(gh repo create x)", "Bash(git worktree remove x)",
+    "Bash(cat ~/.npmrc)", "Bash(cat ~/.config/gh/hosts.yml)"]'
+  # The "Bash(" wrapper is not the bash interpreter: a -C or -e flag alone keeps nothing local.
+  local safe='["Bash(git -C /p log)", "Bash(grep -e foo x)", "Bash(sed -n 1p f)", "Bash(git worktree list)"]'
+  make_live ".permissions.allow += ${risky} + ${safe}"
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_rules)" = "$(jq -c . <<<"${risky}")" ]
+  [ "$(group_rules)" = "$(jq -c . <<<"${safe}")" ]
+}
+
+@test "fan-out: a risk list with no patterns keeps every rule in the host file, logged as an error" {
+  use_group
+  printf '# no patterns\n\n' >"${SRC}/host-only-rules.txt"
+  make_live '.permissions.allow += ["Bash(git status)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_rules)" = '["Bash(git status)"]' ]
+  [ "$(group_rules)" = '[]' ]
+  [[ "${output}" == *"ERROR: the risk list holds no patterns"* ]]
+}
+
+@test "fan-out: a mixed delta stages both files, and the PR body lists each rule under its heading" {
+  use_group
+  make_live '.permissions.allow += ["Bash(git status)", "Bash(rm -f x)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(group_rules)" = '["Bash(git status)"]' ]
+  [ "$(host_rules)" = '["Bash(rm -f x)"]' ]
+  staged "${GROUPFILE_REL}"
+  staged "${HOSTFILE_REL}"
+  [ "$(body_section 'Personal Macs (groups/personal.json)' | grep -c '^Bash(')" -eq 1 ]
+  body_section 'Personal Macs (groups/personal.json)' | grep -qxF 'Bash(git status)'
+  [ "$(body_section 'This Mac only (hosts/TESTHOST.json)' | grep -c '^Bash(')" -eq 1 ]
+  body_section 'This Mac only (hosts/TESTHOST.json)' | grep -qxF 'Bash(rm -f x)'
+  grep -q 'is a grant' "${TEST_ROOT}/body.md"
+  grep -qF -- "--- main:${GROUPFILE_REL}" "${TEST_ROOT}/body.md"
+  grep -qF -- "--- main:${HOSTFILE_REL}" "${TEST_ROOT}/body.md"
+  # With the branch on origin, its check compares both files.
+  make_stubs
+  STUB_GIT_BRANCH_SAME=1 run harvest
+  [ "${status}" -eq 0 ]
+  grep -qF "diff --cached --quiet refs/remotes/origin/${BRANCH} -- ${HOSTFILE_REL} ${GROUPFILE_REL}" "${TEST_ROOT}/git.log"
+}
+
+@test "fan-out: an empty list reads None. under its heading, for both headings" {
+  use_group
+  make_live '.permissions.allow += ["Bash(git status)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(body_section 'This Mac only (hosts/TESTHOST.json)' | grep -c .)" -eq 1 ]
+  body_section 'This Mac only (hosts/TESTHOST.json)' | grep -qx 'None\.'
+  lacks "main:${HOSTFILE_REL}" "${TEST_ROOT}/body.md"
+  make_stubs
+  make_live '.permissions.allow += ["Bash(rm x)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(body_section 'Personal Macs (groups/personal.json)' | grep -c .)" -eq 1 ]
+  body_section 'Personal Macs (groups/personal.json)' | grep -qx 'None\.'
+}
+
+@test "fan-out: a host in no group keeps every rule in the host file, logged" {
+  use_group
+  printf '{"personal": ["OTHERHOST"]}\n' >"${SRC}/groups.json"
+  make_live '.permissions.allow += ["Bash(git status)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_rules)" = '["Bash(git status)"]' ]
+  [ "$(group_json)" = '{}' ]
+  not_staged "${GROUPFILE_REL}"
+  [[ "${output}" == *"TESTHOST is in no group"* ]]
+  grep -q '^None: TESTHOST is in no group' "${TEST_ROOT}/body.md"
+}
+
+@test "fan-out: a host in two groups keeps every rule in the host file, logged" {
+  use_group
+  printf '{"personal": ["TESTHOST"], "lab": ["TESTHOST"]}\n' >"${SRC}/groups.json"
+  printf '{}\n' >"${SRC}/groups/lab.json"
+  make_live '.permissions.allow += ["Bash(git status)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_rules)" = '["Bash(git status)"]' ]
+  [ "$(group_json)" = '{}' ]
+  [[ "${output}" == *"TESTHOST is in 2 groups, not one"* ]]
+}
+
+@test "fan-out: a missing risk list keeps every rule in the host file, logged as an error" {
+  use_group
+  "${TEST_ROOT}/bin/rm" -f "${SRC}/host-only-rules.txt"
+  make_live '.permissions.allow += ["Bash(git status)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_rules)" = '["Bash(git status)"]' ]
+  [ "$(group_json)" = '{}' ]
+  [[ "${output}" == *"ERROR: the risk list host-only-rules.txt is missing or unreadable"* ]]
+  grep -q 'Every new rule stays on this Mac: the risk list' "${TEST_ROOT}/body.md"
+}
+
+@test "fan-out: an invalid pattern in the risk list keeps every rule in the host file, logged as an error" {
+  use_group
+  local bad
+  for bad in '(unclosed' 'a[b'; do
+    make_stubs
+    # The last round's fold is still in the scratch clone; start from main again.
+    [[ ! -e "${HOSTFILE}" ]] || "${TEST_ROOT}/bin/rm" -f "${HOSTFILE}"
+    printf '%s\n' '(^|[^A-Za-z0-9_])rm([^A-Za-z0-9_]|$)' "${bad}" >"${SRC}/host-only-rules.txt"
+    make_live '.permissions.allow += ["Bash(git status)"]'
+    run harvest
+    echo "pattern ${bad}: ${output}"
+    [ "${status}" -eq 0 ]
+    [ "$(host_rules)" = '["Bash(git status)"]' ]
+    [ "$(group_json)" = '{}' ]
+    [[ "${output}" == *"ERROR: the risk list holds an invalid pattern (grep exit 2)"* ]]
+  done
+}
+
+@test "fan-out: blank, comment and CRLF lines in the risk list are not patterns" {
+  use_group
+  # Unstripped, the blank line would match every rule and keep Bash(git status) on the host.
+  printf '# comment\n\n   \n\t# indented comment\r\n(^|[^A-Za-z0-9_])rm([^A-Za-z0-9_]|$)\r\n' >"${SRC}/host-only-rules.txt"
+  make_live '.permissions.allow += ["Bash(git status)", "Bash(rm x)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(group_rules)" = '["Bash(git status)"]' ]
+  [ "$(host_rules)" = '["Bash(rm x)"]' ]
+  [[ "${output}" != *"ERROR"* ]]
+}
+
+@test "fan-out: a split the build check rejects falls back to the host file, and the PR body says so" {
+  use_group
+  # A build that rejects any dry run whose group file holds a Bash rule: the split check fails, all-host passes.
+  cat >"${TEST_ROOT}/bin/build" <<STUB
+#!/usr/bin/env bash
+src="" dry=false
+for a in "\$@"; do
+  [[ "\${prev:-}" != --src ]] || src="\${a}"
+  [[ "\${a}" != --dry-run ]] || dry=true
+  prev="\${a}"
+done
+if \${dry} && grep -q 'Bash(' "\${src}/groups/personal.json" 2>/dev/null; then exit 2; fi
+exec bash "${BUILD}" "\$@"
+STUB
+  make_live '.permissions.allow += ["Bash(git status)"]'
+  HARVEST_BUILD_BIN="${TEST_ROOT}/bin/build" run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_rules)" = '["Bash(git status)"]' ]
+  [ "$(group_json)" = '{}' ]
+  not_staged "${GROUPFILE_REL}"
+  [[ "${output}" == *"the build check failed (exit 2) with rules in ${GROUPFILE_REL}"* ]]
+  grep -q 'The build check failed with the rules split across files' "${TEST_ROOT}/body.md"
+  body_section 'This Mac only (hosts/TESTHOST.json)' | grep -qxF 'Bash(git status)'
+}
+
+@test "fan-out: the host and group files keep their key order" {
+  use_group
+  printf '{"zeta": 1, "permissions": {"allow": ["Bash(h1)"]}, "alpha": 2}\n' >"${SRC}/groups/personal.json"
+  write_host <<'JSON'
+{"zeta": 3, "permissions": {"allow": ["Bash(h2)"]}, "alpha": 4}
+JSON
+  make_live '.permissions.allow += ["Bash(git status)", "Bash(rm x)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(group_json)" = '{"zeta":1,"permissions":{"allow":["Bash(h1)","Bash(git status)"]},"alpha":2}' ]
+  [ "$(jq -c . "${HOSTFILE}")" = '{"zeta":3,"permissions":{"allow":["Bash(h2)","Bash(rm x)"]},"alpha":4}' ]
+}
+
+@test "fan-out: a key other than permissions.allow stays in the host file" {
+  use_group
+  make_live '.model = "sonnet" | .permissions.allow += ["Bash(git status)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(host_json)" = '{"model":"sonnet"}' ]
+  [ "$(group_rules)" = '["Bash(git status)"]' ]
+}
+
+@test "fan-out: the dry run names the group file it would set" {
+  use_group
+  make_live '.permissions.allow += ["Bash(git status)"]'
+  run harvest --dry-run
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"would set ${GROUPFILE_REL} on"* ]]
+  [ ! -s "${TEST_ROOT}/git.log" ]
+}
+
 # --- PR ----------------------------------------------------------------------
 
 @test "an open harvest PR is updated by push, not duplicated" {
@@ -655,13 +968,34 @@ JSON
   [ "$(gh_calls create)" -eq 0 ]
 }
 
-@test "the branch already has this host file: no new push; an open PR is left as is" {
+@test "an open harvest PR gets a new body that lists the rules its branch now holds" {
+  use_group
+  make_live '.permissions.allow += ["Bash(git status)", "Bash(rm -f x)"]'
+  STUB_GH_OPEN="https://github.com/${REPO}/pull/5" run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(gh_calls edit)" -eq 1 ]
+  [ "$(gh_calls create)" -eq 0 ]
+  grep -q 'pr edit https://github.com/.*/pull/5 ' "${TEST_ROOT}/gh.log"
+  grep -qF 'Bash(git status)' "${TEST_ROOT}/body.md"
+  grep -qF 'Bash(rm -f x)' "${TEST_ROOT}/body.md"
+  [[ "${output}" == *"updated the open PR"*"and its body"* ]]
+}
+
+@test "a failed body update on an open PR fails loudly" {
+  make_live '.model = "sonnet"'
+  STUB_GH_EDIT_RC=1 STUB_GH_OPEN="https://github.com/${REPO}/pull/5" run harvest
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"gh pr edit failed"* ]]
+}
+
+@test "the branch already has this host file: no new push; an open PR gets only a body update" {
   make_live '.model = "sonnet"'
   STUB_GIT_BRANCH_SAME=1 STUB_GH_OPEN="https://github.com/${REPO}/pull/5" run harvest
   [ "${status}" -eq 0 ]
   not_pushed
   lacks ' commit ' "${TEST_ROOT}/git.log"
   [ "$(gh_calls create)" -eq 0 ]
+  [ "$(gh_calls edit)" -eq 1 ]
 }
 
 @test "the branch has this host file but no PR is open: a PR is opened, nothing pushed" {

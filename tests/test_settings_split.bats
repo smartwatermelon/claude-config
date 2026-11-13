@@ -25,7 +25,9 @@ setup() {
     '. as $d | [$paths[] | select(. as $p | $d | getpath($p) != null)] | length == 0' "${PREFS}"
   [ "${status}" -eq 0 ] || { echo "${PREFS} still holds a policy path" >&2; return 1; }
   local f
-  for f in "${ROOT}"/user-settings/hosts/*.json; do
+  # Group files are user-settings layers too (base, groups, host): the same guard covers them.
+  for f in "${ROOT}"/user-settings/hosts/*.json "${ROOT}"/user-settings/groups/*.json; do
+    [[ -e "${f}" ]] || continue
     run jq -e --argjson paths "${POLICY_PATHS}" \
       '. as $d | [$paths[] | select(. as $p | $d | getpath($p) != null)] | length == 0' "${f}"
     [ "${status}" -eq 0 ] || { echo "${f} holds a policy path" >&2; return 1; }

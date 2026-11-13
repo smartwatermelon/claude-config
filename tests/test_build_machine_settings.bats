@@ -861,7 +861,135 @@ JSON
   [[ "${output}" != *"dummy-internal-value"* ]]
 }
 
+# --- groups ---------------------------------------------------------------------
+
+write_groups() { cat >"${SRC}/groups.json"; }
+write_group() { mkdir -p "${SRC}/groups" && cat >"${SRC}/groups/$1.json"; }
+
+@test "groups: base, then group, then host, then local; arrays append as the host layer's do" {
+  write_base <<<'{"autoMode": {"allow": ["b1"]}, "s": "base", "t": "base", "u": "base"}'
+  write_groups <<<'{"personal": ["OTHER", "TESTHOST"]}'
+  write_group personal <<<'{"autoMode": {"allow": ["g1"]}, "s": "group", "t": "group", "u": "group"}'
+  write_host <<<'{"autoMode": {"allow": ["h1"]}, "s": "host", "t": "host"}'
+  write_local <<<'{"autoMode": {"allow": ["l1"]}, "s": "local"}'
+  run build
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"merging the group file ${SRC}/groups/personal.json"* ]]
+  out_json '.autoMode.allow'
+  [ "${output}" = '["b1","g1","h1","l1"]' ]
+  out_json '[.s, .t, .u]'
+  [ "${output}" = '["local","host","group"]' ]
+}
+
+@test "groups: two groups listing the host apply in groups.json order, not name order" {
+  write_base <<<'{"a": ["b"], "s": "base"}'
+  write_groups <<<'{"zeta": ["TESTHOST"], "alpha": ["TESTHOST"]}'
+  write_group zeta <<<'{"a": ["z"], "s": "zeta"}'
+  write_group alpha <<<'{"a": ["a"], "s": "alpha"}'
+  write_host <<<'{}'
+  run build
+  [ "${status}" -eq 0 ]
+  out_json '.a'
+  [ "${output}" = '["b","z","a"]' ]
+  out_json '.s'
+  [ "${output}" = '"alpha"' ]
+}
+
+@test "groups: a host in no group builds byte-identical to a build with no groups.json" {
+  write_base <<<'{"a": ["b"], "s": "base", "o": {"k": 1}}'
+  write_host <<<'{"a": ["h"], "o": {"j": 2}}'
+  run build --out "${TEST_ROOT}/without.json" --local "${TEST_ROOT}/absent.json"
+  [ "${status}" -eq 0 ]
+  write_groups <<<'{"personal": ["OTHER"]}'
+  write_group personal <<<'{"a": ["g"], "s": "group"}'
+  run build --out "${TEST_ROOT}/with.json" --local "${TEST_ROOT}/absent.json"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" != *"group file"* ]]
+  cmp "${TEST_ROOT}/without.json" "${TEST_ROOT}/with.json"
+}
+
+@test "groups: a listed group whose file is missing fails, names the file, and keeps the old file" {
+  old_file
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  write_groups <<<'{"personal": ["TESTHOST"]}'
+  run build
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *"${SRC}/groups/personal.json is missing"* ]]
+  out_json '.'
+  [ "${output}" = '{"old":true}' ]
+}
+
+@test "groups: invalid JSON or the wrong shape in groups.json fails and keeps the old file" {
+  old_file
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  write_group personal <<<'{}'
+  local bad
+  for bad in 'not json' '["TESTHOST"]' '{"personal": "TESTHOST"}' '{"personal": [1]}' \
+    '{"personal": ["testhost"]}' '{"../x": ["TESTHOST"]}' '{"a": []} {"b": []}'; do
+    printf '%s\n' "${bad}" >"${SRC}/groups.json"
+    run build
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *"bad ${SRC}/groups.json"* ]]
+    out_json '.'
+    [ "${output}" = '{"old":true}' ]
+  done
+}
+
+@test "groups: a group file that is not a JSON object fails, names it, and keeps the old file" {
+  old_file
+  write_base <<<'{"a": 1}'
+  write_host <<<'{}'
+  write_groups <<<'{"personal": ["TESTHOST"]}'
+  write_group personal <<<'["x"]'
+  run build
+  [ "${status}" -eq 1 ]
+  [[ "${output}" == *"cannot merge the group file ${SRC}/groups/personal.json"* ]]
+  out_json '.'
+  [ "${output}" = '{"old":true}' ]
+}
+
+@test "groups: --host-optional with no host file builds base plus the host's groups" {
+  write_base <<<'{"a": ["b"], "s": "base"}'
+  write_groups <<<'{"personal": ["TESTHOST"]}'
+  write_group personal <<<'{"a": ["g"], "s": "group"}'
+  run build --host-optional
+  [ "${status}" -eq 0 ]
+  out_json '.'
+  [ "${output}" = '{"a":["b","g"],"s":"group"}' ]
+}
+
+@test "groups: a hand edit a group file now supplies resolves, not drift" {
+  write_base <<<'{"a": ["b"]}'
+  write_host <<<'{}'
+  run build
+  [ "${status}" -eq 0 ]
+  jq -c '.a += ["g"]' "${OUT}" >"${TEST_ROOT}/edit.json"
+  cat "${TEST_ROOT}/edit.json" >"${OUT}"
+  write_groups <<<'{"personal": ["TESTHOST"]}'
+  write_group personal <<<'{"a": ["g"], "x": 1}'
+  run build --report "${TEST_ROOT}/drift.diff"
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"drift resolved"* ]]
+  out_json '.'
+  [ "${output}" = '{"a":["b","g"],"x":1}' ]
+}
+
 # --- the real source files ------------------------------------------------------
+
+@test "repo sources: machine-settings/ has no groups, so it gets no group layer" {
+  local src="${BATS_TEST_DIRNAME}/../machine-settings" f host
+  [[ ! -e "${src}/groups.json" && ! -e "${src}/groups" ]]
+  mkdir -p "${FAKE_HOME}/Library/CloudStorage/GoogleDrive-x@example.com/My Drive/Claude Handoff"
+  for f in "${src}"/hosts/*.json; do
+    host="${f##*/}"
+    host="${host%.json}"
+    MACHINE_SETTINGS_HOST="${host}" run build --src "${src}" --out "${TEST_ROOT}/new-${host}.json"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" != *"group file"* ]]
+  done
+}
 
 @test "repo sources: base.json and every host file build, with no private values" {
   local src="${BATS_TEST_DIRNAME}/../machine-settings" f host

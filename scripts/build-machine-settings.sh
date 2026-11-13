@@ -27,14 +27,21 @@ let an agent change its own sandbox.
 
   1. Read the host name (hostname -s, upper-case). No
      <src>/hosts/<HOST>.json: do nothing, leave any output as it is,
-     unless --host-optional: then build from base.json alone.
-  2. Merge <src>/base.json, then the host file, then the local file:
+     unless --host-optional: then build from base.json and any groups.
+  2. Merge <src>/base.json, then each group file, then the host file,
+     then the local file:
      objects merge deep, later arrays append to earlier ones, a later
      scalar replaces the earlier one. An object or array clashing with
      another type fails. The local file is optional and stays on the
      machine (the repo is public). Missing: skipped. Not a JSON
      object: the build fails. It never makes a missing host file
      optional.
+     Groups are optional: <src>/groups.json maps a group name to a list
+     of host names, e.g. {"personal": ["HOSTA", "HOSTB"]}. Each group
+     that lists this host adds <src>/groups/<group>.json, in
+     groups.json order. No groups.json, or a host in no group: no group
+     layer. A listed group with no file, bad JSON, or another shape
+     (names [A-Za-z0-9_-], hosts upper-case as in step 1) fails.
   3. Fill the placeholders. An unknown ${NAME} fails.
        ${HOME}            $HOME
        ${TMPDIR}          getconf DARWIN_USER_TEMP_DIR, no trailing slash
@@ -69,7 +76,7 @@ Options:
   --out <file>  output (default: ~/.config/claude-code/machine-settings.json)
   --report <file>  drift report path (overrides MACHINE_SETTINGS_DRIFT_REPORT)
   --local <file>  local overlay (default: --out with .json replaced by .local.json)
-  --host-optional  no host file: build from base.json alone, not nothing
+  --host-optional  no host file: build from base.json and groups, not nothing
   --dry-run     build and check; print what would change; write nothing
 
 Environment (tests and one-off checks):
@@ -164,7 +171,7 @@ base_file="${SRC}/base.json"
 host_file="${SRC}/hosts/${host}.json"
 host_src="${host_file}"
 if [[ ! -f "${host_file}" ]] && ${HOST_OPTIONAL}; then
-  _log "no ${host_file}; building from base.json alone"
+  _log "no ${host_file}; building without a host file"
   host_src=/dev/stdin # the merge reads an empty object from the here-string below
 elif [[ ! -f "${host_file}" ]]; then
   _log "no ${host_file}; ${OUT} left as it is"
@@ -197,8 +204,41 @@ IFS= read -r -d '' MERGE_JQ <<'JQ' || true
   else merge($b[0]; $h[0]; []) end
 JQ
 
-merged="$(jq -n --slurpfile b "${base_file}" --slurpfile h "${host_src}" "${MERGE_JQ}" <<<'{}')" ||
-  _fail "cannot merge ${base_file} and ${host_file}"
+# Groups: the layer files of each group in groups.json that lists this host, in file order (--help, step 2).
+groups_file="${SRC}/groups.json"
+group_files=()
+if [[ -f "${groups_file}" ]]; then
+  group_names="$(jq -r -n --slurpfile g "${groups_file}" --arg h "${host}" '
+    if ($g | length) != 1 or ($g[0] | type) != "object" then error("must hold one JSON object")
+    else $g[0] | to_entries[]
+      | if (.key | test("^[A-Za-z0-9_-]+$") | not) then error("bad group name \(.key | tojson)")
+        elif (.value | type) != "array" then error("group \(.key) must list host names")
+        elif any(.value[]; type != "string" or (test("^[A-Z0-9][A-Z0-9-]*$") | not))
+          then error("group \(.key): each host must be an upper-case host name")
+        elif any(.value[]; . == $h) then .key
+        else empty end
+    end')" || _fail "bad ${groups_file} (want {\"<group>\": [\"<HOST>\", ...]})"
+  while IFS= read -r g; do
+    [[ -n "${g}" ]] || continue
+    [[ -f "${SRC}/groups/${g}.json" ]] || _fail "${groups_file} puts ${host} in ${g}, but ${SRC}/groups/${g}.json is missing"
+    group_files+=("${SRC}/groups/${g}.json")
+  done <<<"${group_names}"
+fi
+
+if ((${#group_files[@]} == 0)); then
+  merged="$(jq -n --slurpfile b "${base_file}" --slurpfile h "${host_src}" "${MERGE_JQ}" <<<'{}')" ||
+    _fail "cannot merge ${base_file} and ${host_file}"
+else
+  # Each layer merges like the host file: the same jq, the earlier result as $b.
+  merged="$(<"${base_file}")" || _fail "cannot read ${base_file}"
+  for gf in "${group_files[@]}"; do
+    _log "merging the group file ${gf}"
+    merged="$(jq -n --slurpfile b <(printf '%s' "${merged}") --slurpfile h "${gf}" "${MERGE_JQ}")" ||
+      _fail "cannot merge the group file ${gf} (base.json and it must be JSON objects)"
+  done
+  merged="$(jq -n --slurpfile b <(printf '%s' "${merged}") --slurpfile h "${host_src}" "${MERGE_JQ}" <<<'{}')" ||
+    _fail "cannot merge the group files and ${host_file}"
+fi
 
 if [[ -f "${local_file}" ]]; then
   _log "merging the local overlay ${local_file}"
