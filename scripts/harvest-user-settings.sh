@@ -42,8 +42,8 @@ after a deploy that left a user-settings drift report.
   3. Refuse policy keys (hooks, env, deniedMcpServers, permissions.ask,
      permissions.deny, permissions.defaultMode): they belong in
      machine-settings/ and move by hand.
-  4. Secret checks, both must pass: a shape check (env values, exact-
-     command permission rules, secret-shaped strings), then gitleaks.
+  4. Secret checks, both must pass: a shape check (env values,
+     secret-shaped strings), then gitleaks.
      Only JSON paths and check names are printed, never values.
   5. Push branch claude/harvest-settings-<host> from origin/main in a
      scratch clone (~/.local/state/claude-config/harvest), as the agent
@@ -256,17 +256,14 @@ IFS= read -r -d '' SHAPE_JQ <<'JQ' || true
   def pathstr: map(if type == "number" then tostring
                    elif test("^[A-Za-z0-9_@-]{1,64}$") and (secretish | not) then .
                    else "<key>" end) | join(".");
-  def rule_ok: test("^[A-Za-z0-9_.-]+$") or test("^[A-Za-z0-9_.-]+\\(.*(:\\*| \\*)\\)$");
+  # Exact allow rules are harvested; rule text may be public.
+  # secretish and gitleaks guard secrets in it.
   . as $o
   | ([["hooks"], ["env"], ["deniedMcpServers"], ["permissions", "deny"], ["permissions", "ask"],
       ["permissions", "defaultMode"]][] as $p
       | select($o | getpath($p) != null)
       | if $p == ["env"] then ($o.env | keys[] | "\(["env", .] | pathstr)\tenv-value")
         else "\($p | pathstr)\tpolicy-key" end),
-    (paths(type == "string") as $p
-      | select(($p | length) == 3 and $p[0] == "permissions" and (["allow", "ask", "deny"] | index([$p[1]])))
-      | select($o | getpath($p) | rule_ok | not)
-      | "\($p | pathstr)\trule-shape"),
     (paths(type == "string") as $p | select($o | getpath($p) | secretish)
       | "\($p | pathstr)\tsecret-shaped-string"),
     (paths as $p | select($p[-1] | type == "string") | select($p[-1] | secretish)
