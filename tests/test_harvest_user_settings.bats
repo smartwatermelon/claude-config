@@ -14,7 +14,7 @@ setup() {
   SRC="${TEST_ROOT}/src"
   LIVE="${TEST_ROOT}/live.json"
   LOCAL="${TEST_ROOT}/local.json"
-  WORK="${FAKE_HOME}/.local/state/claude-config/harvest"
+  WORK="${FAKE_HOME}/.local/share/claude-config-harvest"
   HOSTFILE="${WORK}/user-settings/hosts/TESTHOST.json"
   STUB_LOG="${TEST_ROOT}/stub.log"
   mkdir -p "${FAKE_HOME}" "${SRC}/hosts" "${TEST_ROOT}/tmp" "${TEST_ROOT}/bin"
@@ -456,6 +456,16 @@ JSON
   HOST_ARG=ARICH-MAC run harvest
   [ "${status}" -eq 3 ]
   not_pushed
+}
+
+@test "the scratch clone is made outside the sandbox-writable ~/.local/state" {
+  make_live '.model = "sonnet"'
+  run harvest
+  [ "${status}" -eq 0 ]
+  pushed
+  grep -qE "^git (.* )?clone .* ${WORK}\$" "${TEST_ROOT}/git.log"
+  [ -d "${WORK}/.git" ]
+  [ ! -e "${FAKE_HOME}/.local/state/claude-config/harvest" ]
 }
 
 @test "a scratch clone whose origin is not the https URL is refused: exit 1, no push" {
