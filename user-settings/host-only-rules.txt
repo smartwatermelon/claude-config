@@ -84,8 +84,11 @@ keychain
 (^|[^A-Za-z0-9_])(shutdown|reboot|halt)([^A-Za-z0-9_]|$)
 (^|[^A-Za-z0-9_])(eval|exec)([^A-Za-z0-9_]|$)
 # Interpreter one-liners run any code. A space after the name, so the "Bash(" wrapper is not a match.
-(^|[^A-Za-z0-9_])(python[0-9.]*|node|perl|ruby|bash|zsh|sh)[[:space:]](.*[[:space:]])?-[A-Za-z]*[cep]([^A-Za-z0-9_]|$)
-(^|[^A-Za-z0-9_])(python[0-9.]*|node|perl|ruby|bash|zsh|sh)[[:space:]](.*[[:space:]])?--(eval|print|command)([^A-Za-z0-9_]|$)
+# No edge after the flag: code glued to it (-cprint(1)) is caught too.
+(^|[^A-Za-z0-9_])(python[0-9.]*|node|perl|ruby|php|bun|bash|zsh|dash|ksh|fish|sh)[[:space:]](.*[[:space:]])?-[A-Za-z]*[ceprE]
+(^|[^A-Za-z0-9_])(python[0-9.]*|node|perl|ruby|php|bun|bash|zsh|dash|ksh|fish|sh)[[:space:]](.*[[:space:]])?--(eval|print|command)([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])deno[[:space:]]+(.*[[:space:]])?eval([^A-Za-z0-9_]|$)
+(^|[^A-Za-z0-9_])[gmn]?awk([^A-Za-z0-9_]|$)
 
 # ── Deploys and publishing ──
 (^|[^A-Za-z0-9_])(npm|pnpm|yarn|bun)([^A-Za-z0-9_].*)?[^A-Za-z0-9_](publish|unpublish|deprecate)([^A-Za-z0-9_]|$)

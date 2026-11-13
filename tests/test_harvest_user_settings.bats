@@ -771,7 +771,8 @@ JSON
 @test "fan-out: in-place edits, interpreter one-liners, gh release and credential files stay on the host" {
   use_group
   local risky='["Bash(sed -i s/a/b/ f)", "Bash(perl -i x.pl f)", "Bash(bash -c x)", "Bash(python3 -c 1)",
-    "Bash(node -e 1)", "Bash(node -p 1)", "Bash(node --print 1)", "Bash(gsed -i s/a/b/ f)",
+    "Bash(node -e 1)", "Bash(node -p 1)", "Bash(node --print 1)", "Bash(gsed -i s/a/b/ f)", "Bash(python3 -cprint(1))",
+    "Bash(php -r x)", "Bash(deno eval x)", "Bash(bun -e x)", "Bash(awk {print} f)",
     "Bash(gh release create v1)", "Bash(gh repo create x)", "Bash(git worktree remove x)",
     "Bash(cat ~/.npmrc)", "Bash(cat ~/.config/gh/hosts.yml)"]'
   # The "Bash(" wrapper is not the bash interpreter: a -C or -e flag alone keeps nothing local.
