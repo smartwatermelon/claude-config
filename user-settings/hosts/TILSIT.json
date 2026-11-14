@@ -5,8 +5,9 @@
     ]
   },
   "permissions": {
-    "allow": [
-      "Bash(gitleaks version)"
-    ]
+    "allow": ["Bash(gitleaks version)"]
+  },
+  "enabledPlugins": {
+    "cloudflare@claude-plugins-official": true
   }
 }
