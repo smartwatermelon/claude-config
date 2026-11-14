@@ -665,6 +665,14 @@ _vet() {
     *) _refuse "a build with the new local file fails (exit ${rc}; a type clash?); the old file is kept" ;;
   esac
 }
+# An edit saved while the harvest ran would be lost: the file must still be the one the fold read, and no link.
+_unchanged() {
+  local raw="${TMP_ROOT}/fold/old-raw.json"
+  if [[ -L "${LOCAL}" ]] || { [[ -f "${raw}" ]] && ! cmp -s "${raw}" "${LOCAL}"; } ||
+    { [[ ! -f "${raw}" ]] && [[ -e "${LOCAL}" ]]; }; then
+    _refuse "the local file changed while the harvest ran; it is left as it is"
+  fi
+}
 _fold_local() {
   local f="${TMP_ROOT}/fold" supplied need edits n mode="600" dir word now
   if [[ -L "${LOCAL}" ]]; then
@@ -715,6 +723,7 @@ _fold_local() {
   fi
   dir="$(dirname "${LOCAL}")"
   mkdir -p "${dir}" || _fail "cannot create ${dir}"
+  _unchanged
   if [[ -e "${LOCAL}" ]]; then
     "${CP_BIN}" -p "${LOCAL}" "${LOCAL}.bak" || _fail "cannot back up ${LOCAL} to ${LOCAL}.bak"
   fi
@@ -722,12 +731,7 @@ _fold_local() {
   "${CP_BIN}" "${f}/new-local.json" "${LOCAL_TMP}" || _fail "cannot write ${LOCAL_TMP}"
   chmod "${mode}" "${LOCAL_TMP}" || _fail "cannot chmod ${LOCAL_TMP}"
   _vet "${LOCAL_TMP}"
-  # An edit saved while the harvest ran would be lost: the file must still be the one this fold read.
-  if [[ -f "${f}/old-raw.json" ]] && ! cmp -s "${f}/old-raw.json" "${LOCAL}"; then
-    _refuse "the local file changed while the harvest ran; it is left as it is"
-  elif [[ ! -f "${f}/old-raw.json" && -e "${LOCAL}" ]]; then
-    _refuse "a local file appeared while the harvest ran; it is left as it is"
-  fi
+  _unchanged
   "${MV_BIN}" -f "${LOCAL_TMP}" "${LOCAL}" || _fail "cannot move ${LOCAL_TMP} over ${LOCAL}"
   LOCAL_TMP=""
   _log "local mode: wrote ${n} local edit(s) to ${LOCAL} (old file in ${LOCAL}.bak)"

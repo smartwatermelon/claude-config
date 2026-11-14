@@ -1202,6 +1202,8 @@ STUB
   [ "${status}" -eq 3 ]
   [[ "${output}" == *"changed while the harvest ran"* ]]
   [ "$(jq -c . "${LOCAL}")" = '{"localOnly":"edited"}' ]
+  # The edit came after the backup, so the backup still holds the file the fold read.
+  [ "$(jq -c . "${LOCAL}.bak")" = '{"localOnly":"x"}' ]
   [ -z "$(find "${TEST_ROOT}" -maxdepth 1 -name '.user-settings.local.*')" ]
 }
 
