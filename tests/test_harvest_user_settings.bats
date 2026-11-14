@@ -1207,6 +1207,57 @@ STUB
   [ -z "$(find "${TEST_ROOT}" -maxdepth 1 -name '.user-settings.local.*')" ]
 }
 
+@test "local mode: a local file edited before the backup is left as it is, and no backup is written" {
+  work_host
+  printf '{"localOnly": "x"}\n' >"${LOCAL}"
+  make_live '.permissions.allow += ["Bash(git status:*)"]'
+  # The real build, except that a build reading the local file (after the fold read it) also edits it.
+  cat >"${TEST_ROOT}/bin/build" <<STUB
+#!/usr/bin/env bash
+prev=""
+for a in "\$@"; do
+  [[ "\${prev} \${a}" != "--local ${LOCAL}" ]] || printf '{"localOnly": "edited"}\\n' >"${LOCAL}"
+  prev="\${a}"
+done
+exec bash "${BUILD}" "\$@"
+STUB
+  HARVEST_BUILD_BIN="${TEST_ROOT}/bin/build" run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"changed while the harvest ran"* ]]
+  [ "$(jq -c . "${LOCAL}")" = '{"localOnly":"edited"}' ]
+  [ ! -e "${LOCAL}.bak" ]
+}
+
+@test "local mode: a symlink as the local file is refused, at the start or made during the run" {
+  work_host
+  printf '{"localOnly": "x"}\n' >"${TEST_ROOT}/target.json"
+  ln -s "${TEST_ROOT}/target.json" "${LOCAL}"
+  make_live '.permissions.allow += ["Bash(git status:*)"]'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"is a symlink"* ]]
+  [ -L "${LOCAL}" ]
+  "${TEST_ROOT}/bin/rm" -f "${LOCAL}"
+  : >"${STUB_LOG}"
+  printf '{"localOnly": "x"}\n' >"${LOCAL}"
+  # The real build, except that its dry run swaps the local file for a dangling link.
+  cat >"${TEST_ROOT}/bin/build" <<STUB
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [[ "\${a}" == --dry-run ]]; then
+    "${TEST_ROOT}/bin/rm" -f "${LOCAL}"
+    ln -s "${TEST_ROOT}/missing.json" "${LOCAL}"
+  fi
+done
+exec bash "${BUILD}" "\$@"
+STUB
+  HARVEST_BUILD_BIN="${TEST_ROOT}/bin/build" run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"changed while the harvest ran"* ]]
+  [ -L "${LOCAL}" ]
+  [ ! -e "${TEST_ROOT}/missing.json" ]
+}
+
 @test "local mode: --dry-run says what it would write and writes nothing" {
   work_host
   printf '{"localOnly": "x"}\n' >"${LOCAL}"

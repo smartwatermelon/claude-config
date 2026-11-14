@@ -680,7 +680,8 @@ _fold_local() {
   elif [[ -e "${LOCAL}" ]]; then
     [[ -f "${LOCAL}" ]] || _fail "${LOCAL} is not a regular file"
     jq -e 'type == "object"' "${LOCAL}" >/dev/null 2>&1 || _fail "${LOCAL} is not a JSON object"
-    cp "${LOCAL}" "${f}/old-raw.json" || _fail "cannot read ${LOCAL}"
+    # The bytes, mode and times the fold reads; the backup is made from this copy, so it is never a later edit.
+    cp -p "${LOCAL}" "${f}/old-raw.json" || _fail "cannot read ${LOCAL}"
     jq . "${f}/old-raw.json" >"${f}/old-local.json" || _fail "cannot read ${LOCAL}"
     mode="$(stat -c %a "${LOCAL}" 2>/dev/null || stat -f %Lp "${LOCAL}")" || _fail "cannot read the mode of ${LOCAL}"
     [[ "${mode}" =~ ^[0-7]{3,4}$ ]] || _fail "unexpected mode of ${LOCAL}: ${mode}"
@@ -724,8 +725,8 @@ _fold_local() {
   dir="$(dirname "${LOCAL}")"
   mkdir -p "${dir}" || _fail "cannot create ${dir}"
   _unchanged
-  if [[ -e "${LOCAL}" ]]; then
-    "${CP_BIN}" -p "${LOCAL}" "${LOCAL}.bak" || _fail "cannot back up ${LOCAL} to ${LOCAL}.bak"
+  if [[ -f "${f}/old-raw.json" ]]; then
+    "${CP_BIN}" -p "${f}/old-raw.json" "${LOCAL}.bak" || _fail "cannot back up ${LOCAL} to ${LOCAL}.bak"
   fi
   LOCAL_TMP="$(mktemp "${dir}/.user-settings.local.XXXXXX")" || _fail "cannot create a temp file in ${dir}"
   "${CP_BIN}" "${f}/new-local.json" "${LOCAL_TMP}" || _fail "cannot write ${LOCAL_TMP}"
