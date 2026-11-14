@@ -11,5 +11,9 @@
       "Cloudflare Workers deploy to valuation-api (production, non-staging) in /Volumes/extra-vieille/Workspaces/kebab-tax",
       "EAS production build/submit (./production.sh) in /Volumes/extra-vieille/Workspaces/kebab-tax"
     ]
+  },
+  "enabledPlugins": {
+    "cloudflare@cloudflare": true,
+    "sentry@claude-plugins-official": true
   }
 }

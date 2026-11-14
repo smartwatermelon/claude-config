@@ -1,8 +1,4 @@
 {
-  "enabledPlugins": {
-    "cloudflare@cloudflare": true,
-    "sentry@claude-plugins-official": true
-  },
   "sandbox": {
     "filesystem": {
       "allowWrite": [
