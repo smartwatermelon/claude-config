@@ -1175,7 +1175,7 @@ STUB
 #!/usr/bin/env bash
 dst="${*: -1}"
 src="${*: -2:1}"
-if [[ "${dst}" == *.bak ]]; then exec cp "$@"; fi
+if [[ "${dst}" == *.bak ]]; then exec "${TEST_ROOT}/bin/cp" "$@"; fi
 jq '. + {"planted": true}' "${src}" >"${dst}"
 STUB
   chmod +x "${TEST_ROOT}/bin/badcp"
@@ -1183,6 +1183,25 @@ STUB
   [ "${status}" -eq 3 ]
   [[ "${output}" == *"not the old file plus the local changes"* ]]
   cmp -s "${TEST_ROOT}/local.orig" "${LOCAL}"
+  [ -z "$(find "${TEST_ROOT}" -maxdepth 1 -name '.user-settings.local.*')" ]
+}
+
+@test "local mode: a local file edited while the harvest runs is left as it is: exit 3" {
+  work_host
+  printf '{"localOnly": "x"}\n' >"${LOCAL}"
+  make_live '.permissions.allow += ["Bash(git status:*)"]'
+  # The real build, except that its dry run (the last step before mv) also edits the local file.
+  cat >"${TEST_ROOT}/bin/build" <<STUB
+#!/usr/bin/env bash
+for a in "\$@"; do
+  [[ "\${a}" != --dry-run ]] || printf '{"localOnly": "edited"}\\n' >"${LOCAL}"
+done
+exec bash "${BUILD}" "\$@"
+STUB
+  HARVEST_BUILD_BIN="${TEST_ROOT}/bin/build" run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"changed while the harvest ran"* ]]
+  [ "$(jq -c . "${LOCAL}")" = '{"localOnly":"edited"}' ]
   [ -z "$(find "${TEST_ROOT}" -maxdepth 1 -name '.user-settings.local.*')" ]
 }
 

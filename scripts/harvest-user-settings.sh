@@ -672,7 +672,8 @@ _fold_local() {
   elif [[ -e "${LOCAL}" ]]; then
     [[ -f "${LOCAL}" ]] || _fail "${LOCAL} is not a regular file"
     jq -e 'type == "object"' "${LOCAL}" >/dev/null 2>&1 || _fail "${LOCAL} is not a JSON object"
-    jq . "${LOCAL}" >"${f}/old-local.json" || _fail "cannot read ${LOCAL}"
+    cp "${LOCAL}" "${f}/old-raw.json" || _fail "cannot read ${LOCAL}"
+    jq . "${f}/old-raw.json" >"${f}/old-local.json" || _fail "cannot read ${LOCAL}"
     mode="$(stat -c %a "${LOCAL}" 2>/dev/null || stat -f %Lp "${LOCAL}")" || _fail "cannot read the mode of ${LOCAL}"
     [[ "${mode}" =~ ^[0-7]{3,4}$ ]] || _fail "unexpected mode of ${LOCAL}: ${mode}"
   else
@@ -721,6 +722,12 @@ _fold_local() {
   "${CP_BIN}" "${f}/new-local.json" "${LOCAL_TMP}" || _fail "cannot write ${LOCAL_TMP}"
   chmod "${mode}" "${LOCAL_TMP}" || _fail "cannot chmod ${LOCAL_TMP}"
   _vet "${LOCAL_TMP}"
+  # An edit saved while the harvest ran would be lost: the file must still be the one this fold read.
+  if [[ -f "${f}/old-raw.json" ]] && ! cmp -s "${f}/old-raw.json" "${LOCAL}"; then
+    _refuse "the local file changed while the harvest ran; it is left as it is"
+  elif [[ ! -f "${f}/old-raw.json" && -e "${LOCAL}" ]]; then
+    _refuse "a local file appeared while the harvest ran; it is left as it is"
+  fi
   "${MV_BIN}" -f "${LOCAL_TMP}" "${LOCAL}" || _fail "cannot move ${LOCAL_TMP} over ${LOCAL}"
   LOCAL_TMP=""
   _log "local mode: wrote ${n} local edit(s) to ${LOCAL} (old file in ${LOCAL}.bak)"
