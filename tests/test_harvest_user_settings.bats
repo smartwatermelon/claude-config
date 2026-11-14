@@ -21,11 +21,13 @@ setup() {
   : >"${STUB_LOG}"
   make_guarded_stub mv
   make_guarded_stub rm
+  make_guarded_stub cp
   make_stubs
   export MACHINE_SETTINGS_MV_BIN="${TEST_ROOT}/bin/mv"
   export MACHINE_SETTINGS_RM_BIN="${TEST_ROOT}/bin/rm"
   export HARVEST_MV_BIN="${TEST_ROOT}/bin/mv"
   export HARVEST_RM_BIN="${TEST_ROOT}/bin/rm"
+  export HARVEST_CP_BIN="${TEST_ROOT}/bin/cp"
   export HARVEST_GIT_BIN="${TEST_ROOT}/bin/git"
   export HARVEST_GH_BIN="${TEST_ROOT}/bin/gh"
   export HARVEST_GITLEAKS_BIN="${TEST_ROOT}/bin/gitleaks"
@@ -183,7 +185,7 @@ write_host() { cat >"${SRC}/hosts/TESTHOST.json"; }
 # live.json = what the deploy built (base + host + local), then the jq edit $1.
 make_live() {
   local built="${TEST_ROOT}/built.json"
-  HOME="${FAKE_HOME}" TMPDIR="${TEST_ROOT}/tmp" MACHINE_SETTINGS_HOST=TESTHOST bash "${BUILD}" \
+  HOME="${FAKE_HOME}" TMPDIR="${TEST_ROOT}/tmp" MACHINE_SETTINGS_HOST="${HOST_ARG:-TESTHOST}" bash "${BUILD}" \
     --src "${SRC}" --out "${built}" --report "${TEST_ROOT}/built.diff" --local "${LOCAL}" --host-optional >/dev/null
   jq "$1" "${built}" >"${LIVE}"
   cp "${built}" "${LIVE}.built"
@@ -655,12 +657,6 @@ JSON
   nowhere "${STUB_TOKEN}"
 }
 
-@test "an ARICH-MAC host is refused: company settings never reach this repo" {
-  make_live '.model = "sonnet"'
-  HOST_ARG=ARICH-MAC run harvest
-  [ "${status}" -eq 3 ]
-  not_pushed
-}
 
 @test "the scratch clone is made outside the sandbox-writable ~/.local/state" {
   make_live '.model = "sonnet"'
@@ -1030,4 +1026,241 @@ JSON
   run harvest
   [ "${status}" -eq 0 ]
   not_pushed
+}
+
+# --- local mode (work machines) -----------------------------------------------
+
+# A work-machine host name, in this one place: local mode is chosen by host.
+work_host() { export HOST_ARG=ARICH-MAC; }
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+# Nothing left the Mac: no git, gh, gitleaks or App token call.
+stayed_local() {
+  [ ! -s "${TEST_ROOT}/git.log" ]
+  [ ! -s "${TEST_ROOT}/gh.log" ]
+  [ ! -s "${TEST_ROOT}/gitleaks.log" ]
+  [ ! -s "${TEST_ROOT}/token.log" ]
+  [ ! -e "${WORK}" ]
+}
+# The local file is byte-for-byte the saved copy, and no backup or temp file was left.
+untouched() {
+  cmp -s "${TEST_ROOT}/local.orig" "${LOCAL}"
+  [ ! -e "${LOCAL}.bak" ]
+  [ -z "$(find "${TEST_ROOT}" -maxdepth 1 -name '.user-settings.local.*')" ]
+}
+save_local() { cp "${LOCAL}" "${TEST_ROOT}/local.orig"; }
+
+@test "local mode: a new wildcard allow rule goes into the local file; nothing leaves the Mac" {
+  work_host
+  printf '{"localOnly": "x", "model": "local-model"}\n' >"${LOCAL}"
+  save_local
+  make_live '.permissions.allow += ["Bash(gh issue list:*)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(jq -c '.permissions.allow' "${LOCAL}")" = '["Bash(gh issue list:*)"]' ]
+  [ "$(jq -cS 'del(.permissions)' "${LOCAL}")" = '{"localOnly":"x","model":"local-model"}' ]
+  cmp -s "${TEST_ROOT}/local.orig" "${LOCAL}.bak"
+  stayed_local
+  [ "$(wc -l <"${TEST_ROOT}/notify.log")" -eq 1 ]
+  grep -q "kept 1 local edit on ${HOST_ARG} in its local file" "${TEST_ROOT}/notify.log"
+  [[ "${output}" == *"added 1 item(s) to permissions.allow"* ]]
+  nowhere 'gh issue list'
+}
+
+@test "local mode: a missing local file is created with mode 600, and no backup is made" {
+  work_host
+  make_live '.permissions.allow += ["Bash(git status:*)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(jq -c . "${LOCAL}")" = '{"permissions":{"allow":["Bash(git status:*)"]}}' ]
+  [ "$(mode_of "${LOCAL}")" = 600 ]
+  [ ! -e "${LOCAL}.bak" ]
+}
+
+@test "local mode: the local file keeps its mode" {
+  work_host
+  printf '{"localOnly": "x"}\n' >"${LOCAL}"
+  chmod 644 "${LOCAL}"
+  make_live '.model = "sonnet"'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(jq -cS . "${LOCAL}")" = '{"localOnly":"x","model":"sonnet"}' ]
+  [ "$(mode_of "${LOCAL}")" = 644 ]
+}
+
+@test "local mode: other keys of the local file, autoMode arrays too, change only where D does" {
+  work_host
+  printf '{"autoMode": {"environment": ["note a", "note b"], "allow": ["note c"]}, "z": {"k": [1, 2]}}\n' >"${LOCAL}"
+  make_live '.permissions.allow += ["Bash(git status:*)"] | .autoMode.environment += ["note new"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(jq -c '.autoMode' "${LOCAL}")" = '{"environment":["note a","note b","note new"],"allow":["note c"]}' ]
+  [ "$(jq -c '.z' "${LOCAL}")" = '{"k":[1,2]}' ]
+  [ "$(jq -c '.permissions.allow' "${LOCAL}")" = '["Bash(git status:*)"]' ]
+}
+
+@test "local mode: a policy key is refused: exit 3, the local file untouched" {
+  work_host
+  printf '{"localOnly": "x"}\n' >"${LOCAL}"
+  save_local
+  make_live '.hooks = {"Stop": []}'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"hooks"*"policy-key"* ]]
+  untouched
+  stayed_local
+}
+
+@test "local mode: a secret-shaped string is refused: exit 3, the local file untouched" {
+  local secret
+  secret="$(rand_hex 6)"
+  work_host
+  printf '{"localOnly": "x"}\n' >"${LOCAL}"
+  save_local
+  make_live ".permissions.allow += [\"Bash(curl --token ${secret}:*)\"]"
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"secret-shaped-string"* ]]
+  untouched
+  stayed_local
+  nowhere "${secret}"
+}
+
+@test "local mode: removing a rule base.json supplies is refused: exit 3, the local file untouched" {
+  work_host
+  printf '{"permissions": {"allow": ["Bash(local:*)"]}}\n' >"${LOCAL}"
+  save_local
+  make_live '.permissions.allow -= ["Bash(ls:*)"]'
+  run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"removes something"*"permissions"* ]]
+  untouched
+  nowhere 'Bash(ls'
+}
+
+@test "local mode: removing a rule only the local file supplies drops it, and an emptied parent goes" {
+  work_host
+  printf '{"permissions": {"allow": ["Bash(local:*)"]}, "localOnly": "x"}\n' >"${LOCAL}"
+  make_live '.permissions.allow -= ["Bash(local:*)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(jq -c . "${LOCAL}")" = '{"localOnly":"x"}' ]
+  [[ "${output}" == *"removed 1 item from permissions.allow"* ]]
+}
+
+@test "local mode: a build with the new local file that does not hold D is refused, the file untouched" {
+  work_host
+  printf '{"localOnly": "x"}\n' >"${LOCAL}"
+  save_local
+  make_live '.permissions.allow += ["Bash(git status:*)"]'
+  # The real build, except that its dry run reports drift.
+  cat >"${TEST_ROOT}/bin/build" <<STUB
+#!/usr/bin/env bash
+for a in "\$@"; do [[ "\${a}" != --dry-run ]] || exit 2; done
+exec bash "${BUILD}" "\$@"
+STUB
+  HARVEST_BUILD_BIN="${TEST_ROOT}/bin/build" run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"does not hold every local change"* ]]
+  cmp -s "${TEST_ROOT}/local.orig" "${LOCAL}"
+  [ -z "$(find "${TEST_ROOT}" -maxdepth 1 -name '.user-settings.local.*')" ]
+}
+
+@test "local mode: a written file that is not the old file plus D is refused, the file untouched" {
+  work_host
+  printf '{"localOnly": "x"}\n' >"${LOCAL}"
+  save_local
+  make_live '.permissions.allow += ["Bash(git status:*)"]'
+  # A cp that plants an extra key in the temp file (the backup copy is real).
+  cat >"${TEST_ROOT}/bin/badcp" <<'STUB'
+#!/usr/bin/env bash
+dst="${*: -1}"
+src="${*: -2:1}"
+if [[ "${dst}" == *.bak ]]; then exec cp "$@"; fi
+jq '. + {"planted": true}' "${src}" >"${dst}"
+STUB
+  chmod +x "${TEST_ROOT}/bin/badcp"
+  HARVEST_CP_BIN="${TEST_ROOT}/bin/badcp" run harvest
+  [ "${status}" -eq 3 ]
+  [[ "${output}" == *"not the old file plus the local changes"* ]]
+  cmp -s "${TEST_ROOT}/local.orig" "${LOCAL}"
+  [ -z "$(find "${TEST_ROOT}" -maxdepth 1 -name '.user-settings.local.*')" ]
+}
+
+@test "local mode: --dry-run says what it would write and writes nothing" {
+  work_host
+  printf '{"localOnly": "x"}\n' >"${LOCAL}"
+  save_local
+  make_live '.permissions.allow += ["Bash(gh issue list:*)"]'
+  run harvest --dry-run
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"dry run: would write 1 local edit(s)"* ]]
+  untouched
+  stayed_local
+  [ ! -s "${TEST_ROOT}/notify.log" ]
+  nowhere 'gh issue list'
+}
+
+@test "local mode: two separate edits notify twice; a repeat run writes and notifies nothing" {
+  work_host
+  make_live '.permissions.allow += ["Bash(git status:*)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  run harvest
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"already holds every local change"* ]]
+  [ "$(wc -l <"${TEST_ROOT}/notify.log")" -eq 1 ]
+  # The notice carries the time in seconds: wait so the second edit's notice differs.
+  sleep 1
+  make_live '.permissions.allow += ["Bash(git diff:*)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  [ "$(wc -l <"${TEST_ROOT}/notify.log")" -eq 2 ]
+}
+
+@test "a personal Mac still takes the repo path, and its local file is not written" {
+  make_live '.permissions.allow += ["Bash(git status:*)"]'
+  run harvest
+  [ "${status}" -eq 0 ]
+  pushed
+  [ ! -e "${LOCAL}" ]
+}
+
+# The deploy's own build of the live file, as install.sh runs it.
+real_build() {
+  HOME="${FAKE_HOME}" TMPDIR="${TEST_ROOT}/tmp" MACHINE_SETTINGS_HOST="${HOST_ARG}" bash "${BUILD}" \
+    --src "${SRC}" --out "${LIVE}" --report "${TEST_ROOT}/e2e.diff" --local "${LOCAL}" --host-optional "$@"
+}
+
+@test "local mode end to end: main moved, so the real build resolves the drift and live equals .built" {
+  work_host
+  printf '{"localOnly": "x"}\n' >"${LOCAL}"
+  make_live '.permissions.allow += ["Bash(gh issue list:*)"]'
+  # After the last build, base gains a rule: the new build differs from live, so only a three-way merge clears it.
+  write_base <<'JSON'
+{"model": "opus", "theme": "dark", "permissions": {"allow": ["Bash(ls:*)", "Bash(pwd)"]}, "enabledPlugins": {"a@m": true}}
+JSON
+  run real_build --dry-run
+  [ "${status}" -eq 2 ]
+  run harvest
+  [ "${status}" -eq 0 ]
+  run real_build
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"drift resolved"* ]]
+  [ "$(jq -cS . "${LIVE}")" = "$(jq -cS . "${LIVE}.built")" ]
+  jq -e '.permissions.allow | index(["Bash(gh issue list:*)"]) and index(["Bash(pwd)"])' "${LIVE}" >/dev/null
+}
+
+@test "local mode end to end: main did not move, so the real build finds live equal to it and records .built" {
+  work_host
+  printf '{"localOnly": "x"}\n' >"${LOCAL}"
+  make_live '.permissions.allow += ["Bash(gh issue list:*)"]'
+  run real_build --dry-run
+  [ "${status}" -eq 2 ]
+  run harvest
+  [ "${status}" -eq 0 ]
+  run real_build
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"already matches"* ]]
+  [ "$(jq -cS . "${LIVE}")" = "$(jq -cS . "${LIVE}.built")" ]
+  [ ! -e "${TEST_ROOT}/e2e.diff" ]
 }

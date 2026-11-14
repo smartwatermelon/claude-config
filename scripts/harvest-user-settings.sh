@@ -16,6 +16,7 @@ SECURITY_BIN="${HARVEST_SECURITY_BIN:-security}"
 BUILD_BIN="${HARVEST_BUILD_BIN:-${SCRIPT_DIR}/build-machine-settings.sh}"
 MV_BIN="${HARVEST_MV_BIN:-mv}"
 RM_BIN="${HARVEST_RM_BIN:-rm}"
+CP_BIN="${HARVEST_CP_BIN:-cp}"
 STATE_DIR="${HOME}/.local/state/claude-config"
 # Not sandbox-writable: an agent could plant a filter driver in a writable clone's .git/config.
 WORK="${HARVEST_WORK_DIR:-${HOME}/.local/share/claude-config-harvest}"
@@ -66,6 +67,22 @@ after a deploy that left a user-settings drift report.
   6. Push branch claude/harvest-settings-<host> as the agent GitHub
      App, then open a PR or let the push update the open one.
 
+Local mode (work machines, whose settings never go to this public
+repo): steps 1 to 3 and the shape check run as above. Then nothing
+leaves the Mac: no gitleaks, no clone, no group split, no push, no PR.
+  - The part of D a build of --src + the local file lacks is merged
+    into the --local file (arrays add items, scalars replace). It is
+    created, mode 600, if missing.
+  - A removal of something the local file supplies is dropped from
+    it. One that base.json, a group file or the host file supplies,
+    or a type change, is refused (exit 3).
+  - The write: the old file to <local>.bak (cp -p, one backup), the
+    new content to a temp file beside it, checked (a JSON object,
+    exactly the old file plus D, and a build of --src with it holds
+    D), the old mode kept, then mv. Any failed check keeps the old file.
+  - The changed paths are logged (never values) and one notification
+    gives only the count. --dry-run writes nothing.
+
 The App key comes from the login Keychain, or from the key file
 ~/.config/gh-app-keys/<service>.pem (GH_APP_KEY_DIR moves it), through
 ~/.config/bash/gh-app-token.sh. With neither the harvest stops: the
@@ -75,9 +92,10 @@ helper's 1Password fallback can prompt, and nobody is there to answer.
                   ~/.config/claude-code/user-settings.local.json)
   --built <file>  the last build (default: <live>.built)
   --dry-run       run every check, folding into --src instead of
-                  origin/main (nothing is fetched); push nothing
+                  origin/main (nothing is fetched); push nothing.
+                  Local mode: say what would be written; write nothing
 
-Exit: 0 PR opened or updated, or nothing to do; 1 failed;
+Exit: 0 PR opened or updated, local file written, or nothing to do; 1 failed;
       3 not harvestable (notified, nothing pushed); 64 usage.
 USAGE
 }
@@ -179,9 +197,10 @@ command -v jq >/dev/null 2>&1 || _fail "jq not found on PATH (${PATH})"
 [[ -f "${BUILD_BIN}" ]] || _fail "missing ${BUILD_BIN}"
 jq -e 'type == "object"' "${LIVE}" >/dev/null 2>&1 || _fail "${LIVE} is not a JSON object"
 
-# arich-mac is the company machine: its settings never go to this personal, public repo.
+# A work machine's settings never go to this public repo: local mode keeps them in its local file.
+LOCAL_MODE=false
 if [[ "${HOST}" == ARICH-MAC* ]]; then
-  _refuse "${HOST} is the company machine; its settings stay off this repo"
+  LOCAL_MODE=true
 fi
 
 BRANCH="claude/harvest-settings-$(printf '%s' "${HOST}" | tr '[:upper:]' '[:lower:]')"
@@ -190,6 +209,8 @@ HOST_REL="user-settings/hosts/${HOST}.json"
 
 # ── Temp files: one dir, removed file by file (no recursive rm) ──
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/harvest.XXXXXX")" || _fail "cannot create a temp dir"
+# Local mode's temp file beside the local file: outside TMP_ROOT, so removed on its own.
+LOCAL_TMP=""
 _rm_tree() {
   local d="$1" f
   [[ "${d}" == "${TMP_ROOT}" || "${d}" == "${TMP_ROOT}"/* ]] || return 0
@@ -202,13 +223,17 @@ _rm_tree() {
   done
   rmdir "${d}" 2>/dev/null || true
 }
-trap '_rm_tree "${TMP_ROOT}"' EXIT
+_cleanup() {
+  [[ -z "${LOCAL_TMP}" ]] || "${RM_BIN}" -f "${LOCAL_TMP}" || true
+  _rm_tree "${TMP_ROOT}"
+}
+trap _cleanup EXIT
 
-# _build <src dir> <out>: what install.sh would build for this host.
+# _build <src dir> <out> [local file]: what install.sh would build for this host.
 _build() {
   mkdir -p "${2%/*}"
   MACHINE_SETTINGS_HOST="${HOST}" bash "${BUILD_BIN}" --src "$1" --out "$2" \
-    --report "${2%.json}.drift.diff" --local "${LOCAL}" --host-optional >/dev/null
+    --report "${2%.json}.drift.diff" --local "${3:-${LOCAL}}" --host-optional >/dev/null
 }
 
 # Top-level keys of the JSON on stdin, names only: the values are not scanned yet.
@@ -453,16 +478,21 @@ _place() {
 }
 # _check <src dir>: the build's dry run on the folded files; prints its exit code.
 _check() {
-  local f="${TMP_ROOT}/fold" rc=0
+  local f="${TMP_ROOT}/fold"
   cp "${f}/new-host.json" "${f}/chk/hosts/${HOST}.json" || _fail "cannot copy the new host file"
   if [[ -n "${GROUP}" ]]; then
     cp "${f}/new-group.json" "${f}/chk/groups/${GROUP}.json" || _fail "cannot copy the new group file"
   fi
+  _dry_build "${f}/chk" "${LOCAL}"
+}
+# _dry_build <src dir> <local file>: the build's dry run of <src dir> + <local file>; prints its exit code.
+_dry_build() {
+  local f="${TMP_ROOT}/fold" rc=0
   # The live file and its .built, copied: the build's dry run then classifies the result.
   cp "${LIVE}" "${f}/live.json" || _fail "cannot copy ${LIVE}"
   cp "${BUILT}" "${f}/live.json.built" || _fail "cannot copy ${BUILT}"
-  MACHINE_SETTINGS_HOST="${HOST}" bash "${BUILD_BIN}" --src "${f}/chk" --out "${f}/live.json" \
-    --report "${f}/chk.drift.diff" --local "${LOCAL}" --host-optional --dry-run >/dev/null 2>&1 || rc=$?
+  MACHINE_SETTINGS_HOST="${HOST}" bash "${BUILD_BIN}" --src "$1" --out "${f}/live.json" \
+    --report "${f}/chk.drift.diff" --local "$2" --host-optional --dry-run >/dev/null 2>&1 || rc=$?
   printf '%s\n' "${rc}"
 }
 _fold() {
@@ -569,6 +599,141 @@ if [[ -n "${findings}" ]]; then
   done <<<"${findings}"
   findings="${findings//$'\t'/: }"
   _refuse "the shape check failed (${findings//$'\n'/; }); move these by hand"
+fi
+
+# ── Local mode (see --help): D goes into the --local file; nothing leaves this Mac ──
+
+# New file $x is exactly old $o plus fold $d, less removals $r: checked apart from the fold's own jq.
+IFS= read -r -d '' VERIFY_JQ <<'JQ' || true
+  def items($v): if ($v | type) == "array" then $v else [] end;
+  def kid($v; $k): if ($v | type) == "object" then $v[$k] else null end;
+  def haskid($v; $k): ($v | type) == "object" and ($v | has($k));
+  def at($v; $p): if $p == [] then $v elif ($v | type) == "object" then at($v[$p[0]]; $p[1:]) else null end;
+  def haspath($v; $p):
+    $p == [] or (($v | type) == "object" and ($v | has($p[0])) and haspath($v[$p[0]]; $p[1:]));
+  def sub($a; $b):
+    if ($a | type) == "object" then ($b | type) == "object"
+      and all($a | keys_unsorted[]; . as $k | ($b | has($k)) and sub($a[$k]; $b[$k]))
+    elif ($a | type) == "array" then ($b | type) == "array" and all($a[]; . as $i | any($b[]; . == $i))
+    else $a == $b end;
+  def from($x; $o; $d):
+    if ($x | type) == "object" then
+      all($x | keys_unsorted[]; . as $k | (haskid($o; $k) or haskid($d; $k)) and from($x[$k]; kid($o; $k); kid($d; $k)))
+    elif ($x | type) == "array" then all($x[]; . as $i | any(items($o)[], items($d)[]; . == $i))
+    elif $d != null then $x == $d
+    else $x == $o end;
+  def gone_key($p): any($r[0][]; .k == "key" and .p == $p);
+  def gone_item($p; $i): any($r[0][]; .k == "item" and .p == $p and .i == $i);
+  def hollow($v): if ($v | type) == "object" then {} elif ($v | type) == "array" then [] else null end;
+  # A container its removals emptied is pruned, so a missing key counts as an empty one.
+  def kept($o; $n; $d; $p):
+    if ($o | type) == "object" then ($n | type) == "object"
+      and all($o | keys_unsorted[]; . as $k | gone_key($p + [$k])
+        or kept($o[$k]; (if ($n | has($k)) then $n[$k] else hollow($o[$k]) end); kid($d; $k); $p + [$k]))
+    elif ($o | type) == "array" then ($n | type) == "array"
+      and all($o[]; . as $i | gone_item($p; $i) or any($n[]; . == $i))
+    elif $d != null then true
+    else $o == $n end;
+  $x[0] as $x | $o[0] as $o | $d[0] as $d
+  | ($x | type) == "object" and sub($d; $x) and from($x; $o; $d) and kept($o; $x; $d; [])
+    and all($r[0][]; if .k == "key" then (haspath($x; .p) | not)
+                     else . as $e | (any(items(at($x; $e.p))[]; . == $e.i) | not) end)
+JQ
+# One line per folded edit, "<n>\t<what> <path>": paths and counts only, never values.
+IFS= read -r -d '' EDITS_JQ <<'JQ' || true
+  def pathstr: map(if type == "number" then tostring elif test("^[A-Za-z0-9_@-]{1,64}$") then . else "<key>" end)
+    | if length == 0 then "." else join(".") end;
+  def edits($v; $p):
+    if ($v | type) == "object" and ($v | length) > 0 then $v | keys_unsorted[] as $k | edits($v[$k]; $p + [$k])
+    elif ($v | type) == "array" and ($v | length) > 0 then "\($v | length)\tadded \($v | length) item(s) to \($p | pathstr)"
+    else "1\tset \($p | pathstr)" end;
+  (if ($d[0] | length) > 0 then edits($d[0]; []) else empty end),
+  ($r[0][] | if .k == "key" then "1\tremoved \(.p | pathstr)" else "1\tremoved 1 item from \(.p | pathstr)" end)
+JQ
+# _vet <candidate>: refuses unless it is a JSON object, exactly the old file plus D, and a build with it holds D.
+_vet() {
+  local f="${TMP_ROOT}/fold" rc
+  jq -e 'type == "object"' "$1" >/dev/null 2>&1 || _refuse "the new local file is not a JSON object; the old file is kept"
+  if ! jq -n -e --slurpfile x "$1" --slurpfile o "${f}/old-local.json" --slurpfile d "${f}/need.json" \
+    --slurpfile r "${f}/removed.json" "${VERIFY_JQ}" >/dev/null 2>&1; then
+    _refuse "the new local file is not the old file plus the local changes; the old file is kept"
+  fi
+  rc="$(_dry_build "${SRC}" "$1")"
+  case "${rc}" in
+    0) ;;
+    2) _refuse "a build with the new local file does not hold every local change; the old file is kept" ;;
+    *) _refuse "a build with the new local file fails (exit ${rc}; a type clash?); the old file is kept" ;;
+  esac
+}
+_fold_local() {
+  local f="${TMP_ROOT}/fold" supplied need edits n mode="600" dir word now
+  if [[ -L "${LOCAL}" ]]; then
+    _refuse "the local file is a symlink; it is not replaced"
+  elif [[ -e "${LOCAL}" ]]; then
+    [[ -f "${LOCAL}" ]] || _fail "${LOCAL} is not a regular file"
+    jq -e 'type == "object"' "${LOCAL}" >/dev/null 2>&1 || _fail "${LOCAL} is not a JSON object"
+    jq . "${LOCAL}" >"${f}/old-local.json" || _fail "cannot read ${LOCAL}"
+    mode="$(stat -c %a "${LOCAL}" 2>/dev/null || stat -f %Lp "${LOCAL}")" || _fail "cannot read the mode of ${LOCAL}"
+    [[ "${mode}" =~ ^[0-7]{3,4}$ ]] || _fail "unexpected mode of ${LOCAL}: ${mode}"
+  else
+    printf '{}\n' >"${f}/old-local.json"
+  fi
+  # A removal a build without the local file still holds comes from base, a group or the host file.
+  _build "${SRC}" "${f}/out/nolocal.json" "${f}/no-local.json" || _fail "cannot build ${SRC} without the local file"
+  jq -n --slurpfile r "${f}/removed.json" --slurpfile n "${f}/out/nolocal.json" "${SUPPLIED_JQ}" \
+    >"${f}/supplied.json" || _fail "cannot check the local removals against ${SRC}"
+  supplied="$(jq '[.[] | {(.p[0]): 0}] | add // {}' "${f}/supplied.json" | _keys)" || supplied="?"
+  if [[ -n "${supplied}" ]]; then
+    _refuse "a local change removes something base.json, a group file or the host file supplies (keys: ${supplied}); removals move by hand"
+  fi
+  # Only what a build of --src with the old local file lacks: the build appends arrays, so a held rule would double.
+  _build "${SRC}" "${f}/out/ref.json" || _fail "cannot build ${SRC} for ${HOST}"
+  need="$(jq -n -S --slurpfile a "${f}/delta.json" --slurpfile b "${f}/out/ref.json" "${OVERLAY_JQ}")" ||
+    _fail "cannot compare the local delta with ${SRC}"
+  printf '%s\n' "${need}" >"${f}/need.json"
+  jq -n --slurpfile h "${f}/old-local.json" --slurpfile d "${f}/need.json" "${APPLY_JQ}" >"${f}/added-local.json" ||
+    _fail "cannot merge the local delta into the local file"
+  jq -n --slurpfile h "${f}/added-local.json" --slurpfile r "${f}/removed.json" "${DROP_JQ}" >"${f}/new-local.json" ||
+    _fail "cannot drop the local removals from the local file"
+  if jq -n -e --slurpfile a "${f}/old-local.json" --slurpfile b "${f}/new-local.json" '$a == $b' >/dev/null; then
+    _log "local mode: ${LOCAL} already holds every local change; nothing to write"
+    exit 0
+  fi
+  edits="$(jq -n -r --slurpfile d "${f}/need.json" --slurpfile r "${f}/removed.json" "${EDITS_JQ}")" ||
+    _fail "cannot list the local edits"
+  n=0
+  while IFS=$'\t' read -r count what; do
+    [[ -n "${count}" ]] || continue
+    ((n += count))
+    _log "local mode: ${what}"
+  done <<<"${edits}"
+  if ${DRY_RUN}; then
+    _vet "${f}/new-local.json"
+    _log "dry run: would write ${n} local edit(s) to ${LOCAL} (old file to ${LOCAL}.bak); nothing written"
+    exit 0
+  fi
+  dir="$(dirname "${LOCAL}")"
+  mkdir -p "${dir}" || _fail "cannot create ${dir}"
+  if [[ -e "${LOCAL}" ]]; then
+    "${CP_BIN}" -p "${LOCAL}" "${LOCAL}.bak" || _fail "cannot back up ${LOCAL} to ${LOCAL}.bak"
+  fi
+  LOCAL_TMP="$(mktemp "${dir}/.user-settings.local.XXXXXX")" || _fail "cannot create a temp file in ${dir}"
+  "${CP_BIN}" "${f}/new-local.json" "${LOCAL_TMP}" || _fail "cannot write ${LOCAL_TMP}"
+  chmod "${mode}" "${LOCAL_TMP}" || _fail "cannot chmod ${LOCAL_TMP}"
+  _vet "${LOCAL_TMP}"
+  "${MV_BIN}" -f "${LOCAL_TMP}" "${LOCAL}" || _fail "cannot move ${LOCAL_TMP} over ${LOCAL}"
+  LOCAL_TMP=""
+  _log "local mode: wrote ${n} local edit(s) to ${LOCAL} (old file in ${LOCAL}.bak)"
+  word=edits
+  [[ "${n}" != 1 ]] || word=edit
+  now="$(date '+%Y-%m-%d %H:%M:%S')" || now="unknown time"
+  # The count and a time only: no settings content leaves this Mac. The time keeps a later edit's notice.
+  _notify_once "Settings harvest kept ${n} local ${word} on ${HOST} in its local file (${now})"
+  exit 0
+}
+if ${LOCAL_MODE}; then
+  mkdir -p "${TMP_ROOT}/fold/out" || _fail "cannot create ${TMP_ROOT}/fold/out"
+  _fold_local
 fi
 
 # gitleaks second. Its own empty dir, so no .gitleaks.toml beside the target can weaken it.
