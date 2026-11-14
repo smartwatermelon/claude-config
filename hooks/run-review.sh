@@ -51,7 +51,8 @@ unset CDPATH
 #                             to <log>.1 past this size (default: 1048576)
 #   review.maxAttempts     - Consecutive blocked commit reviews allowed per
 #                             branch before the hook refuses to review again
-#                             (default: 3). See check_attempt_limit (#646).
+#                             (default: 5). See check_attempt_limit (#646).
+#   review.maxTimeoutAttempts - Same, for timeout-only blocks (default: 3)
 #
 # EXAMPLES:
 #   git config --global review.maxLines 2000
@@ -104,9 +105,13 @@ REVIEW_NO_FILE="${REVIEW_NO_FILE:-}"
 REVIEW_MAX_LINES=$(git config --get --type=int review.maxLines 2>/dev/null || echo "1000")
 REVIEW_SKIP_THRESHOLD=$(git config --get --type=int review.skipThreshold 2>/dev/null || echo "2500")
 REVIEW_CHUNK_SIZE=$(git config --get --type=int review.chunkSize 2>/dev/null || echo "800")
-REVIEW_MAX_ATTEMPTS=$(git config --get --type=int review.maxAttempts 2>/dev/null || echo "3")
+REVIEW_MAX_ATTEMPTS=$(git config --get --type=int review.maxAttempts 2>/dev/null || echo "5")
 # A zero or negative limit would refuse every commit; fall back to the default.
-[[ "${REVIEW_MAX_ATTEMPTS}" -ge 1 ]] || REVIEW_MAX_ATTEMPTS=3
+[[ "${REVIEW_MAX_ATTEMPTS}" -ge 1 ]] || REVIEW_MAX_ATTEMPTS=5
+REVIEW_MAX_TIMEOUTS=$(git config --get --type=int review.maxTimeoutAttempts 2>/dev/null || echo "3")
+[[ "${REVIEW_MAX_TIMEOUTS}" -ge 1 ]] || REVIEW_MAX_TIMEOUTS=3
+# True when a block is only a reviewer timeout/error; counted apart (#646).
+REVIEW_BLOCK_TRANSIENT=false
 
 # Generated lockfiles: exempt from review at any size (#427), and in commit
 # mode excluded from a mixed commit's review input and size count (#689).
@@ -2493,7 +2498,7 @@ perform_chunked_review() {
   local blocking_count=0
   local warning_count=0
   local reviewed_files=0
-  local skipped_files=0
+  local skipped_files=0 transient_skips=0
   local issues_output=""
   # One "path (reason)" line per file that was NOT reviewed. A non-empty list
   # means the run is INCOMPLETE and must not report a pass (#451).
@@ -2699,6 +2704,7 @@ ${file_diff}
       if grep -Fxq -- "${_rfile}" <<<"${dispatched_list}"; then
         log_warn "No result for ${_rfile} - reviewer process wrote nothing; file not reviewed"
         ((skipped_files += 1))
+        ((transient_skips += 1))
         unreviewed_list="${unreviewed_list}${_rfile} (reviewer wrote no result)
 "
       fi
@@ -2716,6 +2722,7 @@ ${file_diff}
     if echo "${_rout}" | grep -q "VERDICT: FAIL ("; then
       log_warn "Agent timeout/error for ${_rfile} - file not reviewed"
       ((skipped_files += 1))
+      ((transient_skips += 1))
       unreviewed_list="${unreviewed_list}${_rfile} (agent error or timeout)
 "
       continue
@@ -3004,6 +3011,8 @@ arbiter: ${_averdict} (${_afile})${_atimeout}
     echo "     git config review.chunkSize <lines>   (current: ${REVIEW_CHUNK_SIZE})" >&2
     echo "   or split the commit so the file is reviewed on its own." >&2
     echo "   Agent error/timeout: retry the commit, or raise review.timeout." >&2
+    # Only timeouts or errors (no oversized file): not counted toward review.maxAttempts.
+    [[ ${transient_skips} -ne ${skipped_files} ]] || REVIEW_BLOCK_TRANSIENT=true
     return 1
   elif [[ ${reviewed_files} -eq 0 && ${file_count} -gt 0 ]]; then
     # Fail-closed backstop from #200: nothing was reviewed and nothing was
@@ -3139,50 +3148,73 @@ mkdir -p "${REVIEW_STATE_DIR}" 2>/dev/null || true
 # State lives in the git dir, so each worktree has its own counters.
 ATTEMPTS_DIR="${GIT_DIR_PATH}/review-attempts"
 ATTEMPTS_FILE="${ATTEMPTS_DIR}/$(printf '%s' "${_review_branch}" | tr -c 'A-Za-z0-9._-' '_')"
+# Timeout-only blocks have their own count, so a reviewer that keeps timing out
+# still stops a retry loop (each retry is a full, paid review).
+TIMEOUTS_FILE="${ATTEMPTS_FILE}.timeouts"
 _attempt_refused=false
 
-read_attempt_count() {
+# read_count FILE: the number on its first line, or 0.
+read_count() {
   local _n=0
-  [[ -f "${ATTEMPTS_FILE}" ]] && _n=$(head -1 "${ATTEMPTS_FILE}" 2>/dev/null || echo 0)
+  [[ -f "$1" ]] && _n=$(head -1 "$1" 2>/dev/null || echo 0)
   [[ "${_n}" =~ ^[0-9]+$ ]] || _n=0
   printf '%s\n' "${_n}"
 }
+read_attempt_count() { read_count "${ATTEMPTS_FILE}"; }
 
+# print_attempt_stop N LIMIT WHAT FILE KEY
 print_attempt_stop() {
-  local _n="$1"
   log_error ""
-  log_error "STOP: ${_n} consecutive blocked commit reviews on branch '${_review_branch}' (limit: ${REVIEW_MAX_ATTEMPTS})."
+  log_error "STOP: $1 $3 on branch '${_review_branch}' (limit: $2)."
   log_error "  Agents: do NOT retry this commit. Leave the work staged and report the"
   log_error "  findings to your parent or the human. Further attempts are refused unreviewed."
-  log_error "  Human reset: rm '${ATTEMPTS_FILE}'"
-  log_error "  Change the limit: git config review.maxAttempts <n>"
+  log_error "  Human reset: rm '$4'"
+  log_error "  Change the limit: git config $5 <n>"
 }
 
 # Called from the EXIT trap. Any exit 0, a skip included, means the commit
-# went through, so it resets the count.
+# went through, so it resets both counts.
 record_attempt() {
   local _rc="$1" _n
   [[ "${REVIEW_MODE}" == "commit" && "${_attempt_refused}" != true ]] || return 0
   if [[ "${_rc}" -eq 0 ]]; then
-    rm -f "${ATTEMPTS_FILE}"
+    rm -f "${ATTEMPTS_FILE}" "${TIMEOUTS_FILE}"
     return 0
   fi
-  _n=$(read_attempt_count)
-  _n=$((_n + 1))
-  mkdir -p "${ATTEMPTS_DIR}" && printf '%s\n' "${_n}" >"${ATTEMPTS_FILE}" || return 0
+  mkdir -p "${ATTEMPTS_DIR}" || return 0
+  if [[ "${REVIEW_BLOCK_TRANSIENT}" == true ]]; then
+    _n=$(($(read_count "${TIMEOUTS_FILE}") + 1))
+    printf '%s\n' "${_n}" >"${TIMEOUTS_FILE}" || return 0
+    printf 'attempts: not counted (reviewer timeout or error), still %d of %d; timeouts: %d of %d\n' \
+      "$(read_attempt_count)" "${REVIEW_MAX_ATTEMPTS}" "${_n}" "${REVIEW_MAX_TIMEOUTS}" >>"${REVIEW_LOG}" || true
+    [[ "${_n}" -lt "${REVIEW_MAX_TIMEOUTS}" ]] ||
+      print_attempt_stop "${_n}" "${REVIEW_MAX_TIMEOUTS}" "reviewer timeouts since the last passing commit" "${TIMEOUTS_FILE}" review.maxTimeoutAttempts
+    return 0
+  fi
+  _n=$(($(read_attempt_count) + 1))
+  printf '%s\n' "${_n}" >"${ATTEMPTS_FILE}" || return 0
   printf 'attempts: %d of %d\n' "${_n}" "${REVIEW_MAX_ATTEMPTS}" >>"${REVIEW_LOG}" || true
-  [[ "${_n}" -lt "${REVIEW_MAX_ATTEMPTS}" ]] || print_attempt_stop "${_n}"
+  [[ "${_n}" -lt "${REVIEW_MAX_ATTEMPTS}" ]] ||
+    print_attempt_stop "${_n}" "${REVIEW_MAX_ATTEMPTS}" "consecutive blocked commit reviews" "${ATTEMPTS_FILE}" review.maxAttempts
 }
 
 check_attempt_limit() {
-  local _n
+  local _n _t
   [[ "${REVIEW_MODE}" == "commit" ]] || return 0
   _n=$(read_attempt_count)
-  [[ "${_n}" -ge "${REVIEW_MAX_ATTEMPTS}" ]] || return 0
+  _t=$(read_count "${TIMEOUTS_FILE}")
+  if [[ "${_n}" -ge "${REVIEW_MAX_ATTEMPTS}" ]]; then
+    _attempt_refused=true
+    print_attempt_stop "${_n}" "${REVIEW_MAX_ATTEMPTS}" "consecutive blocked commit reviews" "${ATTEMPTS_FILE}" review.maxAttempts
+    log_error "BLOCKING: commit refused without review (attempt limit reached)"
+    printf 'blocked: attempt limit reached (%d of %d)\n' "${_n}" "${REVIEW_MAX_ATTEMPTS}" >>"${REVIEW_LOG}" || true
+    exit 1
+  fi
+  [[ "${_t}" -ge "${REVIEW_MAX_TIMEOUTS}" ]] || return 0
   _attempt_refused=true
-  print_attempt_stop "${_n}"
-  log_error "BLOCKING: commit refused without review (attempt limit reached)"
-  printf 'blocked: attempt limit reached (%d of %d)\n' "${_n}" "${REVIEW_MAX_ATTEMPTS}" >>"${REVIEW_LOG}" || true
+  print_attempt_stop "${_t}" "${REVIEW_MAX_TIMEOUTS}" "reviewer timeouts since the last passing commit" "${TIMEOUTS_FILE}" review.maxTimeoutAttempts
+  log_error "BLOCKING: commit refused without review (timeout limit reached; raise review.timeout)"
+  printf 'blocked: timeout limit reached (%d of %d)\n' "${_t}" "${REVIEW_MAX_TIMEOUTS}" >>"${REVIEW_LOG}" || true
   exit 1
 }
 
@@ -4441,6 +4473,7 @@ if [[ "${CODE_REVIEWER_INCOMPLETE}" == true ]]; then
   log_error "  Retry with a longer timeout: git -c review.timeout=300 commit ..."
   log_error "  Human bypass (not for agents): git commit --no-verify - see ~/.claude/docs/HUMAN-BYPASS.md"
   printf 'review: INCOMPLETE (code-reviewer did not complete)\n' >>"${REVIEW_LOG}" || true
+  REVIEW_BLOCK_TRANSIENT=true
   exit 1
 fi
 

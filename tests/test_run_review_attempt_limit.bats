@@ -36,6 +36,7 @@ setup() {
 [[ "$1" == "--version" ]] && { echo "mock 0.0.0"; exit 0; }
 cat > /dev/null
 [[ " $* " == *" --agent "* ]] && echo call >>"${CALL_LOG}"
+[[ "${MOCK_VERDICT:-}" == "SLOW" ]] && sleep 5
 if [[ "${MOCK_VERDICT:-PASS}" == "FAIL" ]]; then
   jq -n '{type:"result",subtype:"success",is_error:false,
           result:"VERDICT: FAIL\nSEVERITY: BLOCKING\nmock blocking finding",
@@ -88,26 +89,26 @@ calls() {
 
 @test "the Nth blocked review still blocks and prints the stop message" {
   local i
-  for i in 1 2 3; do
+  for i in 1 2 3 4 5; do
     MOCK_VERDICT=FAIL run run_review "${i}"
     [ "${status}" -ne 0 ]
   done
-  [ "$(count_file test-branch)" -eq 3 ]
-  [[ "${output}" == *"STOP: 3 consecutive blocked commit reviews"* ]]
+  [ "$(count_file test-branch)" -eq 5 ]
+  [[ "${output}" == *"STOP: 5 consecutive blocked commit reviews"* ]]
   [[ "${output}" == *"do NOT retry"* ]]
   [[ "${output}" == *"Human reset: rm '${ATTEMPTS_DIR}/test-branch'"* ]]
 }
 
 @test "past the limit the hook refuses without running a reviewer, even on a clean diff" {
   mkdir -p "${ATTEMPTS_DIR}"
-  echo 3 >"${ATTEMPTS_DIR}/test-branch"
+  echo 5 >"${ATTEMPTS_DIR}/test-branch"
   MOCK_VERDICT=PASS run run_review 9
   [ "${status}" -ne 0 ]
   [ "$(calls)" -eq 0 ]
   [[ "${output}" == *"refused without review"* ]]
   # A refusal does not bump the count, and does not reset it.
-  [ "$(count_file test-branch)" -eq 3 ]
-  grep -q '^blocked: attempt limit reached (3 of 3)$' "${EXPECTED_LOG}"
+  [ "$(count_file test-branch)" -eq 5 ]
+  grep -q '^blocked: attempt limit reached (5 of 5)$' "${EXPECTED_LOG}"
 }
 
 @test "a passing review resets the counter" {
@@ -143,12 +144,16 @@ calls() {
   [[ "${output}" == *"refused without review"* ]]
 }
 
-@test "a non-positive review.maxAttempts falls back to 3" {
+@test "a non-positive review.maxAttempts falls back to 5" {
   git -C "${TMPDIR_TEST}" config review.maxAttempts 0
   MOCK_VERDICT=PASS run run_review 1
   [ "${status}" -eq 0 ]
-  MOCK_VERDICT=FAIL run run_review 2
+  local i
+  for i in 2 3 4; do MOCK_VERDICT=FAIL run run_review "${i}"; done
   [[ "${output}" != *"STOP:"* ]]
+  MOCK_VERDICT=FAIL run run_review 5
+  MOCK_VERDICT=FAIL run run_review 6
+  [[ "${output}" == *"STOP: 5 consecutive"*"(limit: 5)"* ]]
 }
 
 @test "the chunked path counts a blocked review too" {
@@ -163,4 +168,69 @@ calls() {
   [ "${status}" -ne 0 ]
   [[ "${output}" == *"chunked"* ]]
   [ "$(count_file test-branch)" -eq 1 ]
+}
+
+@test "a reviewer timeout blocks but is not counted" {
+  git -C "${TMPDIR_TEST}" config review.timeout 1
+  MOCK_VERDICT=FAIL run run_review 1
+  [ "$(count_file test-branch)" -eq 1 ]
+  MOCK_VERDICT=SLOW run run_review 2
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"INCOMPLETE"* ]]
+  # Neither counted nor reset: the code was not judged.
+  [ "$(count_file test-branch)" -eq 1 ]
+  grep -q '^attempts: not counted (reviewer timeout or error), still 1 of 5; timeouts: 1 of 3$' "${EXPECTED_LOG}"
+}
+
+@test "the chunked path does not count a reviewer timeout either" {
+  git -C "${TMPDIR_TEST}" config review.maxLines 3
+  git -C "${TMPDIR_TEST}" config review.chunkSize 30
+  git -C "${TMPDIR_TEST}" config review.timeout 1
+  printf 'a=1\nb=2\nc=3\nd=4\n' >"${TMPDIR_TEST}/big.sh"
+  git -C "${TMPDIR_TEST}" add big.sh
+  cd "${TMPDIR_TEST}" || exit
+  MOCK_VERDICT=SLOW run bash -c 'git diff --cached | bash "$1"' _ "${SCRIPT}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"INCOMPLETE"* ]]
+  [ ! -e "${ATTEMPTS_DIR}/test-branch" ]
+}
+
+@test "an oversized file on the chunked path still counts" {
+  # Not transient: a retry gets the same result, so it counts.
+  git -C "${TMPDIR_TEST}" config review.maxLines 3
+  git -C "${TMPDIR_TEST}" config review.chunkSize 2
+  printf 'a=1\nb=2\nc=3\nd=4\n' >"${TMPDIR_TEST}/big.sh"
+  git -C "${TMPDIR_TEST}" add big.sh
+  cd "${TMPDIR_TEST}" || exit
+  MOCK_VERDICT=PASS run bash -c 'git diff --cached | bash "$1"' _ "${SCRIPT}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"INCOMPLETE"* ]]
+  [ "$(count_file test-branch)" -eq 1 ]
+}
+
+@test "timeout-only blocks stop at review.maxTimeoutAttempts" {
+  git -C "${TMPDIR_TEST}" config review.timeout 1
+  local i
+  for i in 1 2 3; do
+    MOCK_VERDICT=SLOW run run_review "${i}"
+    [ "${status}" -ne 0 ]
+  done
+  [ "$(count_file test-branch.timeouts)" -eq 3 ]
+  [[ "${output}" == *"STOP: 3 reviewer timeouts since the last passing commit"*"(limit: 3)"* ]]
+  [[ "${output}" == *"Human reset: rm '${ATTEMPTS_DIR}/test-branch.timeouts'"* ]]
+  rm -f "${CALL_LOG}"
+  MOCK_VERDICT=PASS run run_review 4
+  [ "${status}" -ne 0 ]
+  [ "$(calls)" -eq 0 ]
+  grep -q '^blocked: timeout limit reached (3 of 3)$' "${EXPECTED_LOG}"
+}
+
+@test "a passing review resets the timeout count too" {
+  git -C "${TMPDIR_TEST}" config review.timeout 1
+  MOCK_VERDICT=SLOW run run_review 1
+  [ "$(count_file test-branch.timeouts)" -eq 1 ]
+  git -C "${TMPDIR_TEST}" config --unset review.timeout
+  MOCK_VERDICT=PASS run run_review 2
+  [ "${status}" -eq 0 ]
+  [ ! -e "${ATTEMPTS_DIR}/test-branch.timeouts" ]
 }
