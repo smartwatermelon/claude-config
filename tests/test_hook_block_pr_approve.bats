@@ -99,10 +99,38 @@ run_hook_cwd() {
   [ "${status}" -eq 0 ]
 }
 
-@test "allows a pending review with a relative path and the real gh binary" {
+@test "allows a pending review through the real gh binary" {
   printf '{"body":"x"}' >"${TMP_HOME}/r.json"
-  run run_hook_cwd "${TMP_HOME}" "/opt/homebrew/bin/gh api -X POST repos/o/r/pulls/7/reviews --input r.json"
+  run run_hook "/opt/homebrew/bin/gh api -X POST repos/o/r/pulls/7/reviews --input ${TMP_HOME}/r.json"
   [ "${status}" -eq 0 ]
+}
+
+@test "known-bad: a relative path blocks, even with a cwd" {
+  printf '{"body":"x"}' >"${TMP_HOME}/r.json"
+  run run_hook_cwd "${TMP_HOME}" "gh api -X POST repos/o/r/pulls/7/reviews --input r.json"
+  [ "${status}" -eq 2 ]
+}
+
+@test "known-bad: a second JSON document with an event blocks" {
+  printf '{"body":"x"}\n{"event":"COMMENT"}\n' >"${TMP_HOME}/r.json"
+  run run_hook "gh api repos/o/r/pulls/7/reviews --input ${TMP_HOME}/r.json"
+  [ "${status}" -eq 2 ]
+}
+
+@test "known-bad: glob, quote, backslash or tilde in the command blocks" {
+  printf '{"body":"x"}' >"${TMP_HOME}/r.json"
+  for p in "${TMP_HOME}/r?json" "${TMP_HOME}/r*" "\"${TMP_HOME}/r.json\"" "${TMP_HOME}/r\\.json" "${TMP_HOME}/r[.]json"; do
+    run run_hook "gh api repos/o/r/pulls/7/reviews --input ${p}"
+    [ "${status}" -eq 2 ]
+  done
+  run run_hook "gh api repos/o/r/pulls/7/reviews --input ~/r.json"
+  [ "${status}" -eq 2 ]
+}
+
+@test "known-bad: a gh at another path blocks" {
+  printf '{"body":"x"}' >"${TMP_HOME}/r.json"
+  run run_hook "/tmp/x/gh api repos/o/r/pulls/7/reviews --input ${TMP_HOME}/r.json"
+  [ "${status}" -eq 2 ]
 }
 
 @test "known-bad: a review file with event APPROVE still blocks" {
