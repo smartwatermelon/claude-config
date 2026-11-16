@@ -96,6 +96,20 @@ Location: `~/.claude/docs/INSTALLER-VETTING.md`
 
 - Andrew asks whether a download, app, or installer is safe to run
 
+### GOTCHAS.md (Situational Traps)
+
+Location: `~/.claude/docs/GOTCHAS.md`
+
+**Contains:**
+
+- PATH-shim hash-table trap, submodule merge trap, amend stray branch
+- EnterWorktree details inside the sandbox
+- claude-config deploy, dev-mode and health notes
+
+**Read when:**
+
+- Testing a PATH wrapper, entering a worktree, or working on claude-config's deploy
+
 ## Philosophy
 
 The main CLAUDE.md contains "hot path" protocols and standards used in 90%+ of sessions. Auxiliary files contain:
