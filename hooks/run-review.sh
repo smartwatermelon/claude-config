@@ -280,10 +280,11 @@ openai_review_run() {
   [[ "${in_tok}" =~ ^[0-9]+$ ]] || in_tok="null"
   [[ "${out_tok}" =~ ^[0-9]+$ ]] || out_tok="null"
   [[ "${code}" =~ ^[0-9]{3}$ ]] || code="000"
+  local http_num=$((10#${code}))
   {
     mkdir -p "${REVIEW_API_USAGE_LOG%/*}" \
       && jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg model "${REVIEW_OPENAI_MODEL}" \
-        --argjson exit "${rc}" --argjson http "${code}" \
+        --argjson exit "${rc}" --argjson http "${http_num}" \
         --argjson in "${in_tok}" --argjson out "${out_tok}" \
         '{ts:$ts, auth:"openai-api", model:$model, exit:$exit, http:$http,
           input_tokens:$in, output_tokens:$out, total_cost_usd:null}' \

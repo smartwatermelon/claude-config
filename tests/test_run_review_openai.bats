@@ -281,3 +281,12 @@ _curl_calls() {
           and .[0].input_tokens == 1234 and .[0].output_tokens == 567
           and .[0].http == 200 and .[0].model == "gpt-5.5"' "${LEDGER}"
 }
+
+@test "ledger: a timed-out call is still logged, with http 0" {
+  touch "${MOCK_DIR}/has-openai-key"
+  printf '28' >"${MOCK_DIR}/curl-rc"
+  run _run_full_diff
+  [ "$status" -eq 0 ]
+  jq -se '[.[] | select(.auth == "openai-api")] | length == 1
+          and .[0].exit == 28 and .[0].http == 0 and .[0].input_tokens == null' "${LEDGER}"
+}
