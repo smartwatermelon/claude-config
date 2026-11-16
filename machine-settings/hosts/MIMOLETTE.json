@@ -18,6 +18,17 @@
       "npm run test:e2e:ios*",
       "open -a Simulator*",
       "xcrun simctl *"
-    ]
+    ],
+    "network": {
+      "allowedDomains": [
+        "api.expo.dev",
+        "api.cloudflare.com",
+        "valuation-api-staging.andrew-3c6.workers.dev",
+        "rubygems.org",
+        "appstoreconnect.apple.com",
+        "idmsa.apple.com",
+        "www.googleapis.com"
+      ]
+    }
   }
 }
