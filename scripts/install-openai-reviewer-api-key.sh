@@ -4,6 +4,8 @@
 
 # Run once per machine: login-keychain items do not sync. Twin of install-reviewer-api-key.sh.
 
+# Rotate by re-running this, not in Keychain Access: its `apple:` partition list blocks `security` (#846).
+
 set -euo pipefail
 
 # The item keeps its CODEX_REVIEWER name; Codex itself cannot use credit-grant keys.
