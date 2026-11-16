@@ -1,7 +1,4 @@
 {
-  "permissions": {
-    "defaultMode": "default"
-  },
   "sandbox": {
     "enabled": false
   }

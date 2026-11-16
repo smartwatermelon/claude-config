@@ -45,6 +45,17 @@ setup() {
   done
 }
 
+# Every host starts in auto mode: base sets it, and no host file overrides it.
+@test "base starts in auto mode and no host file overrides defaultMode" {
+  run jq -e '.permissions.defaultMode == "auto"' "${BASE}"
+  [ "${status}" -eq 0 ] || { echo "${BASE}: permissions.defaultMode is not auto" >&2; return 1; }
+  local f
+  for f in "${ROOT}"/machine-settings/hosts/*.json; do
+    run jq -e '.permissions.defaultMode == null' "${f}"
+    [ "${status}" -eq 0 ] || { echo "${f} overrides permissions.defaultMode" >&2; return 1; }
+  done
+}
+
 # The build output and its local overlay (merged last, so it can unset the sandbox) live there.
 @test "agents cannot edit ~/.config/claude-code" {
   run jq -e '.permissions.deny | index("Edit(~/.config/claude-code/**)") != null' "${BASE}"
