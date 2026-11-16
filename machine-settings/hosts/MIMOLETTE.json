@@ -4,6 +4,7 @@
       "allowWrite": [
         "/Volumes/extra-vieille/Workspaces",
         "~/.dotfiles",
+        "~/.fastlane/spaceship",
         "${GDRIVE_HANDOFF}"
       ]
     },
