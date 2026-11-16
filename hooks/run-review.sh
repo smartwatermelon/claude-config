@@ -187,15 +187,43 @@ REVIEW_STATE_DIR="${REVIEW_STATE_DIR:-${HOME}/.local/state/claude-review}"
 # Spend ledger, one JSON line per CLI run. Per-user, unlike REVIEW_LOG: the credit is per-user.
 REVIEW_API_USAGE_LOG="${REVIEW_API_USAGE_LOG:-${REVIEW_STATE_DIR}/reviewer-api-usage.jsonl}"
 
+# _review_keychain_read <account> <service>: print the secret. 0 read, 1 no item, 2 unreadable.
+# 10s cap: a locked keychain raises a dialog.
+_review_keychain_read() {
+  local val rc=0
+  val=$(timeout 10 "${REVIEW_SECURITY_BIN}" find-generic-password -a "$1" -s "$2" -w 2>/dev/null) || rc=$?
+  if ((rc == 0)); then
+    printf '%s' "${val}"
+    return 0
+  fi
+  # #846: Keychain Access saves partition list `apple:`, which `security` can't read.
+  # Without -w only attributes are read: no secret, no dialog.
+  if timeout 10 "${REVIEW_SECURITY_BIN}" find-generic-password -a "$1" -s "$2" >/dev/null 2>&1; then
+    return 2
+  fi
+  return 1
+}
+
+# _review_key_unreadable_msg <prefix> <service> <installer> <suffix>: one line naming the fix for a return of 2 above.
+_review_key_unreadable_msg() {
+  printf '%sKeychain item %s exists but could not be read (partition list without apple-tool:, or an unanswered Keychain dialog). Fix in a terminal: security set-generic-password-partition-list -S apple-tool:,apple: -s %s, or re-run scripts/%s%s\n' \
+    "$1" "$2" "$2" "$3" "$4"
+}
+
 # Read once at top level: CLI runs are in subshells, which can't fill a cache. Not exported.
 REVIEW_API_KEY=""
 if [[ "${REVIEW_API_KEY_DISABLE:-}" != "1" ]]; then
   _review_key_account="${USER:-}"
   [[ -n "${_review_key_account}" ]] || _review_key_account=$(id -un 2>/dev/null) || _review_key_account=""
-  # timeout: a locked GUI keychain can raise an unlock dialog. Missing/slow/locked = subscription, silently.
-  REVIEW_API_KEY=$(timeout 10 "${REVIEW_SECURITY_BIN}" find-generic-password \
-    -a "${_review_key_account}" -s "${REVIEW_API_KEY_SERVICE}" -w 2>/dev/null) || REVIEW_API_KEY=""
-  unset _review_key_account
+  # Missing = subscription, silently. Present but unreadable = subscription, with one line saying why.
+  _review_key_rc=0
+  REVIEW_API_KEY=$(_review_keychain_read "${_review_key_account}" "${REVIEW_API_KEY_SERVICE}") || _review_key_rc=$?
+  if ((_review_key_rc == 2)); then
+    _review_key_unreadable_msg '[review] ' "${REVIEW_API_KEY_SERVICE}" install-reviewer-api-key.sh \
+      '; using the subscription.' >&2
+  fi
+  ((_review_key_rc == 0)) || REVIEW_API_KEY=""
+  unset _review_key_account _review_key_rc
   # Same shape check as the installer; anything else counts as absent.
   [[ "${REVIEW_API_KEY}" =~ ^sk-ant-[A-Za-z0-9_-]+$ ]] || REVIEW_API_KEY=""
 fi
@@ -216,12 +244,16 @@ REVIEW_OPENAI_MAX_DIFF_BYTES=$(git config --get --type=int review.openaiMaxDiffB
 
 # Read once, and only in full-diff mode: a commit never touches this Keychain item.
 REVIEW_OPENAI_KEY=""
+# 1 when the item exists but could not be read: the skip notice then names the fix (#846).
+REVIEW_OPENAI_KEY_UNREADABLE=0
 if [[ "${REVIEW_MODE}" == "full-diff" && "${REVIEW_OPENAI_DISABLE:-}" != "1" ]]; then
   _openai_key_account="${USER:-}"
   [[ -n "${_openai_key_account}" ]] || _openai_key_account=$(id -un 2>/dev/null) || _openai_key_account=""
-  REVIEW_OPENAI_KEY=$(timeout 10 "${REVIEW_SECURITY_BIN}" find-generic-password \
-    -a "${_openai_key_account}" -s "${REVIEW_OPENAI_KEY_SERVICE}" -w 2>/dev/null) || REVIEW_OPENAI_KEY=""
-  unset _openai_key_account
+  _openai_key_rc=0
+  REVIEW_OPENAI_KEY=$(_review_keychain_read "${_openai_key_account}" "${REVIEW_OPENAI_KEY_SERVICE}") || _openai_key_rc=$?
+  ((_openai_key_rc != 2)) || REVIEW_OPENAI_KEY_UNREADABLE=1
+  ((_openai_key_rc == 0)) || REVIEW_OPENAI_KEY=""
+  unset _openai_key_account _openai_key_rc
   # Same shape check as the installer; anything else counts as absent.
   [[ "${REVIEW_OPENAI_KEY}" =~ ^sk-(proj-)?[A-Za-z0-9_-]+$ && "${REVIEW_OPENAI_KEY}" != sk-ant-* ]] \
     || REVIEW_OPENAI_KEY=""
@@ -337,6 +369,9 @@ openai_review_start() {
   }
   if [[ "${REVIEW_OPENAI_DISABLE:-}" == "1" ]]; then
     printf 'OpenAI review skipped: REVIEW_OPENAI_DISABLE=1\n' >"${_openai_dir}/notice"
+  elif [[ -z "${REVIEW_OPENAI_KEY}" && "${REVIEW_OPENAI_KEY_UNREADABLE}" == "1" ]]; then
+    _review_key_unreadable_msg 'OpenAI review skipped: ' "${REVIEW_OPENAI_KEY_SERVICE}" \
+      install-openai-reviewer-api-key.sh '' >"${_openai_dir}/notice"
   elif [[ -z "${REVIEW_OPENAI_KEY}" ]]; then
     printf 'OpenAI review skipped: no key in Keychain service %s (run scripts/install-openai-reviewer-api-key.sh)\n' \
       "${REVIEW_OPENAI_KEY_SERVICE}" >"${_openai_dir}/notice"

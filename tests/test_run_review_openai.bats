@@ -55,6 +55,11 @@ if [[ "$*" == *"-s openai-reviewer-api-key"* && -f "${MOCK_DIR}/has-openai-key" 
   printf '%s\n' "${FAKE_OPENAI_KEY}"
   exit 0
 fi
+# openai-key-unreadable: the item exists but its secret cannot be read (#846).
+if [[ "$*" == *"-s openai-reviewer-api-key"* && -f "${MOCK_DIR}/openai-key-unreadable" ]]; then
+  [[ " $* " == *" -w "* ]] && exit 51
+  exit 0
+fi
 exit 44
 EOF
 
@@ -173,6 +178,23 @@ _curl_calls() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"OpenAI review skipped: no key in Keychain service openai-reviewer-api-key"* ]]
   [ "$(_curl_calls)" -eq 0 ]
+}
+
+@test "key exists but unreadable (#846): the skip notice names the fix, curl never called" {
+  touch "${MOCK_DIR}/openai-key-unreadable"
+  run _run_full_diff
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'OpenAI review skipped' <<<"$output")" -eq 1 ]
+  [[ "$output" == *"OpenAI review skipped: Keychain item openai-reviewer-api-key exists but could not be read"* ]]
+  [[ "$output" == *"set-generic-password-partition-list -S apple-tool:,apple: -s openai-reviewer-api-key"* ]]
+  [[ "$output" == *"scripts/install-openai-reviewer-api-key.sh"* ]]
+  [[ "$output" != *"no key in Keychain"* ]]
+  [ "$(_curl_calls)" -eq 0 ]
+}
+
+@test "no key: no unreadable line" {
+  run _run_full_diff
+  [[ "$output" != *"could not be read"* ]]
 }
 
 @test "curl missing: one skip notice, exit 0" {

@@ -4,6 +4,8 @@
 
 # Run once per machine: login-keychain items do not sync. Never export the key in a profile.
 
+# Rotate by re-running this, not in Keychain Access: its `apple:` partition list blocks `security` (#846).
+
 set -euo pipefail
 
 # In Automation so the service account can read it, which also works over SSH.

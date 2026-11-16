@@ -57,6 +57,13 @@ if [[ -f "${MOCK_DIR}/has-key" ]]; then
   printf '%s\n' "${FAKE_KEY}"
   exit 0
 fi
+# key-unreadable: the item exists (attribute read succeeds) but its secret
+# cannot be read, as with a Keychain Access partition list (#846).
+if [[ -f "${MOCK_DIR}/key-unreadable" ]]; then
+  [[ " $* " == *" -w "* ]] && exit 51
+  echo 'keychain: "login.keychain-db"'
+  exit 0
+fi
 echo "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain." >&2
 exit 44
 EOF
@@ -173,6 +180,29 @@ _ledger_n() {
   [[ "$output" != *"could not be found"* ]]
   # The Keychain was asked, and its "not found" was silent.
   [ -s "${MOCK_DIR}/security-calls" ]
+  [[ "$output" != *"could not be read"* ]]
+}
+
+@test "key exists but unreadable (#846): one fix line, subscription, exit unchanged" {
+  touch "${MOCK_DIR}/key-unreadable"
+  run _run_review
+  [ "$status" -eq 0 ]
+  _env_is code-reviewer-1 "<unset>"
+  _env_is adversarial-reviewer-1 "<unset>"
+  [ "$(grep -c 'claude-reviewer-api-key exists but could not be read' <<<"$output")" -eq 1 ]
+  [[ "$output" == *"security set-generic-password-partition-list -S apple-tool:,apple: -s claude-reviewer-api-key"* ]]
+  [[ "$output" == *"scripts/install-reviewer-api-key.sh"* ]]
+  # One -w read, then one attribute probe without -w.
+  [ "$(grep -c 'claude-reviewer-api-key' "${MOCK_DIR}/security-calls")" -eq 2 ]
+  [ "$(grep -c -- ' -w' "${MOCK_DIR}/security-calls")" -eq 1 ]
+}
+
+@test "key readable: one Keychain read, no probe, no unreadable line" {
+  touch "${MOCK_DIR}/has-key"
+  run _run_review
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'claude-reviewer-api-key' "${MOCK_DIR}/security-calls")" -eq 1 ]
+  [[ "$output" != *"could not be read"* ]]
 }
 
 @test "key present: the child sees it in its env, never in argv" {
