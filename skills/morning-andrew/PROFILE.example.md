@@ -40,3 +40,6 @@ the skills read only the field list.
 - **Issue tracker**: `jane-example/work-notes`
 - **Manager**: Sam Placeholder
 - **Active workstream**: one line on the current main project
+- **Tracked epics** (optional): one tracking-task URL per epic, for the morning epic page
+  - `https://app.example.com/task/1111` (example epic one)
+  - `https://app.example.com/task/2222` (example epic two)
