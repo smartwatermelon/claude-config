@@ -84,6 +84,73 @@ run_hook() {
   [ "${status}" -eq 2 ]
 }
 
+# --- pending reviews ----------------------------------------------------------
+
+# Feed a command with a cwd, the way the harness does for a relative --input path.
+run_hook_cwd() {
+  printf '{"cwd":%s,"tool_input":{"command":%s}}' \
+    "$(printf '%s' "$1" | jq -Rs .)" "$(printf '%s' "$2" | jq -Rs .)" |
+    bash "${HOOK}"
+}
+
+@test "allows a pending review from a JSON file with no event" {
+  printf '{"commit_id":"abc","body":"","comments":[{"path":"a","line":1,"body":"x"}]}' >"${TMP_HOME}/r.json"
+  run run_hook "gh api --method POST repos/o/r/pulls/7/reviews --input ${TMP_HOME}/r.json --jq .html_url"
+  [ "${status}" -eq 0 ]
+}
+
+@test "allows a pending review with a relative path and the real gh binary" {
+  printf '{"body":"x"}' >"${TMP_HOME}/r.json"
+  run run_hook_cwd "${TMP_HOME}" "/opt/homebrew/bin/gh api -X POST repos/o/r/pulls/7/reviews --input r.json"
+  [ "${status}" -eq 0 ]
+}
+
+@test "known-bad: a review file with event APPROVE still blocks" {
+  printf '{"event":"APPROVE","body":""}' >"${TMP_HOME}/r.json"
+  run run_hook "gh api --method POST repos/o/r/pulls/7/reviews --input ${TMP_HOME}/r.json"
+  [ "${status}" -eq 2 ]
+}
+
+@test "known-bad: a review file with any event blocks" {
+  printf '{"event":"COMMENT","body":"x"}' >"${TMP_HOME}/r.json"
+  run run_hook "gh api repos/o/r/pulls/7/reviews --input ${TMP_HOME}/r.json"
+  [ "${status}" -eq 2 ]
+}
+
+@test "known-bad: a pending review file chained to another command blocks" {
+  printf '{"body":"x"}' >"${TMP_HOME}/r.json"
+  run run_hook "gh api repos/o/r/pulls/7/reviews --input ${TMP_HOME}/r.json; echo done"
+  [ "${status}" -eq 2 ]
+  run run_hook "printf '{}' >${TMP_HOME}/r.json && gh api repos/o/r/pulls/7/reviews --input ${TMP_HOME}/r.json"
+  [ "${status}" -eq 2 ]
+}
+
+@test "known-bad: a pending review file with an extra field blocks" {
+  printf '{"body":"x"}' >"${TMP_HOME}/r.json"
+  run run_hook "gh api repos/o/r/pulls/7/reviews --input ${TMP_HOME}/r.json -f event=APPROVE"
+  [ "${status}" -eq 2 ]
+  run run_hook "gh api repos/o/r/pulls/7/reviews --input ${TMP_HOME}/r.json -F event=COMMENT"
+  [ "${status}" -eq 2 ]
+}
+
+@test "known-bad: stdin, a variable path, or a non-object file blocks" {
+  run run_hook 'gh api repos/o/r/pulls/7/reviews --input -'
+  [ "${status}" -eq 2 ]
+  run run_hook "gh api repos/o/r/pulls/7/reviews --input \"\${F}\""
+  [ "${status}" -eq 2 ]
+  printf '[]' >"${TMP_HOME}/r.json"
+  run run_hook "gh api repos/o/r/pulls/7/reviews --input ${TMP_HOME}/r.json"
+  [ "${status}" -eq 2 ]
+}
+
+@test "known-bad: a pending review file sent to a review's own path blocks" {
+  printf '{"body":"x"}' >"${TMP_HOME}/r.json"
+  run run_hook "gh api -X POST repos/o/r/pulls/7/reviews/99/events --input ${TMP_HOME}/r.json"
+  [ "${status}" -eq 2 ]
+  run run_hook "gh api -X PUT repos/o/r/pulls/7/reviews --input ${TMP_HOME}/r.json"
+  [ "${status}" -eq 2 ]
+}
+
 # --- blocked: GraphQL --------------------------------------------------------
 
 @test "blocks addPullRequestReview" {
