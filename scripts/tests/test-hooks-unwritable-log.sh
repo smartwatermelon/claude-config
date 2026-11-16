@@ -105,7 +105,7 @@ check hook-block-gate-dir-write.sh \
   "gate-dir-write: blocks with exit 2" \
   command "cp /tmp/x /Users/x/.claude/gate-review/approved/fake"
 
-# EnterWorktree carries a `name`, not a command. Every call hits the deny path,
+# EnterWorktree carries a `name`, not a command. A name call hits the deny path,
 # which writes to the log and then exits 2 -- same shape as the five above.
 check hook-block-enter-worktree.sh \
   "enter-worktree: blocks with exit 2" \

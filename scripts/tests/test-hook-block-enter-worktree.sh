@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Tests for hook-block-enter-worktree.sh
 #
-# Policy (2026-10-27): every EnterWorktree call is denied with the raw
-# git command.
+# Name form: denied. Path form: allowed only for <repo>/.claude/worktrees/<slug>.
 
 set -euo pipefail
 unset CDPATH
@@ -67,12 +66,12 @@ echo "=== hook-block-enter-worktree tests ==="
 
 # --- name form: denied, with the filled-in raw command ---
 inp="$(make_input "${repo}" '{"name":"fix-thing"}')"
-check "name: denied" 2 "${inp}" 'EnterWorktree is not used here'
+check "name: denied" 2 "${inp}" 'EnterWorktree does not make worktrees here'
 check "name: raw add command names the repo and the name" 2 "${inp}" \
   "git -C /[^ ]*/repo ${RAW_TAIL}fix-thing origin/main"
 check "name: verify command names the worktree path" 2 "${inp}" \
   'git -C /[^ ]*/repo/\.claude/worktrees/fix-thing rev-parse --show-toplevel'
-check "name: says to work with absolute paths" 2 "${inp}" 'work with absolute paths'
+check "name: says to enter the new worktree by path" 2 "${inp}" 'enter it with EnterWorktree path=<that worktree>'
 
 # cwd inside a linked worktree still names the PRIMARY checkout.
 inp="$(make_input "${repo}/.claude/worktrees/linked" '{"name":"wt2"}')"
@@ -101,14 +100,70 @@ inp="$(make_input "${fixture}/does-not-exist" '{"name":"fix-thing"}')"
 check "cwd does not exist: denied with the <repo> placeholder" 2 "${inp}" \
   "git -C <repo> ${RAW_TAIL}"
 
-# --- path form: denied with the "already exists" message ---
+# --- path form ---
+# path_input <path> [extra-json-fields]: an EnterWorktree path input, cwd = repo.
+path_input() {
+  local ti
+  ti="$(jq -n --arg p "$1" --argjson extra "${2:-{\}}" '{"path":$p} + $extra')"
+  make_input "${repo}" "${ti}"
+}
+
 wt_path="${repo}/.claude/worktrees/linked"
-path_ti="$(jq -n --arg p "${wt_path}" '{"path":$p}')"
-inp="$(make_input "${repo}" "${path_ti}")"
-check "path: denied" 2 "${inp}" 'EnterWorktree is not used here'
-check "path: says the worktree already exists" 2 "${inp}" 'already exists'
-check "path: says no tool is needed" 2 "${inp}" 'no tool is needed'
-check_not "path: does not suggest a new worktree add" "${inp}" 'worktree add'
+inp="$(path_input "${wt_path}")"
+check "path: linked worktree of this repo is allowed" 0 "${inp}"
+inp="$(path_input "${wt_path}/")"
+check "path: trailing slash is allowed" 0 "${inp}"
+
+# A symlink that resolves to the linked worktree is judged by where it resolves.
+ln -s "${wt_path}" "${fixture}/link-to-linked"
+inp="$(path_input "${fixture}/link-to-linked")"
+check "path: symlink resolving to the linked worktree is allowed" 0 "${inp}"
+
+inp="$(path_input ".claude/worktrees/linked")"
+check "path: relative path is denied" 2 "${inp}" 'must be absolute'
+inp="$(path_input "${repo}/.claude/worktrees/linked/../linked")"
+check "path: '..' is denied" 2 "${inp}" "must not contain '\.\.'"
+inp="$(path_input "${repo}/.claude/worktrees/nope")"
+check "path: missing path is denied" 2 "${inp}" 'does not exist'
+inp="$(path_input "${repo}")"
+check "path: the primary checkout is denied" 2 "${inp}" 'is not <repo>/\.claude/worktrees/<slug>'
+mkdir -p "${wt_path}/sub"
+inp="$(path_input "${wt_path}/sub")"
+check "path: a folder inside a worktree is denied" 2 "${inp}" 'is not <repo>/\.claude/worktrees/<slug>'
+mkdir -p "${repo}/.claude/worktrees/plain"
+inp="$(path_input "${repo}/.claude/worktrees/plain")"
+check "path: a plain folder under .claude/worktrees is denied" 2 "${inp}" 'no \.git file'
+inp="$(path_input "${wt_path}" '{"name":"x"}')"
+check "path: name and path together are denied" 2 "${inp}" 'name or path, not both'
+
+# A .git file alone is not enough: it must be a worktree git knows.
+mkdir -p "${repo}/.claude/worktrees/fakegit"
+printf 'gitdir: %s/nowhere\n' "${fixture}" >"${repo}/.claude/worktrees/fakegit/.git"
+inp="$(path_input "${repo}/.claude/worktrees/fakegit")"
+check "path: a forged .git file is denied" 2 "${inp}" 'not the top of a git worktree'
+
+# A worktree of ANOTHER repo placed under this repo's .claude/worktrees.
+other="${fixture}/other"
+mkdir -p "${other}"
+git -C "${other}" -c core.hooksPath=/dev/null init -q --template= -b fixture
+git -C "${other}" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@example.invalid \
+  commit -q --allow-empty -m init
+git -C "${other}" -c core.hooksPath=/dev/null worktree add -q --no-track -b claude/test-foreign \
+  "${repo}/.claude/worktrees/foreign" HEAD
+inp="$(path_input "${repo}/.claude/worktrees/foreign")"
+check "path: a worktree of another repo is denied" 2 "${inp}" 'is not a worktree of'
+
+log="${fakehome}/.claude/blocked-commands.log"
+before="$(wc -l <"${log}" 2>/dev/null || echo 0)"
+printf '%s\n' "$(path_input "${wt_path}")" | HOME="${fakehome}" "${HOOK}" >/dev/null 2>&1 || true
+after="$(wc -l <"${log}" 2>/dev/null || echo 0)"
+if [[ "${before}" -eq "${after}" ]]; then
+  echo "  PASS: path: an allowed entry writes no block log line"
+  ((pass += 1))
+else
+  echo "  FAIL: path: an allowed entry wrote a block log line"
+  ((fail += 1))
+fi
 
 # --- fail closed ---
 # Malformed input must exit 2, not 1, which Claude Code treats as a
