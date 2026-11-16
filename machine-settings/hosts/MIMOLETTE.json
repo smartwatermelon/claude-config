@@ -4,6 +4,7 @@
       "allowWrite": [
         "/Volumes/extra-vieille/Workspaces",
         "~/.dotfiles",
+        "~/.fastlane/spaceship",
         "${GDRIVE_HANDOFF}"
       ]
     },
@@ -23,6 +24,7 @@
       "allowedDomains": [
         "api.expo.dev",
         "api.cloudflare.com",
+        "dash.cloudflare.com",
         "valuation-api-staging.andrew-3c6.workers.dev",
         "rubygems.org",
         "appstoreconnect.apple.com",
