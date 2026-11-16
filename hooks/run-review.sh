@@ -53,6 +53,8 @@ unset CDPATH
 #                             branch before the hook refuses to review again
 #                             (default: 5). See check_attempt_limit (#646).
 #   review.maxTimeoutAttempts - Same, for timeout-only blocks (default: 3)
+#   review.openai{Model,Timeout,MaxOutputTokens,MaxDiffBytes} - advisory OpenAI pass, full-diff only
+#   (see docs/INFRASTRUCTURE.md)
 #
 # EXAMPLES:
 #   git config --global review.maxLines 2000
@@ -198,6 +200,35 @@ if [[ "${REVIEW_API_KEY_DISABLE:-}" != "1" ]]; then
   [[ "${REVIEW_API_KEY}" =~ ^sk-ant-[A-Za-z0-9_-]+$ ]] || REVIEW_API_KEY=""
 fi
 
+# --- OpenAI advisory reviewer, full-diff only: never blocks. Not Codex: credit-grant orgs can't use it.
+REVIEW_OPENAI_KEY_SERVICE="${REVIEW_OPENAI_KEY_SERVICE:-openai-reviewer-api-key}"
+REVIEW_OPENAI_CURL_BIN="${REVIEW_OPENAI_CURL_BIN:-curl}"
+REVIEW_OPENAI_API_BASE="${REVIEW_OPENAI_API_BASE:-https://api.openai.com}"
+# gpt-5.5: newest non-pro, non-mini model the key listed (2026-11-16). Pro costs far more.
+REVIEW_OPENAI_MODEL=$(git config --get review.openaiModel 2>/dev/null || echo "gpt-5.5")
+REVIEW_OPENAI_TIMEOUT=$(git config --get --type=int review.openaiTimeout 2>/dev/null || echo "300")
+[[ "${REVIEW_OPENAI_TIMEOUT}" -ge 1 ]] || REVIEW_OPENAI_TIMEOUT=300
+# Reasoning tokens count toward this cap too.
+REVIEW_OPENAI_MAX_OUTPUT_TOKENS=$(git config --get --type=int review.openaiMaxOutputTokens 2>/dev/null || echo "16000")
+[[ "${REVIEW_OPENAI_MAX_OUTPUT_TOKENS}" -ge 1 ]] || REVIEW_OPENAI_MAX_OUTPUT_TOKENS=16000
+# Larger diffs are skipped, not truncated; 200000 bytes is about 50k input tokens.
+REVIEW_OPENAI_MAX_DIFF_BYTES=$(git config --get --type=int review.openaiMaxDiffBytes 2>/dev/null || echo "200000")
+
+# Read once, and only in full-diff mode: a commit never touches this Keychain item.
+REVIEW_OPENAI_KEY=""
+if [[ "${REVIEW_MODE}" == "full-diff" && "${REVIEW_OPENAI_DISABLE:-}" != "1" ]]; then
+  _openai_key_account="${USER:-}"
+  [[ -n "${_openai_key_account}" ]] || _openai_key_account=$(id -un 2>/dev/null) || _openai_key_account=""
+  REVIEW_OPENAI_KEY=$(timeout 10 "${REVIEW_SECURITY_BIN}" find-generic-password \
+    -a "${_openai_key_account}" -s "${REVIEW_OPENAI_KEY_SERVICE}" -w 2>/dev/null) || REVIEW_OPENAI_KEY=""
+  unset _openai_key_account
+  # Same shape check as the installer; anything else counts as absent.
+  [[ "${REVIEW_OPENAI_KEY}" =~ ^sk-(proj-)?[A-Za-z0-9_-]+$ && "${REVIEW_OPENAI_KEY}" != sk-ant-* ]] \
+    || REVIEW_OPENAI_KEY=""
+fi
+_openai_pid=""
+_openai_dir=""
+
 # Printed on every keyed run; reviewers use no connectors. Dropped by exact match, other stderr kept.
 _REVIEW_KEY_STDERR_NOISE='claude.ai connectors are disabled because ANTHROPIC_API_KEY'
 
@@ -225,6 +256,136 @@ _review_usage_log() {
 _review_emit_stderr() {
   [[ -s "$1" ]] || return 0
   grep -vF "${_REVIEW_KEY_STDERR_NOISE}" "$1" >&2 || true
+}
+
+# openai_review_run <prompt-file> <dir>: one call; writes <dir>/notice or <dir>/text. Always returns 0.
+openai_review_run() {
+  local prompt_file="$1" dir="$2" body resp code rc=0 err_code err_msg text in_tok out_tok
+  body="${dir}/body.json"
+  resp="${dir}/response.json"
+  if ! jq -n --arg model "${REVIEW_OPENAI_MODEL}" --rawfile input "${prompt_file}" \
+    --argjson max "${REVIEW_OPENAI_MAX_OUTPUT_TOKENS}" \
+    '{model:$model, input:$input, max_output_tokens:$max, store:false}' >"${body}" 2>/dev/null; then
+    printf 'OpenAI review skipped: could not build the request body\n' >"${dir}/notice"
+    return 0
+  fi
+  # The key goes in on stdin (-H @-), never in argv; the body comes from a file.
+  code=$(printf 'Authorization: Bearer %s\n' "${REVIEW_OPENAI_KEY}" \
+    | "${REVIEW_OPENAI_CURL_BIN}" -sS -o "${resp}" -w '%{http_code}' \
+      --max-time "${REVIEW_OPENAI_TIMEOUT}" -H @- -H 'Content-Type: application/json' \
+      --data-binary "@${body}" "${REVIEW_OPENAI_API_BASE}/v1/responses" 2>"${dir}/curl.err") || rc=$?
+
+  in_tok=$(jq -r '.usage.input_tokens // empty' <"${resp}" 2>/dev/null) || in_tok=""
+  out_tok=$(jq -r '.usage.output_tokens // empty' <"${resp}" 2>/dev/null) || out_tok=""
+  [[ "${in_tok}" =~ ^[0-9]+$ ]] || in_tok="null"
+  [[ "${out_tok}" =~ ^[0-9]+$ ]] || out_tok="null"
+  [[ "${code}" =~ ^[0-9]{3}$ ]] || code="000"
+  local http_num=$((10#${code}))
+  {
+    mkdir -p "${REVIEW_API_USAGE_LOG%/*}" \
+      && jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg model "${REVIEW_OPENAI_MODEL}" \
+        --argjson exit "${rc}" --argjson http "${http_num}" \
+        --argjson in "${in_tok}" --argjson out "${out_tok}" \
+        '{ts:$ts, auth:"openai-api", model:$model, exit:$exit, http:$http,
+          input_tokens:$in, output_tokens:$out, total_cost_usd:null}' \
+        >>"${REVIEW_API_USAGE_LOG}"
+  } 2>/dev/null || true
+
+  if ((rc == 28)); then
+    printf 'OpenAI review skipped: no answer within %ss (git config review.openaiTimeout)\n' \
+      "${REVIEW_OPENAI_TIMEOUT}" >"${dir}/notice"
+    return 0
+  fi
+  if ((rc != 0)); then
+    local why
+    why=$(tr '\n' ' ' <"${dir}/curl.err" 2>/dev/null) || why=""
+    printf 'OpenAI review skipped: curl exit %s: %s\n' "${rc}" "${why:0:300}" >"${dir}/notice"
+    return 0
+  fi
+  err_code=$(jq -r '.error.code // empty' <"${resp}" 2>/dev/null) || err_code=""
+  err_msg=$(jq -r '.error.message // empty' <"${resp}" 2>/dev/null) || err_msg=""
+  if [[ "${code}" == "429" && "${err_code}" == "insufficient_quota" ]]; then
+    printf 'OpenAI credit used up for this month; skipped\n' >"${dir}/notice"
+    return 0
+  fi
+  if [[ "${code}" != 2?? || -n "${err_code}${err_msg}" ]]; then
+    err_msg="${err_msg:-no error message}"
+    err_msg="${err_msg//$'\n'/ }"
+    printf 'OpenAI review skipped: HTTP %s: %s\n' "${code}" "${err_msg:0:300}" >"${dir}/notice"
+    return 0
+  fi
+  text=$(jq -r '[.output[]? | select(.type == "message") | .content[]? | .text // empty] | join("\n")' \
+    <"${resp}" 2>/dev/null) || text=""
+  if [[ -z "${text//[[:space:]]/}" ]]; then
+    local status
+    status=$(jq -r '.status // "unknown"' <"${resp}" 2>/dev/null) || status="unknown"
+    printf 'OpenAI review skipped: the response had no text (status %s)\n' "${status}" >"${dir}/notice"
+    return 0
+  fi
+  printf '%s\n' "${text}" >"${dir}/text"
+  return 0
+}
+
+# openai_review_start <prompt>: start the call in the background, or note why not.
+# Sets _openai_dir (and _openai_pid when a call started).
+openai_review_start() {
+  local prompt="$1"
+  _openai_dir=$(mktemp -d 2>/dev/null) || {
+    _openai_dir=""
+    log_warn "OpenAI review skipped: mktemp failed"
+    return 0
+  }
+  if [[ "${REVIEW_OPENAI_DISABLE:-}" == "1" ]]; then
+    printf 'OpenAI review skipped: REVIEW_OPENAI_DISABLE=1\n' >"${_openai_dir}/notice"
+  elif [[ -z "${REVIEW_OPENAI_KEY}" ]]; then
+    printf 'OpenAI review skipped: no key in Keychain service %s (run scripts/install-openai-reviewer-api-key.sh)\n' \
+      "${REVIEW_OPENAI_KEY_SERVICE}" >"${_openai_dir}/notice"
+  elif ! command -v "${REVIEW_OPENAI_CURL_BIN}" >/dev/null 2>&1; then
+    printf 'OpenAI review skipped: %s not found\n' "${REVIEW_OPENAI_CURL_BIN}" >"${_openai_dir}/notice"
+  elif ((${#DIFF} > REVIEW_OPENAI_MAX_DIFF_BYTES)); then
+    printf 'OpenAI review skipped: diff is %s bytes, over review.openaiMaxDiffBytes (%s)\n' \
+      "${#DIFF}" "${REVIEW_OPENAI_MAX_DIFF_BYTES}" >"${_openai_dir}/notice"
+  else
+    printf '%s' "${prompt}" >"${_openai_dir}/prompt"
+    (openai_review_run "${_openai_dir}/prompt" "${_openai_dir}") </dev/null >/dev/null 2>&1 &
+    _openai_pid=$!
+  fi
+  return 0
+}
+
+# openai_review_finish: wait for the call, then show the review or the skip line.
+openai_review_finish() {
+  [[ -n "${_openai_dir}" ]] || return 0
+  if [[ -n "${_openai_pid}" ]]; then
+    wait "${_openai_pid}" 2>/dev/null || true
+    _openai_pid=""
+  fi
+  if [[ -s "${_openai_dir}/text" ]]; then
+    {
+      echo "=== OPENAI REVIEW (advisory, non-blocking; ${REVIEW_OPENAI_MODEL}) ==="
+      cat "${_openai_dir}/text"
+      echo ""
+    } >&2
+    { printf '=== OPENAI REVIEW (advisory, %s) ===\n' "${REVIEW_OPENAI_MODEL}"; cat "${_openai_dir}/text"; } \
+      >>"${REVIEW_LOG}" 2>/dev/null || true
+  elif [[ -s "${_openai_dir}/notice" ]]; then
+    local notice
+    IFS= read -r notice <"${_openai_dir}/notice" || true
+    log_warn "${notice}"
+    printf 'openai: %s\n' "${notice}" >>"${REVIEW_LOG}" 2>/dev/null || true
+  else
+    log_warn "OpenAI review skipped: it produced no result"
+  fi
+  _openai_cleanup
+  return 0
+}
+
+# Named files, then rmdir: no recursive delete of a path built at runtime.
+_openai_cleanup() {
+  [[ -n "${_openai_dir:-}" && -d "${_openai_dir}" ]] || return 0
+  rm -f "${_openai_dir}"/{prompt,body.json,response.json,curl.err,notice,text} 2>/dev/null || true
+  rmdir "${_openai_dir}" 2>/dev/null || true
+  _openai_dir=""
 }
 
 # run_claude_cli <secs> <args...>: `timeout N env -u CLAUDECODE claude <args>`, same stdin/stdout/stderr/exit.
@@ -3321,6 +3482,12 @@ _on_review_exit() {
   _ec=$?
   rm -rf "${_chunk_results:-}" 2>/dev/null || true
   rm -f "${_cr_out:-}" "${_ar_out:-}" "${DIFF_TMPFILE:-}" "${_codebase_err:-}" 2>/dev/null || true
+  # An early exit can leave the advisory OpenAI call running; stop it, then wait so its files are closed.
+  if [[ -n "${_openai_pid:-}" ]]; then
+    kill "${_openai_pid}" 2>/dev/null || true
+    wait "${_openai_pid}" 2>/dev/null || true
+  fi
+  _openai_cleanup || true
   record_attempt "$_ec" || true
   record_override_block "$_ec" || true
   [[ -n "${REVIEW_LOG:-}" ]] && printf "exit_code: %d\n" "$_ec" >>"${REVIEW_LOG}" || true
@@ -3596,6 +3763,7 @@ if [[ "${REVIEW_MODE}" == "full-diff" ]]; then
     CACHED_VERDICT=$(head -1 "${FULL_DIFF_CACHE}")
     if [[ "${CACHED_VERDICT}" == "PASS" ]]; then
       log_success "Full-diff review cached: identical diff previously passed"
+      log_info "OpenAI review skipped: cached PASS"
       printf 'full-diff: cached PASS\n' >>"${REVIEW_LOG}" || true
       exit 0
     fi
@@ -3666,6 +3834,9 @@ Review diff:
 ${DIFF}
 \`\`\`"
 
+  # Parallel; shown before the verdict branches, so it never changes the exit code.
+  openai_review_start "${FULL_DIFF_PROMPT}"
+
   FULL_DIFF_OUTPUT=$(invoke_agent "adversarial-reviewer" "${FULL_DIFF_PROMPT}" "${FULL_DIFF_CACHE}" "${ADVERSARIAL_MODEL_ARGS[@]}") || true
 
   [[ -n "${FULL_DIFF_OUTPUT}" ]] || FULL_DIFF_OUTPUT="VERDICT: FAIL (agent error: invoke_agent produced no output)"
@@ -3683,6 +3854,8 @@ ${DIFF}
   echo "" >&2
 
   { printf '=== FULL-DIFF REVIEW ===\n%s\n' "${FULL_DIFF_DISPLAY}"; } >>"${REVIEW_LOG}" || true
+
+  openai_review_finish || true
 
   FULL_DIFF_VERDICT=$(parse_verdict "${FULL_DIFF_OUTPUT}")
   if [[ "${FULL_DIFF_VERDICT}" == "PASS" ]]; then
