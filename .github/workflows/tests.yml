@@ -39,7 +39,7 @@ jobs:
       # repo-wide scan in a suite picks it up.
       - name: Clone dotfiles
         if: steps.scope.outputs.skip != 'true'
-        run: git clone --depth 1 https://github.com/twistedmelonman/dotfiles.git "${RUNNER_TEMP}/dotfiles"
+        run: git clone --depth 1 https://github.com/smartwatermelon/dotfiles.git "${RUNNER_TEMP}/dotfiles"
 
       # The length suites run personify's real length_check.py and, under
       # CI=true, fail rather than skip when it is absent (claude-config#649).
