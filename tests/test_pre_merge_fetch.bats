@@ -117,3 +117,16 @@ EOF
 
   [[ "${status}" -eq 1 ]]
 }
+
+@test "no gh capture in pre-merge-review.sh merges stderr into its output" {
+  # The same bug outside _fetch_pr_json: gh's stderr hints ("hint: ...
+  # gh event listen") went into REVIEW_THREADS via 2>&1, jq failed with
+  # "Invalid numeric literal at line 1, column 7", and the merge stopped.
+  # Every capture is parsed or sent to the reviewer, so stderr stays out.
+  run grep -nE '\$\(command gh .*2>&1\)' "${SCRIPT}"
+  if [[ "${status}" -ne 1 ]]; then
+    echo "gh captures that merge stderr:" >&2
+    echo "${output}" >&2
+    false
+  fi
+}
