@@ -123,7 +123,9 @@ EOF
   # gh event listen") went into REVIEW_THREADS via 2>&1, jq failed with
   # "Invalid numeric literal at line 1, column 7", and the merge stopped.
   # Every capture is parsed or sent to the reviewer, so stderr stays out.
-  run grep -nE '\$\(command gh .*2>&1\)' "${SCRIPT}"
+  # Matches gh with or without `command`, and a 2>&1 before a pipe.
+  # A capture split across lines is not caught.
+  run grep -nE '(^|[^[:alnum:]_])gh .*2>&1' "${SCRIPT}"
   if [[ "${status}" -ne 1 ]]; then
     echo "gh captures that merge stderr:" >&2
     echo "${output}" >&2
