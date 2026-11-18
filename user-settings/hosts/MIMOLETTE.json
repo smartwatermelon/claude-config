@@ -14,6 +14,7 @@
   },
   "enabledPlugins": {
     "cloudflare@cloudflare": true,
-    "sentry@claude-plugins-official": true
+    "sentry@claude-plugins-official": true,
+    "cloudflare@claude-plugins-official": true
   }
 }
