@@ -897,11 +897,12 @@ if [[ -n "${GH_REPO_OVERRIDE}" ]]; then
   REPO_OWNER="${GH_REPO_OVERRIDE%/*}"
   REPO_NAME="${GH_REPO_OVERRIDE#*/}"
 else
-  REPO_OWNER=$(command gh repo view --json owner -q '.owner.login' 2>&1) || {
+  # No 2>&1 on gh captures: stderr hints break jq (test_pre_merge_fetch.bats)
+  REPO_OWNER=$(command gh repo view --json owner -q '.owner.login') || {
     log_warn "Could not determine repo owner"
     REPO_OWNER=""
   }
-  REPO_NAME=$(command gh repo view --json name -q '.name' 2>&1) || {
+  REPO_NAME=$(command gh repo view --json name -q '.name') || {
     log_warn "Could not determine repo name"
     REPO_NAME=""
   }
@@ -1200,7 +1201,7 @@ fi
 
 # --- Fetch detailed review comments ---
 # Get review threads which include inline comments
-REVIEW_COMMENTS=$(command gh pr view "${PR_NUMBER}" "${REPO_FLAG[@]}" --comments 2>&1) || {
+REVIEW_COMMENTS=$(command gh pr view "${PR_NUMBER}" "${REPO_FLAG[@]}" --comments) || {
   log_warn "Could not fetch detailed comments, continuing with basic review data"
   REVIEW_COMMENTS=""
 }
@@ -1211,7 +1212,7 @@ REVIEW_COMMENTS=$(command gh pr view "${PR_NUMBER}" "${REPO_FLAG[@]}" --comments
 INLINE_COMMENTS=""
 if [[ -n "${REPO_OWNER}" && -n "${REPO_NAME}" ]]; then
   log_info "Fetching inline review comments (including bot comments)..."
-  INLINE_COMMENTS=$(command gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR_NUMBER}/comments" 2>&1) || {
+  INLINE_COMMENTS=$(command gh api "repos/${REPO_OWNER}/${REPO_NAME}/pulls/${PR_NUMBER}/comments") || {
     log_warn "Could not fetch inline review comments"
     INLINE_COMMENTS=""
   }
@@ -1250,7 +1251,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 GRAPHQL_EOF
   )
 
-  REVIEW_THREADS=$(command gh api graphql -f query="${GRAPHQL_QUERY}" -f owner="${REPO_OWNER}" -f name="${REPO_NAME}" -F number="${PR_NUMBER}" 2>&1) || {
+  REVIEW_THREADS=$(command gh api graphql -f query="${GRAPHQL_QUERY}" -f owner="${REPO_OWNER}" -f name="${REPO_NAME}" -F number="${PR_NUMBER}") || {
     log_warn "Could not fetch review thread resolution status"
     REVIEW_THREADS=""
   }
@@ -1301,7 +1302,7 @@ else
 fi
 
 # Get the full diff for context
-PR_DIFF=$(command gh pr diff "${PR_NUMBER}" "${REPO_FLAG[@]}" 2>&1) || {
+PR_DIFF=$(command gh pr diff "${PR_NUMBER}" "${REPO_FLAG[@]}") || {
   log_warn "Could not fetch PR diff"
   PR_DIFF=""
 }
