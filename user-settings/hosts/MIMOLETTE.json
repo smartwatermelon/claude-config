@@ -13,7 +13,7 @@
     ]
   },
   "enabledPlugins": {
-    "cloudflare@cloudflare": true,
+    "cloudflare@anthropic-plugin-directory": true,
     "sentry@claude-plugins-official": true
   }
 }
