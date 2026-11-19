@@ -3,7 +3,10 @@
     "environment": [
       "**Host containment (arich-mac)**: COMPANY machine. The company rules from this Mac's local machine-settings.local.json take precedence for company repos; the other entries cover Andrew's personal repos and LAN hosts only"
     ],
-    "allow": ["Always allowed to launch Docker"]
+    "allow": [
+      "Always allowed to launch Docker",
+      "Force-pushing with an explicit lease, `git push --force-with-lease=<branch>:<expected-sha> origin <branch>`, is allowed for an `arich/*` PR branch in a beacon-biosignals repo, after rebasing it onto main or amending it. These are Andrew's PR branches. The expected SHA makes the push fail if anyone or any bot (for example a docs bot) pushed since the agent last saw the branch. Does NOT cover bare `--force`/`-f`, a lease without an expected SHA, `main` or any default branch, or deleting a remote branch."
+    ]
   },
   "skillOverrides": {
     "morning-andrew": "on",
