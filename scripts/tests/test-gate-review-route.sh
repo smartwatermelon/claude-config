@@ -15,13 +15,15 @@ TMP="$(mktemp -d)"
 TMP="$(cd "${TMP}" && pwd -P)"
 trap 'rm -rf "${TMP}"' EXIT
 
+# gh-wrapper.sh default, as in run-tests.sh: from the real HOME.
+REAL_HOME="${HOME}"
 export HOME="${TMP}/home"
 mkdir -p "${HOME}"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_CEILING_DIRECTORIES="${TMP}"
 export XDG_CONFIG_HOME="${TMP}/xdg"
 mkdir -p "${XDG_CONFIG_HOME}/personify/checks"
-export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-/Users/andrewrich/Developer/dotfiles/bash/gh-wrapper.sh}"
+export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-${REAL_HOME}/.config/bash/gh-wrapper.sh}"
 export GATE_RULES_FILE="${TMP}/rules.conf"
 printf 'repo=acme/pang review\n* review\n' >"${GATE_RULES_FILE}"
 export GATE_REVIEW_DIR="${TMP}/gate"

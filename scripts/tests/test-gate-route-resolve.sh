@@ -17,6 +17,8 @@ trap 'rm -rf "${TMP}"' EXIT
 
 # Sandbox: no user git config, no real gh-wrapper state, no repo discovery
 # above the scratch tree.
+# gh-wrapper.sh default, as in run-tests.sh: from the real HOME.
+REAL_HOME="${HOME}"
 export HOME="${TMP}/home"
 mkdir -p "${HOME}"
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
@@ -25,7 +27,7 @@ export GATE_RULES_FILE="${ROOT}/gate-rules.conf"
 # Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
 GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
 export GATE_GH
-export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-/Users/andrewrich/Developer/dotfiles/bash/gh-wrapper.sh}"
+export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-${REAL_HOME}/.config/bash/gh-wrapper.sh}"
 
 PASS=0
 FAIL=0
