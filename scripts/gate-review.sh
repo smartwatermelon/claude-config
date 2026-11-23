@@ -498,8 +498,8 @@ _stage_lint() {
 # batches/ name, or _prior_buffers carries one session's edited text into
 # another's batch by item name. Limits of repo+branch: two sessions in the
 # same directory (both in one repo, working elsewhere via `git -C`) share one
-# queue, and outside any repo every caller is `batch`. The FROM line in each
-# batch header shows which queue the reviewer is reading.
+# queue, and outside any repo every caller is `batch`. The line under STATUS
+# names the queue the reviewer is reading.
 _use_key() {
   local d
   GATE_KEY="$(_batch_key)"
@@ -736,25 +736,9 @@ _cmd_open() {
   {
     echo "# STATUS: PENDING"
     echo "#"
-    echo "# REVIEW THESE ${count} ITEM(S), EDIT FREELY."
-    echo "#"
-    echo "# TO APPROVE: change PENDING above to APPROVED, then save."
-    echo "# TO ABORT:   change PENDING above to ABORT, then save. Your text"
-    echo "#             is kept, and the next open for these items starts from it."
-    echo "#"
-    echo "# An explicit word, not a bare save: BBEdit does not write an"
-    echo "# unmodified document, so there is no save to detect. Leaving this"
-    echo "# PENDING approves nothing, which is also what an editor autosaving"
-    echo "# on close leaves behind."
-    echo "#"
-    echo "# To drop ONE item from the set: delete its body."
-    echo "# Lines starting with # are stripped from the approved text."
-    echo "#"
-    echo "# FROM: ${GATE_KEY}. Only items staged from this repo and branch are"
-    echo "# here; other repos and branches keep their own."
-    echo "# ABORT, a timeout, or a killed wait approves nothing and leaves these"
-    echo "# items staged for ${GATE_KEY}. Only the next open from this repo and"
-    echo "# branch shows them again."
+    echo "# ${count} item(s) from ${GATE_KEY}. Edit freely; set PENDING above to APPROVED or ABORT, then save."
+    echo "# Delete a body to drop that item. Lines starting with # are not approved."
+    echo "# ABORT keeps your text for the next open. A timeout approves nothing."
     echo "#"
     echo "# BATCH: ${nonce}"
     # What each item was built from, so a later open can tell the reviewer's

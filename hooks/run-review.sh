@@ -2350,22 +2350,11 @@ invoke_agent() {
   # caller does, and each caller reports the outcome itself (#590). Saying
   # "BLOCKING" here printed a block that the whole-diff path then let through.
   if [[ ${exit_code} -eq 124 ]]; then
-    log_error "${agent_name} timed out after ${TIMEOUT_SECONDS}s"
-    log_error "Review timeout means the review did not complete."
-    log_error ""
-    log_error "Options:"
-    log_error "  1. Retry the commit (review will run again)"
-    log_error "  2. Increase timeout: git config ${REVIEW_TIMEOUT_HINT:-review.timeout 300}"
-    log_error "  3. Split into smaller commits"
+    log_error "${agent_name} timed out after ${TIMEOUT_SECONDS}s, review not complete: retry, split the commit, or git config ${REVIEW_TIMEOUT_HINT:-review.timeout 300}"
     echo "VERDICT: FAIL (timeout)"
     return 1
   elif [[ ${exit_code} -ne 0 ]]; then
-    log_error "${agent_name} exited with error code ${exit_code}"
-    log_error "Agent error means the review did not complete."
-    log_error ""
-    log_error "Options:"
-    log_error "  1. Retry the commit (review will run again)"
-    log_error "  2. Check Claude CLI: claude --version"
+    log_error "${agent_name} exited with error code ${exit_code}, review not complete: retry, or check claude --version"
     echo "VERDICT: FAIL (agent error: ${exit_code})"
     return 1
   fi
@@ -2631,36 +2620,16 @@ _read_commit_message() {
   fi
 }
 
+# One line after the too-large block: file count and the five largest files.
 show_large_diff_summary() {
-  local total_lines="$1"
-
-  echo "" >&2
-  echo "=== LARGE DIFF SUMMARY ===" >&2
-  echo "" >&2
-
-  # File statistics
   # Lockfiles are left out of the measured diff (#689), so leave them out of
   # the summary too, or the listed files would not add up to the total.
-  local numstat files_changed
+  local numstat files_changed top
   numstat=$(git diff --cached --numstat 2>/dev/null | filter_out_lockfiles || true)
   files_changed=$(grep -c . <<<"${numstat}" || true)
-
-  echo "Total changes: ${total_lines} lines across ${files_changed} files" >&2
-  echo "" >&2
-
-  # Top changed files
-  echo "Top 10 changed files:" >&2
-  printf '%s\n' "${numstat}" \
-    | grep . \
-    | sort -rn \
-    | head -10 \
-    | awk '{printf "  %5d + | %5d - | %s\n", $1, $2, $3}' >&2 || true
-
-  echo "" >&2
-  log_info "AI review skipped for very large diffs (${total_lines} > ${REVIEW_SKIP_THRESHOLD} lines)"
-  log_info "To review manually: git diff --cached | claude --agent code-reviewer -p --tools \"\""
-  log_warn "Allowing commit without AI review (diff too large is not a code quality issue)"
-  echo "" >&2
+  top=$(printf '%s\n' "${numstat}" | grep . | sort -rn | head -5 |
+    awk '{printf "%s%s (+%s -%s)", (NR > 1 ? ", " : ""), $3, $1, $2}' || true)
+  echo "  ${files_changed} files; largest: ${top}" >&2
 }
 
 # True when the adversarial-reviewer agent is installed. Shared by the
@@ -3713,17 +3682,9 @@ fi
 DIFF_LINES=$(echo "${DIFF}" | wc -l | tr -d ' ')
 
 if [[ "${REVIEW_MODE}" != "full-diff" && "${REVIEW_MODE}" != "codebase" ]] && [[ ${DIFF_LINES} -gt ${REVIEW_SKIP_THRESHOLD} ]]; then
-  show_large_diff_summary "${DIFF_LINES}"
-  log_error ""
-  log_error "BLOCKING: Diff too large for automated review (${DIFF_LINES} lines)"
-  log_error ""
-  log_error "Options:"
-  log_error "  1. Split into smaller commits (recommended). A regenerated lockfile"
-  log_error "     can go in a commit of its own; a lockfile-only commit skips review."
-  log_error "  2. Increase threshold: git config review.skipThreshold 5000"
-  log_error "     Chunked review then needs every file's diff under review.chunkSize"
-  log_error "     (current: ${REVIEW_CHUNK_SIZE}); a larger file blocks the commit"
-  log_error "     as unreviewed, so raise review.chunkSize too if one is bigger."
+  log_error "BLOCKING: diff too large for review, ${DIFF_LINES}/${REVIEW_SKIP_THRESHOLD} lines: split the commit (a lockfile-only commit skips review)."
+  log_error "  Or raise review.skipThreshold; each file must then fit review.chunkSize (now ${REVIEW_CHUNK_SIZE})."
+  show_large_diff_summary
   printf 'blocked: diff too large (%d lines > %d threshold)\n' "${DIFF_LINES}" "${REVIEW_SKIP_THRESHOLD}" >>"${REVIEW_LOG}" || true
   exit 1
 
@@ -4679,7 +4640,7 @@ if [[ "${CODE_REVIEWER_INCOMPLETE}" == true ]]; then
     log_error "Review INCOMPLETE: code-reviewer did not complete (adversarial-reviewer alone is not a review) - commit rejected"
   fi
   log_error "  Retry with a longer timeout: git -c review.timeout=300 commit ..."
-  log_error "  Human bypass (not for agents): git commit --no-verify - see ~/.claude/docs/HUMAN-BYPASS.md"
+  log_error "  Human bypass (not for agents): ~/.claude/docs/HUMAN-BYPASS.md"
   printf 'review: INCOMPLETE (code-reviewer did not complete)\n' >>"${REVIEW_LOG}" || true
   REVIEW_BLOCK_TRANSIENT=true
   exit 1

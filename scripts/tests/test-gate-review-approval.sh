@@ -33,7 +33,9 @@ _stub_personify "${CLAUDE_CONFIG_DIR}" "${TMP}/personify"
 # Every destination is review here; routing is test-gate-review-route.sh's job.
 export GATE_RULES_FILE="${TMP}/rules.conf"
 printf '* review\n' >"${GATE_RULES_FILE}"
-export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-/Users/andrewrich/Developer/dotfiles/bash/gh-wrapper.sh}"
+# gh-wrapper.sh default, as in run-tests.sh: from the real HOME.
+REAL_HOME="${HOME}"
+export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-${REAL_HOME}/.config/bash/gh-wrapper.sh}"
 mkdir -p "${GATE_REVIEW_DIR}/pending" "${GATE_REVIEW_DIR}/approved"
 # The buffer the _split_batch cases hand it directly. Any path works: the
 # per-batch naming under batches/ is exercised through _cmd_open below.
@@ -1069,8 +1071,8 @@ if grep -q '^=== alpha-commit ===$' "${SHOWN}" && ! grep -q 'beta-commit' "${SHO
 else
   _no "606: an open from alpha shows alpha's item and not beta's"
 fi
-if grep -q "^# FROM: ${KA}\." "${SHOWN}" && grep -q "leaves these" "${SHOWN}" &&
-  grep -q "items staged for ${KA}\. Only the next open from this repo and" "${SHOWN}"; then
+if grep -q "^# 1 item(s) from ${KA}\. " "${SHOWN}" &&
+  grep -q "^# ABORT keeps your text for the next open\. A timeout approves nothing\." "${SHOWN}"; then
   _ok "606: the header names the key and what ABORT or a timeout does to pending items"
 else
   _no "606: the header names the key and what ABORT or a timeout does to pending items"

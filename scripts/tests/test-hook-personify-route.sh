@@ -19,6 +19,8 @@ trap 'rm -rf "${TMP}"' EXIT
 
 # Sandbox: no user git config, no repo discovery above the scratch tree, no
 # real gate dir (so no SUSPENDED file), no real approvals.
+# gh-wrapper.sh default, as in run-tests.sh: from the real HOME.
+REAL_HOME="${HOME}"
 export HOME="${TMP}/home"
 mkdir -p "${HOME}"
 # gate-review.sh finds length_check.py through installed_plugins.json here;
@@ -28,7 +30,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 export GIT_CEILING_DIRECTORIES="${TMP}"
 export XDG_CONFIG_HOME="${TMP}/xdg"
 mkdir -p "${XDG_CONFIG_HOME}/personify/checks"
-export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-/Users/andrewrich/Developer/dotfiles/bash/gh-wrapper.sh}"
+export GH_WRAPPER_LIB="${GH_WRAPPER_LIB:-${REAL_HOME}/.config/bash/gh-wrapper.sh}"
 export GATE_REVIEW_DIR="${TMP}/gate"
 # Fork lookups (gate-route _is_fork) go to a stub, never to GitHub.
 GATE_GH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/gh-fork-stub.sh"
@@ -487,7 +489,7 @@ _dest_msg "xargs wrapper: name-it message, no staging steps" "${PERSONAL}" \
   "echo ${TXT} | xargs git commit -F"
 # A resolved, gated destination keeps the approval steps.
 _run "${THIRD}" "git -C ${THIRD} commit -F ${TMP}/other.txt"
-if ((rc == 2)) && [[ "${err}" == *"This destination is gated"* && "${err}" == *"stage --kind"* &&
+if ((rc == 2)) && [[ "${err}" == *"has not been visually approved"* && "${err}" == *"stage --kind"* &&
   "${err}" != *"Every commit message"* ]]; then
   _ok "gated destination: deny keeps the staging steps"
 else
