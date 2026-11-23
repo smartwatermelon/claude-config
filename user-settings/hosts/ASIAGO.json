@@ -6,5 +6,13 @@
     "allow": [
       "Allowed: ssh dsadmin@romano.local for read-only settings and configuration checks. Writing or saving anything is not allowed."
     ]
+  },
+  "enabledPlugins": {
+    "cc-plugin-you-should-know@builtin": false,
+    "ci-workflows@smartwatermelon-marketplace": false
+  },
+  "skillOverrides": {
+    "converging-issue-backlogs": "off",
+    "rex": "off"
   }
 }
