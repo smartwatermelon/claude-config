@@ -4,7 +4,6 @@
 #
 # One entry per line, exact basename match (no globs, no paths).
 # Blank lines and lines starting with # are ignored.
-#
 # To accept new entries flagged as "unknown" by the audit, run:
 #   scripts/update-tools.sh --learn
 
@@ -46,7 +45,7 @@ bridge-spawn
 dev-mods
 seed-admin
 ssh
-
+child-logs
 # Files
 .claude.json
 .DS_Store
