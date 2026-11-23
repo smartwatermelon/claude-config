@@ -62,8 +62,8 @@
   "enabledPlugins": {
     "apple-notes@apple-notes-mcp": false,
     "asana@claude-plugins-official": false,
-    "cc-plugin-you-should-know@builtin": true,
-    "ci-workflows@smartwatermelon-marketplace": true,
+    "cc-plugin-you-should-know@builtin": false,
+    "ci-workflows@smartwatermelon-marketplace": false,
     "code-critic@smartwatermelon-marketplace": true,
     "comprehensive-review@smartwatermelon-marketplace": true,
     "context7@claude-plugins-official": true,
@@ -115,10 +115,12 @@
   },
   "remoteControlAtStartup": true,
   "skillOverrides": {
+    "converging-issue-backlogs": "off",
     "docx": "off",
     "evening-andrew": "off",
     "morning-andrew": "off",
     "pptx": "off",
+    "rex": "off",
     "xlsx": "off"
   },
   "skipDangerousModePermissionPrompt": true,
