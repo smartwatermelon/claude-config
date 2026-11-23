@@ -359,6 +359,14 @@ EOF
   [[ ! -s "${EXEMPT_LOG}" ]]
 }
 
+@test "BLOCK_MERGE message says what to do and offers no bypass" {
+  _pre_merge smartwatermelon/dev-env twistedmelonman BLOCK_MERGE
+  [[ "${status}" -ne 0 ]]
+  [[ "${output}" == *"merge blocked"* ]]
+  [[ "${output}" == *"Fix the issues above."* ]]
+  [[ "${output}" != *"bypass"* ]]
+}
+
 @test "andrewmrich-authored PR in an exempt repo still needs the lock" {
   _pre_merge smartwatermelon/spokane-snow andrewmrich SAFE_TO_MERGE
   [[ "${status}" -eq 1 ]]

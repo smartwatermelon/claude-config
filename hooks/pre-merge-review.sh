@@ -1629,16 +1629,7 @@ if echo "${VERDICT_LINE}" | grep -qE "SAFE_TO_MERGE"; then
   exit 0
 elif echo "${VERDICT_LINE}" | grep -qE "BLOCK_MERGE"; then
   log_error "PR has unresolved review issues - merge blocked"
-  echo "" >&2
-  echo "   Address the issues above before merging." >&2
-  echo "" >&2
-  echo "   💡 TIP: If you've already resolved these issues and the comments are outdated," >&2
-  echo "      add a new PR comment explaining what was fixed, then attempt the merge again." >&2
-  echo "      The reviewer will see your update and re-analyze the current state." >&2
-  echo "" >&2
-  echo "   To bypass (emergency only):" >&2
-  echo "   OBTAIN EXPLICIT PERMISSION and then command gh pr merge ${PR_NUMBER}" >&2
-  echo "" >&2
+  echo "   Fix the issues above. Already fixed? Say what changed in a PR comment, then merge again." >&2
   exit 1
 else
   # Verdict line exists but contains neither expected value
