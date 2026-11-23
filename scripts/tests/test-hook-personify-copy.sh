@@ -60,7 +60,7 @@ _run() {
   json="$(jq -n --arg c "$2" --arg d "$1" '{tool_input:{command:$c},cwd:$d}')"
   err="$(printf '%s' "${json}" | "${HOOK}" 2>&1 >/dev/null)"
   rc=$?
-  extract="$(printf '%s\n' "${err}" | sed -n 's/^  extract: //p')"
+  extract="$(printf '%s\n' "${err}" | sed -n 's/^.* stage --kind copy [^ ]* //p')"
 }
 # _case <label> <want-rc> <want-substring> <cwd> <command>
 _case() {
@@ -211,7 +211,7 @@ printf '# Staged\n' >"${PO}/README.md"
 git -C "${PO}" add README.md
 _po "README staged, plain commit: extract and approval as before" 2 "public-facing copy that has not been approved" \
   "git commit -m x"
-_contains "  ... with an extract" "${err}" "extract: ${GATE_REVIEW_DIR}/copy/"
+_contains "  ... with an extract" "${err}" " ${GATE_REVIEW_DIR}/copy/"
 git -C "${PO}" reset -q
 git -C "${PO}" checkout -q -- README.md
 COPY_PATHS_FILE="${TMP}/public.conf" _case "own lines plus public=*: strict limits as before" 2 \
@@ -222,7 +222,7 @@ sed -i.bak -e 's#Export a tax report in one tap.#Export a tax report in two taps
 git -C "${SITE}" add index.html
 _case "staged copy change: blocked" 2 "public-facing copy that has not been approved" "${SITE}" \
   "git commit -m 'fix: wording'"
-_contains "  ... names the extract" "${err}" "extract: ${GATE_REVIEW_DIR}/copy/"
+_contains "  ... names the extract" "${err}" " ${GATE_REVIEW_DIR}/copy/"
 _contains "  ... and the stage --kind copy step" "${err}" "stage --kind copy copy-"
 # Script path first, --dir for the repo: the only form the sandbox exclusion matches.
 _contains "  ... stage step starts with the script and --dir" "${err}" "gate-review.sh --dir /"

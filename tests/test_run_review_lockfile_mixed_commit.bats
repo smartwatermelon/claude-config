@@ -197,7 +197,7 @@ _prompt_count() {
   [ "${measured}" -gt 2500 ]
   [ "${measured}" -lt 4000 ]
   # The block message now says a lockfile can go in a commit of its own.
-  [[ "$output" == *"A regenerated lockfile"* ]]
+  [[ "$output" == *"a lockfile-only commit skips review"* ]]
 }
 
 @test "full-diff mode does not strip lockfiles from the piped diff" {

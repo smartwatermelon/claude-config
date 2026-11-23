@@ -138,9 +138,9 @@ _run_full_diff() {
   [[ "$output" != *"Review passed"* ]]
   [[ "$output" == *"Review INCOMPLETE"* ]]
   [[ "$output" == *"code-reviewer did NOT complete (timeout)"* ]]
-  # It says how to retry, and names the human bypass.
+  # It says how to retry, and points at the human-bypass doc without the bypass command.
   [[ "$output" == *"git -c review.timeout=300 commit"* ]]
-  [[ "$output" == *"git commit --no-verify"* ]]
+  [[ "$output" != *"--no-verify"* ]]
   [[ "$output" == *"HUMAN-BYPASS.md"* ]]
   # invoke_agent no longer claims a block the caller does not enforce.
   [[ "$output" != *"BLOCKING: Review timeout"* ]]

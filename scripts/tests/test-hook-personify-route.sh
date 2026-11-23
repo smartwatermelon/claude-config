@@ -487,7 +487,7 @@ _dest_msg "xargs wrapper: name-it message, no staging steps" "${PERSONAL}" \
   "echo ${TXT} | xargs git commit -F"
 # A resolved, gated destination keeps the approval steps.
 _run "${THIRD}" "git -C ${THIRD} commit -F ${TMP}/other.txt"
-if ((rc == 2)) && [[ "${err}" == *"This destination is gated"* && "${err}" == *"stage --kind"* &&
+if ((rc == 2)) && [[ "${err}" == *"has not been visually approved"* && "${err}" == *"stage --kind"* &&
   "${err}" != *"Every commit message"* ]]; then
   _ok "gated destination: deny keeps the staging steps"
 else

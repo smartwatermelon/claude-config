@@ -514,33 +514,10 @@ _deny() {
   # %q keeps a path with spaces one argument when the line is pasted.
   qdir="$(printf '%q' "${DEST_DIR:-${PWD}}")"
   {
-    echo '🛑 BLOCKED: this text has not been visually approved.'
-    echo ''
-    echo "  surface: ${surface}"
-    echo "  reason:  ${reason}"
-    echo ''
-    echo 'This destination is gated: its commit messages and PR bodies must be'
-    echo 'read and approved in the editor before they are written. To do that:'
-    echo ''
-    echo '  1. Write the text to a file.'
-    echo "  2. ${GATE} --dir ${qdir} stage --kind <kind> <label> <absolute file path>"
-    echo "  3. ${GATE} --dir ${qdir} open"
-    echo '     Run each as its own command, exactly as shown: no cd, nothing'
-    echo '     before the script path. Staged items are kept per repo and branch'
-    echo '     of the --dir path, and open shows only those items.'
-    echo '  4. Andrew reads the batch and types APPROVED in the STATUS line.'
-    echo '  5. Re-run the command against the APPROVED file, absolute path.'
-    echo '     open prints it on an "approved:" line; it sits under your'
-    echo '     repo and branch:'
-    echo "       git commit -F ${HOME}/.claude/gate-review/approved/<repo>-<branch>/<label>"
-    echo "       gh pr create --title t --body-file ${HOME}/.claude/gate-review/approved/<repo>-<branch>/<label>"
-    echo ''
-    echo '     Use the approved copy, not the file you staged: if he edited the'
-    echo '     text in the editor, his edits are what he approved and the'
-    echo '     original no longer matches.'
-    echo ''
-    echo 'Approval is his to give. Staging and opening on his behalf is fine;'
-    echo 'typing the word for him is not.'
+    echo "🛑 BLOCKED: ${surface} has not been visually approved: ${reason}"
+    echo "  ${GATE} --dir ${qdir} stage --kind <kind> <label> <absolute file>"
+    echo "  ${GATE} --dir ${qdir} open"
+    echo "  Then re-run on the approved: path open prints, ${HOME}/.claude/gate-review/approved/<repo>-<branch>/<label>. Only Andrew approves."
   } >&2
   exit 2
 }
@@ -550,18 +527,8 @@ _deny() {
 _deny_dest() {
   local reason="$1" surface="$2"
   {
-    echo '🛑 BLOCKED: cannot tell which repository this writes to.'
-    echo ''
-    echo "  surface: ${surface}"
-    echo "  reason:  ${reason}"
-    echo ''
-    echo 'The approval gate applies only to some repositories, so the hook must'
-    echo 'know the destination. Name it literally and retry:'
-    echo '  git -C /absolute/path commit ...'
-    echo '  gh ... -R owner/name ...'
-    echo '  gh api repos/owner/name/...'
-    echo 'Do not stage this text for approval. If the retry is gated, the next'
-    echo 'block says so.'
+    echo "🛑 BLOCKED: cannot tell which repository this writes to (${surface}): ${reason}"
+    echo '  Name it literally and retry (git -C /absolute/path, gh -R owner/name, gh api repos/owner/name/...). Do not stage it.'
   } >&2
   exit 2
 }
@@ -965,30 +932,13 @@ _deny_copy() {
   local reason="$1" surface="$2" extract="${3:-}" label qdir
   qdir="$(printf '%q' "${DEST_DIR:-${PWD}}")"
   {
-    echo '🛑 BLOCKED: this commit changes public-facing copy that has not been approved.'
-    echo ''
-    echo "  surface: ${surface}"
-    echo "  repo:    ${DEST_DIR}"
-    echo "  reason:  ${reason}"
+    echo "🛑 BLOCKED: public-facing copy that has not been approved (${surface}, ${DEST_DIR}): ${reason}"
     if [[ -n "${extract}" ]]; then
       label="${extract##*/}"
       label="copy-${label:0:12}"
-      echo "  extract: ${extract}"
-      echo ''
-      echo 'The extract is the added or changed text of the staged copy files'
-      echo '(the whole text of a new file). Approve it like commit text:'
-      echo ''
-      echo "  1. ${GATE} --dir ${qdir} stage --kind copy ${label} ${extract}"
-      echo "  2. ${GATE} --dir ${qdir} open"
-      echo '     Run each as its own command, exactly as shown: no cd, nothing'
-      echo '     before the script path.'
-      echo '  3. Andrew reads it and types APPROVED in the STATUS line.'
-      echo '  4. Re-run the same git commit. The hook rebuilds the extract from the'
-      echo '     index; the same staged text gives the same bytes and passes.'
-      echo ''
-      echo 'The text approved is the extract, not the files. If Andrew edits it in'
-      echo 'the editor, apply his edits to the source files, git add them, and start'
-      echo 'again from step 1: the new staged text gives a new extract.'
+      echo "  ${GATE} --dir ${qdir} stage --kind copy ${label} ${extract}"
+      echo "  ${GATE} --dir ${qdir} open"
+      echo '  Then re-run the same git commit. If Andrew edits the text, apply his edits to the files, git add, and stage again.'
     fi
   } >&2
   exit 2
@@ -1319,40 +1269,18 @@ _check_one() {
 }
 
 _deny_length() {
-  {
-    echo '🛑 BLOCKED: this text is over its length cap.'
-    echo ''
-    echo "  surface: $2"
-    echo "  reason:  $1"
-    echo ''
-    echo 'The cap is for the kind this command publishes, whatever kind the text'
-    echo 'was staged as. Shorten it, then stage, approve and publish the new text.'
-  } >&2
+  local why="${1#gate-review: }"
+  echo "🛑 BLOCKED: $2 is over its length cap, ${why#over length: }. Shorten it, then stage, approve and publish again." >&2
   exit 2
 }
 
 _deny_unmeasured() {
-  {
-    echo '🛑 BLOCKED: the hook cannot measure this title against its length cap.'
-    echo ''
-    echo "  surface: $2"
-    echo "  reason:  $1"
-    echo ''
-    echo 'Give one --title as plain quoted text, then re-run the command.'
-  } >&2
+  echo "🛑 BLOCKED: cannot measure this title against its length cap ($2): $1. Give one --title as plain quoted text." >&2
   exit 2
 }
 
 _deny_checker() {
-  {
-    echo '🛑 BLOCKED: the length checker could not run, so nothing was measured.'
-    echo ''
-    echo "  surface: $2"
-    echo "  reason:  $1"
-    echo ''
-    echo 'This is not a verdict on the text. Fix the checker (personify must be'
-    echo 'installed, with scripts/length_check.py), then re-run the same command.'
-  } >&2
+  echo "🛑 BLOCKED: the length checker could not run, not a verdict on the text ($2): $1. Fix personify's scripts/length_check.py and re-run." >&2
   exit 2
 }
 

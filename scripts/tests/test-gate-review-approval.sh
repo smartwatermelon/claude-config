@@ -1069,8 +1069,8 @@ if grep -q '^=== alpha-commit ===$' "${SHOWN}" && ! grep -q 'beta-commit' "${SHO
 else
   _no "606: an open from alpha shows alpha's item and not beta's"
 fi
-if grep -q "^# FROM: ${KA}\." "${SHOWN}" && grep -q "leaves these" "${SHOWN}" &&
-  grep -q "items staged for ${KA}\. Only the next open from this repo and" "${SHOWN}"; then
+if grep -q "^# 1 item(s) from ${KA}\. " "${SHOWN}" &&
+  grep -q "^# ABORT keeps your text for the next open\. A timeout approves nothing\." "${SHOWN}"; then
   _ok "606: the header names the key and what ABORT or a timeout does to pending items"
 else
   _no "606: the header names the key and what ABORT or a timeout does to pending items"
