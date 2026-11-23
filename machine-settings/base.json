@@ -187,13 +187,49 @@
   },
   "deniedMcpServers": [
     {
+      "serverName": "claude.ai Claude Docs"
+    },
+    {
+      "serverName": "claude.ai Context7"
+    },
+    {
+      "serverName": "claude.ai Dropbox"
+    },
+    {
+      "serverName": "claude.ai Gmail 696b8df6"
+    },
+    {
+      "serverName": "claude.ai Google Docs"
+    },
+    {
+      "serverName": "claude.ai Google Sheets"
+    },
+    {
+      "serverName": "claude.ai Google Slides"
+    },
+    {
       "serverName": "claude.ai Linear"
+    },
+    {
+      "serverName": "claude.ai Netlify"
+    },
+    {
+      "serverName": "claude.ai Notion"
+    },
+    {
+      "serverName": "claude.ai OurGroceries"
+    },
+    {
+      "serverName": "claude.ai PayPal"
     },
     {
       "serverName": "claude.ai Sentry"
     },
     {
       "serverName": "claude.ai Slack"
+    },
+    {
+      "serverName": "claude.ai Unsplash"
     }
   ]
 }
