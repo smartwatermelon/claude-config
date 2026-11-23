@@ -56,7 +56,9 @@ check "REST: -F event from file" 2 "gh api ${EP} -F event=@/tmp/ev"
 check "REST: write alongside a gh --json read" 2 "gh api ${EP} -f body=x; gh pr view 1 --json title"
 check "curl: --json inline body" 2 "curl -X POST https://api.github.com/${EP} --json '{\"body\":\"x\"}'"
 check "curl: --json @file" 2 "curl https://api.github.com/${EP} --json @/tmp/body.json"
-check "curl: --json bare word that is not a field list" 2 "curl https://api.github.com/${EP} --json '{}'"
+check "curl: --json empty object" 2 "curl https://api.github.com/${EP} --json '{}'"
+check "curl: --json bare word that looks like a field list" 2 "curl https://api.github.com/${EP} --json body"
+check "curl: --json bare word after a gh read" 2 "gh pr view 1 --json title; curl https://api.github.com/${EP} --json body"
 
 # GraphQL — should BLOCK (exit 2)
 check "GraphQL: addPullRequestReview" 2 "gh api graphql -f query='mutation { addPullRequestReview(input: {}) { clientMutationId } }'"

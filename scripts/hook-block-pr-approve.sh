@@ -81,7 +81,9 @@ if printf '%s\n' "${cmd}" | grep -qE 'pulls/[^/[:space:]]+/reviews'; then
   rest=$(printf '%s\n' "${cmd}" | sed -E 's/(^|[[:space:]])(-X|--method|--request)([[:space:]]+|=)GET([[:space:]]|$)/\1\4/g; s/(^|[[:space:]])-XGET([[:space:]]|$)/\1\2/g')
   # Strip gh's --json field list, a read; curl's --json body stays a write. Twice for adjacent flags.
   json_fields='s/(^|[[:space:]])--json([[:space:]]+|=)[[:alpha:]][[:alnum:]_,]*([[:space:]]|$)/\1\3/g'
-  rest=$(printf '%s\n' "${rest}" | sed -E "${json_fields}" | sed -E "${json_fields}")
+  if ! printf '%s\n' "${cmd}" | grep -qE '(^|[^[:alnum:]_-])curl([[:space:]]|$)'; then
+    rest=$(printf '%s\n' "${rest}" | sed -E "${json_fields}" | sed -E "${json_fields}")
+  fi
   if printf '%s\n' "${rest}" | grep -qE '(^|[[:space:]])(-[fFdX]|--(field|raw-field|input|method|data|data-raw|data-binary|json|request)([[:space:]]|=|$))|(^|[[:space:]])-[fFdX][^[:space:]]'; then
     is_pending_review_create || block "a write to a pull request reviews endpoint"
   fi
